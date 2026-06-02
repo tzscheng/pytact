@@ -1,0 +1,20 @@
+requirements: gcc
+=> sudo apt-get install build-essentials
+
+requirements: mujoco library
+=> download newest mujoco-3.x.x-linux-x86_64.tar.gz   mujoco.org
+=> (unzip) tar xvf mujoco-3.x.x-linux-x86_64.tar.gz
+=> or use included mujoco library and header files
+=> copy mujoco library file (lib/libmujoco.so) to /usr/local/lib
+=> copy mujoco header folder (include/mujoco) to /usr/local/include
+=> sudo ldconfig
+
+requirements: glfw3
+=> sudo apt-get install libglfw3-dev
+
+build
+=>  gcc -W -Wall -I/usr/local/include/mujoco 2dof.c -lmujoco -lGL -lglfw -lm -o 2dof
+=> or bash build.sh
+
+execution
+=> ./2dof

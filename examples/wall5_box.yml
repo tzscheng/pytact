@@ -1,0 +1,36 @@
+#abstract: 5-brick running-bond wall (2 rows 3+2) — manifold test
+sim: {solver: lcp, dt: 0.001, g: [0, 0, -9.81]}
+view: {target: [0, 0, 0.08], distance: 1.2, yaw: 25, pitch: 15}
+lights: [{pos: [3, 3, 5], target: [0, 0, 0], ortho: 1.0, shadow: true}]
+materials:
+    floor: {normal: [50000, 200], tangent: [20000, 100, 0.9], spin: [200, 2, 0.05], roll: [200, 2, 0.02], restitution: 0.0}
+    brick: {normal: [30000, 100], tangent: [20000, 100, 0.9], spin: [200, 2, 0.05], roll: [200, 2, 0.02], restitution: 0.0}
+bodies:
+  - name: root
+    shapes: [{type: box, pos: [0, 0, -0.05], param: [0.6, 0.3, 0.05], contact: [1, floor], rgba: [0.85, 0.85, 0.85, 1.0]}]
+
+  - name: b00
+    joint: {type: free, parent: root, q0: [-0.2, 0.0, 0.04, 0, 0, 0]}
+    inertial: {mass: 0.2, tensor: [box, 0.2, 0.1, 0.08]}
+    shapes:
+      - {type: box, param: [0.1, 0.05, 0.04], contact: [1, brick], rgba: [0.80, 0.35, 0.25, 1.0]}
+  - name: b01
+    joint: {type: free, parent: root, q0: [0.0, 0.0, 0.04, 0, 0, 0]}
+    inertial: {mass: 0.2, tensor: [box, 0.2, 0.1, 0.08]}
+    shapes:
+      - {type: box, param: [0.1, 0.05, 0.04], contact: [1, brick], rgba: [0.80, 0.35, 0.25, 1.0]}
+  - name: b02
+    joint: {type: free, parent: root, q0: [0.2, 0.0, 0.04, 0, 0, 0]}
+    inertial: {mass: 0.2, tensor: [box, 0.2, 0.1, 0.08]}
+    shapes:
+      - {type: box, param: [0.1, 0.05, 0.04], contact: [1, brick], rgba: [0.80, 0.35, 0.25, 1.0]}
+  - name: b10
+    joint: {type: free, parent: root, q0: [-0.1, 0.0, 0.12, 0, 0, 0]}
+    inertial: {mass: 0.2, tensor: [box, 0.2, 0.1, 0.08]}
+    shapes:
+      - {type: box, param: [0.1, 0.05, 0.04], contact: [1, brick], rgba: [0.80, 0.35, 0.25, 1.0]}
+  - name: b11
+    joint: {type: free, parent: root, q0: [0.1, 0.0, 0.12, 0, 0, 0]}
+    inertial: {mass: 0.2, tensor: [box, 0.2, 0.1, 0.08]}
+    shapes:
+      - {type: box, param: [0.1, 0.05, 0.04], contact: [1, brick], rgba: [0.80, 0.35, 0.25, 1.0]}

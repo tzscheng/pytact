@@ -1,0 +1,31 @@
+#abstract: small scene for raymap demo — one of each shape type + an overhead camera frame.
+#  ray = -Z of the named frame, so the 'cam' frame at z=2 with identity rotation looks straight down.
+#date: 2026-05-19
+
+sim: {solver: lcp, dt: 0.001, g: [0, 0, -9.81]}
+view: {target: [0, 0, 0], distance: 3, yaw: 105, pitch: 25}
+lights: [{pos: [3, 3, 5], target: [0, 0, 0], ortho: 2.0, shadow: true}]
+
+materials:
+    mat1: {normal: [30000, 10], tangent: [20000, 10, 0.8], spin: [100, 1, 0.02], roll: [100, 1, 0.005], restitution: 0.0}
+
+bodies:
+  - name: root
+    # Overhead camera: at (0,0,2), identity rotation → +Z up, -Z down → looks straight down.
+    # Tilted alt at (0.8,0,1.5) with pitch -50° → useful for non-trivial perspective.
+    frames:
+      - {name: cam_top,  pos: [0, 0, 2.0],   euler: [0, 0, 0]}
+      - {name: cam_tilt, pos: [0, -1.2, 1.2], euler: [55, 0, 0]}
+    shapes:
+      # floor (axis-aligned box)
+      - {type: box, pos: [0, 0, 0], param: [1.0, 1.0, 0.02], contact: [1, mat1], rgba: [0.7, 0.7, 0.7, 1.0]}
+      # sphere — opted out of raycast (still renders + collides, but invisible to ray sensors)
+      - {type: sphere, pos: [-0.45, -0.30, 0.15], param: [0.15], contact: [1, mat1], rgba: [0.85, 0.20, 0.20, 1.0], raycast: false}
+      # cylinder (z-aligned; param = [radius, half-height])
+      - {type: cylinder, pos: [0.40, 0.40, 0.20], param: [0.10, 0.20], contact: [1, mat1], rgba: [0.20, 0.85, 0.20, 1.0]}
+      # capsule (z-aligned)
+      - {type: capsule, pos: [-0.40, 0.40, 0.15], param: [0.08, 0.15], contact: [1, mat1], rgba: [0.20, 0.30, 0.90, 1.0]}
+      # rotated box
+      - {type: box, pos: [0.35, -0.40, 0.10], euler: [0, 0, 30], param: [0.18, 0.10, 0.10], contact: [1, mat1], rgba: [0.90, 0.85, 0.20, 1.0]}
+      # mesh (pyramid: ~0.2m base, 0.15m tall)
+      - {type: mesh, pos: [0, 0, 0.10], file: objs/pyramid.obj, contact: [1, mat1], rgba: [0.80, 0.30, 0.80, 1.0]}

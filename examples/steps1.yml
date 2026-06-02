@@ -1,0 +1,15 @@
+#abstract: stepping-stone terrain (mirrors mujoco xml/3.xml; 12x12m floor)
+#date: 2026-05-20
+
+materials:
+    mat1: {normal: [20000, 200], tangent: [20000, 200, 1.0], spin: [200, 2, 0.05], roll: [200, 2, 0.02], restitution: 0.0}
+
+bodies:
+  - name: root
+    shapes:
+      - {type: box, pos: [0, 0, -0.05],  param: [6.0,  6.0,  0.05], contact: [1, mat1], rgba: [1.0, 1.0, 1.0, 1.0]}
+      - {type: box, pos: [1.0,  0, 0.03], param: [0.15, 2.00, 0.03], contact: [1, mat1], rgba: [0.8, 0.8, 0.8, 1.0]}
+      - {type: box, pos: [2.0,  0, 0.04], param: [0.12, 2.00, 0.04], contact: [1, mat1], rgba: [0.7, 0.7, 0.7, 1.0]}
+      - {type: box, pos: [3.0, -1, 0.04], param: [0.35, 1.00, 0.04], contact: [1, mat1], rgba: [0.8, 0.8, 0.8, 1.0]}
+      - {type: box, pos: [4.0,  0, 0.05], param: [0.16, 2.00, 0.05], contact: [1, mat1], rgba: [0.7, 0.7, 0.7, 1.0]}
+      - {type: box, pos: [5.0,  0, 0.04], param: [0.13, 2.00, 0.04], contact: [1, mat1], rgba: [0.8, 0.8, 0.8, 1.0]}

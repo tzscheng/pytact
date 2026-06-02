@@ -1,0 +1,84 @@
+#!/usr/bin/env -S uv run python
+# -*- mode: python -*-
+import sys, os
+sys.path[0] = os.path.dirname(sys.path[0]) if sys.path[0] else os.getcwd()
+import sys, socket, numpy as np, tact
+
+#env = tact.Env('examples/obj1', render=True, redraw=4)
+#env = tact.Env('examples/obj2', render=True, redraw=4)
+
+#env = tact.Env('examples/box_wall', render=True, redraw=16)
+#env = tact.Env('examples/min_test', render=True, redraw=16)   # 'solver: minimal' test: sphere on z=0 ground, ball given +x qd0=0.1 m/s
+
+env = tact.Env('examples/arm2', render=True)
+#env = tact.env('arm2', offset=[0, 1, 0, 0, 0, 0], q0=[-90, 0], render=True, sleep=0.01, redraw=1); env.add('arm2', offset=[0.1, 1, 0, 0, 0, 0], q0=[-45, 0])
+
+#env = tact.env('arm3', render=True, sleep=0.01)
+#env = tact.env('arm4', render=True, sleep=0.01)
+
+#env = tact.env('fv', render=True)
+#env = tact.env('cartpole/cartpole', q0=[0, 45], render=True)
+
+#env = tact.env('rb5/rb5', render=True)
+#env = tact.env('rb10/rb10', render=True)
+#env = tact.env('gos10/gos10', render=True)
+
+#env = tact.env('../dg3/dg3', render=True)
+
+#env = tact.env('../h9/yml/h9-left', render=True)
+#env = tact.env('../h9/yml/h9-right', render=True)
+
+#env = tact.env('../h12/yml/h12-left', render=True)
+#env = tact.env('../h12/yml/h12-right', render=True)
+
+#env = tact.env('../dg5/yml/dg5-left', render=True)
+#env = tact.env('../dg5/yml/dg5-right', render=True)
+
+#env = tact.env('../kida/kida', render=True)
+#env = tact.env('../kida/single/yml/kida-left', render=True)
+#env = tact.env('../kida/single/yml/kida-right', render=True)
+
+#env = tact.env('../hop/mk1', reder=True)
+#env = tact.env('../hop/mk2', reder=True)
+#env = tact.env('../mk3/mk3', reder=True)
+
+#env = tact.env('../dog/dog', offset=[0, 0, 0, 0, 0, 0], q0=[0,-32, 50, 0,-32,50,  0,-32, 50,  0,-32,50], render=True)
+#env = tact.env('../dog/leg/leg', render=True)
+
+#env = tact.env('../zen/zen', q0=[-25, 0, 0, 40, -15, 0,  -25, 0, 0,  40, -15, 0], render=True)
+
+
+#pull = zmq.Context().socket(zmq.PULL)
+#pull.bind('ipc:///dev/shm/zmq-pp0')
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind(('0.0.0.0', 6600))
+sock.setblocking(False)
+
+
+mode = [0]*len(env.q) #set all joint torque mode
+cnt = 0
+
+def msgproc(msg):
+    global cnt
+    w = msg.split()
+    if w[0] == 'quit': env.finish(); exit(0)
+    elif w[0] == 'reset': env.reset(); cnt = 0
+
+    
+while True:
+    #try: msg = pull.recv(flags=zmq.NOBLOCK)
+    #except zmq.ZMQError: pass
+    #else: msgproc(msg); continue
+    try: msg, clnt_addr = sock.recvfrom(1024)
+    except BlockingIOError: pass
+    else: msgproc(msg.decode()); continue
+    
+    u = np.zeros(env.dof)
+    y = env.step(u)
+    
+    #if len(y) > 0: print(cnt, y)
+    #else: print(cnt)
+    
+    cnt += 1
+
+    #if cnt == 100: break

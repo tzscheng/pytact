@@ -1,0 +1,24 @@
+# Minimal test solver demo: a sphere dropped onto the ground (z=0 plane).
+# `solver: minimal` selects rbd.contact_ground_sphere — a test-only spring-damper
+# ground contact for SPHERE shapes (no Coulomb cone, no box/mesh). See sim.py.
+sim: {solver: minimal, dt: 0.001, g: [0, 0, -9.81]}
+view: {target: [0, 0, 0.1], distance: 2, yaw: 90, pitch: 10}
+lights: [{pos: [7, 7, 7], target: [0, 0, 0], ortho: 5.0, shadow: true}]
+
+materials:
+    # normal: [k_n, d_n]. Restitution ≈ exp(-π·ζ/√(1-ζ²)), ζ = d_n/(2·√(k_n·m)).
+    # d_n=120 → ζ≈0.3 → a modest bounce; raise d_n toward 2·√(k_n·m) (~400 here) for
+    # no bounce (critical), lower it (e.g. 60 → ζ≈0.15) for a bouncier ball.
+    floor: {normal: [40000, 120], tangent: [10000, 50, 0.8], spin: [10, 1, 0.02], roll: [10, 1, 0.005], restitution: 0.0}
+
+bodies:
+  - name: root
+    shapes:
+      - {type: box, param: [1, 1, 0.05], pos: [0, 0, -0.05], contact: [1, floor], rgba: [0.8, 0.8, 0.8, 1.0]}
+
+  - name: ball
+    # qd0 = body-frame [vx,vy,vz, wx,wy,wz]; at identity orientation vx is world +x.
+    joint: {type: free, q0: [0, 0, 1.0, 0, 0, 0], qd0: [0.1, 0, 0, 0, 0, 0]}
+    inertial: {mass: 1, tensor: [sphere, 0.1]}
+    shapes:
+      - {type: sphere, param: [0.1], contact: [1, floor], rgba: [0.3, 0.6, 0.9, 1.0]}

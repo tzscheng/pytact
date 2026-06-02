@@ -1,0 +1,308 @@
+/* penalty.c — penalty (spring-damper) contact solver with brush friction.
+ *
+ * Companion layer on top of ccd.c (narrow-phase via libccd/GJK/EPA) and rbd.c
+ * (Jacobian / dynamics). Mirrors tact.py:contact_penalty 1:1.
+ *
+ * Per active contact:
+ *   normal force   fz = max(0, k_n·depth − d_n·v_n)    (no-pull)
+ *   tangent force  brush model: spring against persistent slip displacement s_t,
+ *                  Coulomb-cone clamped at μ·fz
+ *   spin couple    (world-contact pairs only) brush about contact normal
+ *   roll couple    brush in tangent plane
+ * Persistent state (s_t_world, s_phi_world, s_roll_world) carries across steps
+ * so true static friction can lock when shear stays below μ·fz.
+ *
+ * Layout twin of lcp.c — the two solvers share the same narrow-phase + tangent
+ * frame convention (choose_rotation), so f_ext is comparable at the same q. */
+#include "tact.h"
+
+void contact_penalty(int nb, double *T, int *parent, int *jtype, int n_pair, int *cpair, int *ctype, int *cbody, double *ctran, double *cshape, double *cparam, double *qd, double dt, double *s_t_world, double *s_phi_world, double *s_roll_world, double *f_ext_out, double *cfs_buf, int *cfs_count_out, double *workspace)
+{
+    /* Per-DoF stride for J1/J2 — jacob_whitney outputs 6×nq. */
+    int nq = 0;
+    for (int i = 0; i < nb; i++) nq += (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+
+    double *J1 = workspace;             // 6*nq
+    double *J2 = J1 + 6*nq;             // 6*nq
+
+    memset(f_ext_out, 0, 6*nb*sizeof(double));
+    int cnt = 0;
+
+    double out_buf[7 * MAX_PTS_PER_PAIR];
+    for (int n = 0; n < n_pair; n++) {
+        int si = cpair[2*n + 0];        //shape indices
+        int sj = cpair[2*n + 1];
+
+        /* contact-frame transforms in world */
+        double T1[16], T2[16];
+        if (cbody[si] < 0) memcpy(T1, ctran + 16*si, 16*sizeof(double));
+        else               matmul(T1, T + 16*cbody[si], ctran + 16*si, 4, 4, 4);
+        if (cbody[sj] < 0) memcpy(T2, ctran + 16*sj, 16*sizeof(double));
+        else               matmul(T2, T + 16*cbody[sj], ctran + 16*sj, 4, 4, 4);
+
+        /* params for collision_check_n: [xyz, euler, shape...] */
+        double param1[9], param2[9];
+        homogeneous_to_xyzeuler(T1, param1, "xyz");
+        homogeneous_to_xyzeuler(T2, param2, "xyz");
+        for (int k = 0; k < 3; k++) {
+            param1[6+k] = cshape[3*si + k];
+            param2[6+k] = cshape[3*sj + k];
+        }
+
+        /* Multi-point manifold: box-box yields up to MAX_PTS_PER_PAIR coplanar
+         * points (sub_id 0..npts-1), other combos a single point. Each point keeps
+         * its own persistent brush state at slot = n*MAX_PTS_PER_PAIR + sub_id —
+         * same indexing convention as lcp.c's lam_prev warm-start. */
+        int npts = collision_check_n(ctype[si], param1, ctype[sj], param2, out_buf, MAX_PTS_PER_PAIR);
+
+        /* Reset brush slots with no active contact point this step (pair separated,
+         * or sub_id beyond the current manifold size): stick memory must not survive
+         * a make/break of that point. */
+        int n_active = npts > 0 ? npts : 0;
+        for (int rs = n_active; rs < MAX_PTS_PER_PAIR; rs++) {
+            int slot = n*MAX_PTS_PER_PAIR + rs;
+            s_t_world[3*slot] = s_t_world[3*slot+1] = s_t_world[3*slot+2] = 0.0;
+            s_phi_world[slot] = 0.0;
+            s_roll_world[3*slot] = s_roll_world[3*slot+1] = s_roll_world[3*slot+2] = 0.0;
+        }
+        if (npts <= 0) continue;             /* <0 separating, 0 touching → no force */
+
+        for (int sp_i = 0; sp_i < npts; sp_i++) {   /* per manifold contact point */
+        double *out    = out_buf + 7*sp_i;
+        int slot       = n*MAX_PTS_PER_PAIR + sp_i;
+        double *s_t    = s_t_world + 3*slot;    // this point's brush displacement (world frame)
+        double *s_phi  = s_phi_world + slot;    // this point's angular brush displacement (spin)
+        double *s_roll = s_roll_world + 3*slot; // this point's angular brush displacement (rolling)
+
+        double cp[3]  = {out[0], out[1], out[2]};
+        double dir[3] = {out[3], out[4], out[5]};
+        double depth = out[6];
+
+        double dnorm = sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+        if (dnorm < 1e-4) { s_t[0] = s_t[1] = s_t[2] = 0.0; *s_phi = 0.0; s_roll[0] = s_roll[1] = s_roll[2] = 0.0; continue; }
+
+        /* build "contact-point" body frames: take Tb but replace position with cp */
+        double Tp1[16], Tp2[16];
+        if (cbody[si] >= 0) {
+            memcpy(Tp1, T + 16*cbody[si], 16*sizeof(double));
+            Tp1[3] = cp[0]; Tp1[7] = cp[1]; Tp1[11] = cp[2];
+            jacob_whitney(J1, nb, T, Tp1, parent, jtype, cbody[si]);
+        } else memset(J1, 0, 6*nq*sizeof(double));
+        if (cbody[sj] >= 0) {
+            memcpy(Tp2, T + 16*cbody[sj], 16*sizeof(double));
+            Tp2[3] = cp[0]; Tp2[7] = cp[1]; Tp2[11] = cp[2];
+            jacob_whitney(J2, nb, T, Tp2, parent, jtype, cbody[sj]);
+        } else memset(J2, 0, 6*nq*sizeof(double));
+
+        /* contact velocities: cv1 = J1 @ qd, cv2 = J2 @ qd  (6 × nq) · (nq × 1) */
+        double cv1[6], cv2[6];
+        matmul(cv1, J1, qd, 6, nq, 1);
+        matmul(cv2, J2, qd, 6, nq, 1);
+        double cv0[3] = {cv2[0]-cv1[0], cv2[1]-cv1[1], cv2[2]-cv1[2]};
+
+        /* contact-aligned frame; cv = R^T · cv0 */
+        double R[9];
+        choose_rotation(dir, R);
+        double cv[3];
+        cv[0] = R[0]*cv0[0] + R[3]*cv0[1] + R[6]*cv0[2];
+        cv[1] = R[1]*cv0[0] + R[4]*cv0[1] + R[7]*cv0[2];
+        cv[2] = R[2]*cv0[0] + R[5]*cv0[1] + R[8]*cv0[2];
+
+        /* cparam stride = 12: [pair_id, k_n, d_n, k_t, d_t, mu, k_spin, d_spin, mu_spin, k_roll, d_roll, mu_roll] */
+        double k_n     = 0.5*(cparam[12*si+ 1] + cparam[12*sj+ 1]);
+        double d_n     = 0.5*(cparam[12*si+ 2] + cparam[12*sj+ 2]);
+        double k_t     = 0.5*(cparam[12*si+ 3] + cparam[12*sj+ 3]);
+        double d_t     = 0.5*(cparam[12*si+ 4] + cparam[12*sj+ 4]);
+        double mu      = 0.5*(cparam[12*si+ 5] + cparam[12*sj+ 5]);
+        double k_spin  = 0.5*(cparam[12*si+ 6] + cparam[12*sj+ 6]);
+        double d_spin  = 0.5*(cparam[12*si+ 7] + cparam[12*sj+ 7]);
+        double mu_spin = 0.5*(cparam[12*si+ 8] + cparam[12*sj+ 8]);
+        double k_roll  = 0.5*(cparam[12*si+ 9] + cparam[12*sj+ 9]);
+        double d_roll  = 0.5*(cparam[12*si+10] + cparam[12*sj+10]);
+        double mu_roll = 0.5*(cparam[12*si+11] + cparam[12*sj+11]);
+
+        /* Stage 1.2: no-pull normal + stick-slip (brush) tangential friction */
+        double fz = k_n*depth - d_n*cv[2];
+        if (fz < 0.0) fz = 0.0;
+
+        /* project persistent s_t onto current tangent plane (kill normal drift) */
+        double sn = s_t[0]*dir[0]/dnorm + s_t[1]*dir[1]/dnorm + s_t[2]*dir[2]/dnorm;
+        double s_proj[3] = {s_t[0] - sn*dir[0]/dnorm,
+                            s_t[1] - sn*dir[1]/dnorm,
+                            s_t[2] - sn*dir[2]/dnorm};
+
+        /* propose post-step s_t under stick (integrate with cv0 in world frame) */
+        s_t[0] = s_proj[0] + cv0[0]*dt;
+        s_t[1] = s_proj[1] + cv0[1]*dt;
+        s_t[2] = s_proj[2] + cv0[2]*dt;
+
+        /* express s_t in contact-aligned frame (R columns x̂, ŷ, n̂) → (sx, sy) */
+        double sx = R[0]*s_t[0] + R[3]*s_t[1] + R[6]*s_t[2];
+        double sy = R[1]*s_t[0] + R[4]*s_t[1] + R[7]*s_t[2];
+
+        /* spring + viscous friction in tangent plane */
+        double fx = -k_t*sx - d_t*cv[0];
+        double fy = -k_t*sy - d_t*cv[1];
+
+        /* Coulomb cone: if exceeded, clamp force and snap s_t back to clamp */
+        double ft_norm = sqrt(fx*fx + fy*fy);
+        double ft_max  = mu*fz;
+        if (ft_norm > ft_max && ft_norm > 1e-9) {
+            double scale = ft_max/ft_norm;
+            fx *= scale; fy *= scale;
+            /* solve for s_t that, combined with current cv, produces the clamped force:
+             *   fx_clamped = -k_t*sx - d_t*cv[0]  →  sx = -(fx_clamped + d_t*cv[0]) / k_t */
+            sx = -(fx + d_t*cv[0]) / k_t;
+            sy = -(fy + d_t*cv[1]) / k_t;
+            /* rebuild s_t in world frame: tangent components only (no normal) */
+            s_t[0] = R[0]*sx + R[1]*sy;
+            s_t[1] = R[3]*sx + R[4]*sy;
+            s_t[2] = R[6]*sx + R[7]*sy;
+        }
+
+        /* contact force in world frame */
+        double cf0[3];
+        cf0[0] = R[0]*fx + R[1]*fy + R[2]*fz;
+        cf0[1] = R[3]*fx + R[4]*fy + R[5]*fz;
+        cf0[2] = R[6]*fx + R[7]*fy + R[8]*fz;
+
+        /* Stage 1.3: torsional (spin) friction about contact normal.
+         * cv1[3..5], cv2[3..5] are body angular velocities in world frame
+         * (Siciliano jacobian: bottom 3 rows).
+         * Gated to world-contact pairs only: the spring "stick" sub-model couples
+         * the two bodies' yaws, which is desirable against the world (suppresses
+         * box-on-plane yaw drift) but creates artifacts in body-body grasps
+         * (gripper-object alignment rotation gets blocked by the captured stick). */
+        double n_hat[3] = {dir[0]/dnorm, dir[1]/dnorm, dir[2]/dnorm};
+        double w_rel[3] = {cv2[3]-cv1[3], cv2[4]-cv1[4], cv2[5]-cv1[5]};
+        double omega_n  = w_rel[0]*n_hat[0] + w_rel[1]*n_hat[1] + w_rel[2]*n_hat[2];
+        double m_world[3] = {0.0, 0.0, 0.0};
+
+        /* >>> SPIN GATE: world-contact pairs only (see design-friction.md) <<< */
+        if (cbody[si] < 0 || cbody[sj] < 0) {
+            double sp = *s_phi + omega_n*dt;                   /* integrate (stick model) */
+            double tau_n = -k_spin*sp - d_spin*omega_n;
+            double tau_max = mu_spin*fz;                       /* fz already no-pull clamped */
+            if (fabs(tau_n) > tau_max && tau_max >= 0.0) {
+                tau_n = (tau_n > 0.0 ? tau_max : -tau_max);
+                sp = -(tau_n + d_spin*omega_n) / k_spin;       /* snap back to clamp surface */
+            }
+            *s_phi = sp;
+            m_world[0] = tau_n*n_hat[0];
+            m_world[1] = tau_n*n_hat[1];
+            m_world[2] = tau_n*n_hat[2];
+        } else {
+            *s_phi = 0.0;                                      /* keep accumulator clean */
+        }
+
+        /* Stage 1.4: rolling friction in tangent plane.
+         * omega_t = w_rel − omega_n·n̂ (tangential angular velocity). */
+        double omega_t[3] = {w_rel[0] - omega_n*n_hat[0],
+                             w_rel[1] - omega_n*n_hat[1],
+                             w_rel[2] - omega_n*n_hat[2]};
+
+        /* project persistent s_roll onto tangent plane (kill normal drift) */
+        double sn_r = s_roll[0]*n_hat[0] + s_roll[1]*n_hat[1] + s_roll[2]*n_hat[2];
+        double sr_proj[3] = {s_roll[0] - sn_r*n_hat[0],
+                             s_roll[1] - sn_r*n_hat[1],
+                             s_roll[2] - sn_r*n_hat[2]};
+
+        /* integrate brush angular displacement (world frame, stick) */
+        s_roll[0] = sr_proj[0] + omega_t[0]*dt;
+        s_roll[1] = sr_proj[1] + omega_t[1]*dt;
+        s_roll[2] = sr_proj[2] + omega_t[2]*dt;
+
+        /* express s_roll & omega_t in contact-aligned frame (cols x̂_t, ŷ_t of R) */
+        double sx_r = R[0]*s_roll[0] + R[3]*s_roll[1] + R[6]*s_roll[2];
+        double sy_r = R[1]*s_roll[0] + R[4]*s_roll[1] + R[7]*s_roll[2];
+        double wx_r = R[0]*omega_t[0] + R[3]*omega_t[1] + R[6]*omega_t[2];
+        double wy_r = R[1]*omega_t[0] + R[4]*omega_t[1] + R[7]*omega_t[2];
+
+        double tx = -k_roll*sx_r - d_roll*wx_r;
+        double ty = -k_roll*sy_r - d_roll*wy_r;
+
+        /* Coulomb cone for rolling */
+        double tt_norm = sqrt(tx*tx + ty*ty);
+        double tt_max  = mu_roll*fz;
+        if (tt_norm > tt_max && tt_norm > 1e-9) {
+            double scale = tt_max/tt_norm;
+            tx *= scale; ty *= scale;
+            sx_r = -(tx + d_roll*wx_r) / k_roll;
+            sy_r = -(ty + d_roll*wy_r) / k_roll;
+            /* rebuild s_roll in world frame: tangent components only */
+            s_roll[0] = R[0]*sx_r + R[1]*sy_r;
+            s_roll[1] = R[3]*sx_r + R[4]*sy_r;
+            s_roll[2] = R[6]*sx_r + R[7]*sy_r;
+        }
+
+        /* add rolling couple (contact frame [tx, ty, 0] → world) to m_world */
+        m_world[0] += R[0]*tx + R[1]*ty;
+        m_world[1] += R[3]*tx + R[4]*ty;
+        m_world[2] += R[6]*tx + R[7]*ty;
+
+        /* record: same layout as Python's [cp(3), -cf0(3), i, j] */
+        cfs_buf[8*cnt+0] = cp[0]; cfs_buf[8*cnt+1] = cp[1]; cfs_buf[8*cnt+2] = cp[2];
+        cfs_buf[8*cnt+3] = -cf0[0]; cfs_buf[8*cnt+4] = -cf0[1]; cfs_buf[8*cnt+5] = -cf0[2];
+        cfs_buf[8*cnt+6] = (double)si;
+        cfs_buf[8*cnt+7] = (double)sj;
+        cnt++;
+
+        /* apply contact wrench to body si: ef = Tb^T · (-cf0) in body frame,
+         *                                   em = (Tb^-1 · cp) × ef
+         * f_ext[bi] += [em; ef] */
+        if (cbody[si] >= 0) {
+            double *Tb = T + 16*cbody[si];
+            double Tbinv[16];
+            matinv4_affine(Tbinv, Tb);
+            double ef[3];
+            ef[0] = -(Tb[0]*cf0[0] + Tb[4]*cf0[1] + Tb[8] *cf0[2]);
+            ef[1] = -(Tb[1]*cf0[0] + Tb[5]*cf0[1] + Tb[9] *cf0[2]);
+            ef[2] = -(Tb[2]*cf0[0] + Tb[6]*cf0[1] + Tb[10]*cf0[2]);
+            double tmp[3];
+            tmp[0] = Tbinv[0]*cp[0] + Tbinv[1]*cp[1] + Tbinv[2] *cp[2] + Tbinv[3];
+            tmp[1] = Tbinv[4]*cp[0] + Tbinv[5]*cp[1] + Tbinv[6] *cp[2] + Tbinv[7];
+            tmp[2] = Tbinv[8]*cp[0] + Tbinv[9]*cp[1] + Tbinv[10]*cp[2] + Tbinv[11];
+            double em[3];
+            cross3(tmp[0], tmp[1], tmp[2], ef[0], ef[1], ef[2], em);
+            /* spin couple (body si gets -m_world in world → body frame) */
+            em[0] += -(Tb[0]*m_world[0] + Tb[4]*m_world[1] + Tb[8] *m_world[2]);
+            em[1] += -(Tb[1]*m_world[0] + Tb[5]*m_world[1] + Tb[9] *m_world[2]);
+            em[2] += -(Tb[2]*m_world[0] + Tb[6]*m_world[1] + Tb[10]*m_world[2]);
+            f_ext_out[6*cbody[si]+0] += em[0];
+            f_ext_out[6*cbody[si]+1] += em[1];
+            f_ext_out[6*cbody[si]+2] += em[2];
+            f_ext_out[6*cbody[si]+3] += ef[0];
+            f_ext_out[6*cbody[si]+4] += ef[1];
+            f_ext_out[6*cbody[si]+5] += ef[2];
+        }
+        /* apply +cf0 to body sj */
+        if (cbody[sj] >= 0) {
+            double *Tb = T + 16*cbody[sj];
+            double Tbinv[16];
+            matinv4_affine(Tbinv, Tb);
+            double ef[3];
+            ef[0] = Tb[0]*cf0[0] + Tb[4]*cf0[1] + Tb[8] *cf0[2];
+            ef[1] = Tb[1]*cf0[0] + Tb[5]*cf0[1] + Tb[9] *cf0[2];
+            ef[2] = Tb[2]*cf0[0] + Tb[6]*cf0[1] + Tb[10]*cf0[2];
+            double tmp[3];
+            tmp[0] = Tbinv[0]*cp[0] + Tbinv[1]*cp[1] + Tbinv[2] *cp[2] + Tbinv[3];
+            tmp[1] = Tbinv[4]*cp[0] + Tbinv[5]*cp[1] + Tbinv[6] *cp[2] + Tbinv[7];
+            tmp[2] = Tbinv[8]*cp[0] + Tbinv[9]*cp[1] + Tbinv[10]*cp[2] + Tbinv[11];
+            double em[3];
+            cross3(tmp[0], tmp[1], tmp[2], ef[0], ef[1], ef[2], em);
+            /* spin couple (body sj gets +m_world in world → body frame) */
+            em[0] += Tb[0]*m_world[0] + Tb[4]*m_world[1] + Tb[8] *m_world[2];
+            em[1] += Tb[1]*m_world[0] + Tb[5]*m_world[1] + Tb[9] *m_world[2];
+            em[2] += Tb[2]*m_world[0] + Tb[6]*m_world[1] + Tb[10]*m_world[2];
+            f_ext_out[6*cbody[sj]+0] += em[0];
+            f_ext_out[6*cbody[sj]+1] += em[1];
+            f_ext_out[6*cbody[sj]+2] += em[2];
+            f_ext_out[6*cbody[sj]+3] += ef[0];
+            f_ext_out[6*cbody[sj]+4] += ef[1];
+            f_ext_out[6*cbody[sj]+5] += ef[2];
+        }
+        }   /* end per-manifold-point loop */
+    }
+
+    *cfs_count_out = cnt;
+}

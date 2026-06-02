@@ -1,0 +1,56 @@
+#abstract: rainbow robotics RB-5 manipulator
+#date: 2025-07-17
+
+sim: {solver: lcp, dt: 0.001, g: [0, 0, -9.81]}
+view: {target: [0, 0, 0.5], distance: 2.0, yaw: 45, pitch: 20}
+lights: [{pos: [7, 7, 7], target: [0, 0, 0], ortho: 5.0, shadow: true}]
+
+bodies:
+  - name: root
+    shapes: [{type: box, pos: [0, 0, 0.04], euler: [0, 0, 0], param: [0.1, 0.1, 0.04], rgba: [0.5, 0.5, 0.5, 1.0]}]
+
+  - name: link1
+    joint: {type: rev, parent: root, pos: [0, 0, 0.1692], damping: 0.3, k: [100, 1]}
+    inertial: {mass: 1.0, tensor: [sphere, 0.05], pos: [0, -0.0742, 0]}
+    shapes: [{type: cylinder, param: [0.07, 0.08], rgba: [0.8, 0.8, 0.8, 1.0]}]
+    
+  - name: link2
+    joint: {type: rev, parent: link1, pos: [0, -0.1484, 0], euler: [-90, 0, 0], damping: 0.3, k: [100, 1]}
+    inertial: {mass: 2.0, tensor: [sphere, 0.05], pos: [0, -0.2125, 0]}
+    shapes:
+      - {type: cylinder, param: [0.06, 0.07], rgba: [0.8, 0.8, 0.8, 1.0]}
+      - {type: cylinder, pos: [0, -0.212, 0], euler: [90, 0, 0], param: [0.04, 0.15], rgba: [0.8, 0.8, 0.8, 1.0]}
+      - {type: cylinder, pos: [0, -0.425, 0], euler: [0, 0, 0], param: [0.05, 0.07], rgba: [0.8, 0.8, 0.8, 1.0]}
+      
+  - name: link3
+    joint: {type: rev, parent: link2, pos: [0, -0.425, 0], damping: 0.2, k: [100, 1]}
+    inertial: {mass: 1.5, tensor: [sphere, 0.05], pos: [0, -0.196, 0.1484]}
+    shapes:
+      - {type: cylinder, pos: [0, 0, 0.1484], euler: [0, 0, 0], param: [0.05, 0.07], rgba: [0.8, 0.8, 0.8, 1.0]}
+      - {type: cylinder, pos: [0, -0.196, 0.1484], euler: [90, 0, 0], param: [0.04, 0.14], rgba: [0.8, 0.8, 0.8, 1.0]}
+      
+  - name: link4
+    joint: {type: rev, parent: link3, pos: [0, -0.392, 0.1484], damping: 0.2, k: [60, 0.5]}
+    inertial: {mass: 0.5, tensor: [sphere, 0.05], pos: [0, 0, -0.1107]}
+    shapes: [{type: cylinder, param: [0.04, 0.06], rgba: [0.8, 0.8, 0.3, 1.0]}]
+    
+  - name: link5
+    joint: {type: rev, parent: link4, pos: [0, 0, -0.1107], euler: [90, 0, 0], damping: 0.1, k: [60, 0.5]}
+    inertial: {mass: 0.5, tensor: [sphere, 0.05], pos: [0, 0, 0.1107]}
+    shapes: [{type: cylinder, param: [0.04, 0.06], rgba: [0.3, 0.8, 0.3, 1.0]}]
+    
+  - name: link6
+    joint: {type: rev, parent: link5, pos: [0, 0, 0.1107], euler: [-90, 0, 0], damping: 0.1, k: [10, 0.1]}
+    inertial: {mass: 0.1, tensor: [sphere, 0.05], pos: [0, 0, -0.10]}
+    shapes: [{type: cylinder, param: [0.04, 0.05], rgba: [0.3, 0.3, 0.8, 1.0]}]
+    
+  - name: tcp
+    joint: {type: fixed, parent: link6, pos: [0, 0, -0.1947], euler: [90, 0, 0]}
+    inertial: {mass: 0.1, tensor: [sphere, 0.05]}
+    #shapes: [{type: sphere, param: [0.05], contact: [0, 20000, 50, 50], rgba: [0.9, 0, 0, 1.0]}]
+
+feeds:
+  - jointpos: [link1, link2, link3, link4, link5, link6]
+  - jointvel: [link1, link2, link3, link4, link5, link6]
+  - ftsensor: [tcp]
+  

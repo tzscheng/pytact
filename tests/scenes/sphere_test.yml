@@ -1,0 +1,17 @@
+sim: {solver: lcp, dt: 0.001, g: [0, 0, -9.81]}
+view: {target: [0, 0, 0], distance: 3, yaw: 90, pitch: 10}
+lights: [{pos: [7, 7, 7], target: [0, 0, 0], ortho: 5.0, shadow: true}]
+
+materials:
+    floor: {normal: [10000, 5], tangent: [10000, 5, 0.8], spin: [10, 1, 0.02], roll: [10, 1, 0.005], restitution: 0.0}
+
+bodies:
+  - name: root
+    shapes:
+      - {type: box, param: [2, 2, 0.05], pos: [0, 0, -0.05], contact: [1, floor], rgba: [0.8, 0.8, 0.8, 1.0]}
+
+  - name: ball
+    joint: {type: free, q0: [0, 0, 0.5, 0, 0, 0]}
+    inertial: {mass: 1, tensor: [sphere, 0.05]}
+    shapes:
+      - {type: sphere, param: [0.1], contact: [1, floor], rgba: [0.3, 0.6, 0.9, 1.0]}

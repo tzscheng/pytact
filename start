@@ -1,0 +1,162 @@
+#!/usr/bin/env -S uv run python
+# -*- mode: python -*-
+# When `start` is launched via a per-project symlink (e.g. zen/start →
+# ../tact/start), Python resolves the symlink and sets sys.path[0] to the
+# real script directory — which IS the tact package. That makes `import tact`
+# fail because the package can't find itself listed as a subdirectory of its
+# own location. Replace sys.path[0] with the package's parent so the package
+# (as a sibling dir named `tact`) becomes importable.
+import sys, os
+sys.path[0] = os.path.dirname(sys.path[0]) if sys.path[0] else os.getcwd()
+import importlib, ctypes, argparse, numpy as np, zmq, tact
+from collections import deque
+
+def parse_args():
+    par = argparse.ArgumentParser()
+    par.add_argument('-m', default=None, help='mujoco sim')
+    par.add_argument('-c', default=None, help='chrono sim')
+    par.add_argument('-x', default=False, nargs='?', help='real')
+    par.add_argument('-y', default=None, help='yml file name')
+    par.add_argument('-e', default=None, help='environments type')
+    par.add_argument('-o', nargs=6, default=[0, 0, 0, 0, 0, 0], type=float, help='offset')
+    par.add_argument('-d', default=None, help = 'dispatch')
+    par.add_argument('-t', default=16, type=int, help = 'redraw step (16 => x1.0 speed')
+    par.add_argument('-v', action='store_true', default=False, help='verbose')
+    par.add_argument('-l', action='store_true', default=False, help='headless sim. (no window)')
+    par.add_argument('-f', type=int, default=1, help='physics ticks per control update (default 1); last tau/q_ref/qd_ref held between control ticks')
+    #par.add_argument('-u', action='store_true', default=False, help='use UDP instead of ZMQ')
+    return par.parse_known_args()
+
+def msgproc(msg):
+    global cnt
+    if arg.d == None: fout.write('%d %s\n' %(cnt, msg))
+
+    w = msg.decode().split()
+    if w[0] == 'quit': env.finish(); sys.exit(0)
+    elif w[0] == 'reset' and arg.x == False: cnt = 0   # main loop's `if cnt == 0:` block re-creates controller + calls env.reset
+    else: controller.msgproc(w)
+
+try: os.sched_setaffinity(0, {0})                                                       
+except Exception as e: print('set affinity failed'); sys.exit()
+    
+arg, src = parse_args()
+if len(src) != 1: print('wrong command..'); sys.exit(0)
+cnt = 0
+
+sys.path.insert(0, os.path.abspath(os.getcwd())) 
+mod = importlib.import_module(src[0])
+
+ymlname = src[0] if arg.y == None else arg.y
+if not os.path.exists(ymlname + '.yml'): ymlname = 'yml/' + ymlname
+
+if arg.m != None:
+    if   os.path.exists('%s.xml' %arg.m): xmlpath = '%s.xml' %arg.m
+    elif os.path.exists('xml/%s.xml' %arg.m): xmlpath = 'xml/%s.xml' %arg.m
+    else: print('cannot find xml...'); sys.exit(0)
+    cdll = ctypes.CDLL(f'{tact.pkg_dir}/bin/mjenv.so')
+    # mjenv.cpp::init second arg is `render`: 0 → no GLFW window (headless),
+    # >0 → window + redraw every Nth step. Honors -l like the tact backend.
+    cdll.init(xmlpath.encode(), 0 if arg.l else arg.t)
+    env = tact.CEnv(cdll, n_y=mod.Controller.n_y, n_u=mod.Controller.n_u, backend='mujoco', has_pd=True)
+
+elif arg.c != None:
+    cdll = ctypes.CDLL('./chenv.so')
+    cdll.init(16, arg.c)
+    env = tact.CEnv(cdll, n_y=mod.Controller.n_y, n_u=mod.Controller.n_u, backend='chrono', has_pd=False)
+
+elif arg.x != False:
+    if   os.path.exists('./eio.so'): eiopath = './eio.so'
+    elif os.path.exists('./eio-%s.so' %src[0]): eiopath = './eio-%s.so' %src[0]
+    else: print('cannot find eio...'); sys.exit(0)
+    cdll = ctypes.CDLL(eiopath)
+    if arg.x == None: cdll.init()
+    else: cdll.init(arg.x.encode())
+    env = tact.CEnv(cdll, n_y=mod.Controller.n_y, n_u=mod.Controller.n_u, backend='real', has_pd=False)
+
+else:
+    if arg.l: env = tact.Env(ymlname, offset=arg.o, render=False) #headless mode
+    else:     env = tact.Env(ymlname, offset=arg.o, render=True, redraw=arg.t) #GUI mode
+    
+    if arg.e != None:
+        if os.path.exists('%s.yml' %arg.e): env.add('%s' %arg.e)
+        elif os.path.exists('yml/%s.yml' %arg.e): env.add('yml/%s' %arg.e)
+        elif os.path.exists(f'{tact.pkg_dir}/examples/{arg.e}.yml'): env.add(f'{tact.pkg_dir}/examples/{arg.e}')
+        else: print('cannot find yml...'); sys.exit()
+
+ctx = zmq.Context()
+pull = ctx.socket(zmq.PULL)
+pull.bind('ipc:///dev/shm/default')
+
+ppub = ctx.socket(zmq.PUB)
+ppub.setsockopt(zmq.CONFLATE, 1)
+ppub.bind('ipc:///dev/shm/proprio')
+
+# rate = control loop ticks/sec, derived from env's physics rate: rate = (1/dt)/frameskip.
+# tact.Env exposes env.dt; CEnv (mujoco/chrono/real) does not — for those, rate stays
+# None and each Controller falls back to its own default (project-specific HW pacing).
+dt = getattr(env, 'dt', None)
+rate = int(round(1.0/dt)) // arg.f if dt is not None else None
+
+proprio_update_cycle = 16 if arg.x else 33  # real HW ~120Hz vs sim ~30Hz
+
+# One ZMQ PUB per YAML camera (env.cameras; [] for CEnv/real backends → none bound).
+# Rate-gating + type dispatch live in env.camera_frames()/lidar_frames(); here we only
+# own the sockets, keyed by sensor name (names are unique across cameras and lidars).
+socks = {}
+for c in list(env.cameras) + list(env.lidars):
+    s = ctx.socket(zmq.PUB)
+    s.setsockopt(zmq.CONFLATE, 1)
+    s.bind('ipc:///dev/shm/%s' %c['name'])
+    socks[c['name']] = s
+
+if arg.d == None:
+    fout = open('/dev/shm/out.txt', mode='w')
+else:
+    fin = open(arg.d, mode='r')
+    L = fin.readlines()
+    q = deque()
+    for i in L: q.append(i.strip().split(maxsplit=1))
+    for i in range(len(q)): q[i][0] = int(q[i][0])
+
+tau = q_ref = qd_ref = None     # held between control ticks (frameskip ZOH)
+
+while True:
+    try: msg = pull.recv(flags=zmq.NOBLOCK)
+    except zmq.ZMQError: pass
+    else: msgproc(msg); continue
+
+    if arg.d and len(q) > 0:
+        if cnt == q[0][0]: msgproc(q[0][1].encode()); print(q[0]); q.popleft()
+
+    # cnt == 0 marks a fresh session — either initial startup or after a 'reset' command.
+    # Recreate the controller (wipes its internal state) and reset env (returns initial y
+    # for the Gym-style observe→decide→act loop below).
+    if cnt == 0:
+        controller = mod.Controller(env, ymlname, rate=rate, verbose=arg.v)
+        y = env.reset()
+
+    # unified interface: every backend's env.step accepts q_ref/qd_ref kwargs. Backends
+    # that don't support implicit PD (chrono, real, or mujoco with legacy XML) silently
+    # ignore them. Controller returning None for q_ref/qd_ref → PD inactive (bit-identical
+    # to legacy behavior).
+    # Frameskip: controller.update() runs every arg.frameskip physics ticks; in
+    # between, the last (tau, q_ref, qd_ref) is re-applied (ZOH). With default
+    # frameskip=1 behavior is bit-identical to pre-frameskip start.
+    if cnt % arg.f == 0:
+        tau, q_ref, qd_ref = controller.update(y)
+    y = env.step(tau=tau, q_ref=q_ref, qd_ref=qd_ref)
+    
+    #update priprio feedback
+    if cnt % proprio_update_cycle == 0:
+        proprio = y.astype(np.float32).tobytes() #proprioceptive data
+        ppub.send(proprio) 
+
+    #update camera feedback — rate-gating + type dispatch in env.camera_frames()
+    for name, buf in env.camera_frames():
+        socks[name].send(buf)
+
+    #update lidar feedback — rate-gating + type dispatch in env.lidar_frames()
+    for name, buf in env.lidar_frames():
+        socks[name].send(buf)
+
+    cnt += 1

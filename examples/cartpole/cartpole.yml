@@ -1,0 +1,30 @@
+#abstract: cart-pole example
+#date: 2025-07-17
+
+sim: {solver: lcp, dt: 0.005, g: [0, 0, -9.81]}
+view: {target: [0, 0, 0], distance: 4, yaw: 0, pitch: 10}
+lights: [{pos: [7, 7, 7], target: [0, 0, 0], ortho: 5.0, shadow: true}]
+
+materials:
+    mat1: {normal: [   -1, 50], tangent: [20000, 50, 0.8], spin: [100, 1, 0.02], roll: [100, 1, 0.005], restitution: 0.0}  #k_n=-1 disables normal force (kept in pair table)
+    mat2: {normal: [20000, 50], tangent: [20000, 50, 0.8], spin: [100, 1, 0.02], roll: [100, 1, 0.005], restitution: 0.0}
+
+bodies:
+  - name: root
+    shapes: [{type: capsule, param: [0.01, 2.0], euler: [90, 0, 0], contact: [0, mat1], rgba: [0.2, 0.2, 0.2, 1.0]}]
+
+  - name: cart
+    joint: {type: lin, parent: root, euler: [90, 0, 0], damping: 0.1, k: [100, 1]}
+    inertial: {mass: 1.0, tensor: [diag, 0.01, 0.0833, 0.0833]}
+    shapes: [{type: box, param: [0.05, 0.05, 0.5], contact: [0, mat1], rgba: [0.3, 0.3, 0.8, 1.0]}]
+
+  - name: pole
+    joint: {type: rev, parent: cart, euler: [0, 90, 0], damping: 0.1, q0: 180, k: [100, 1]}
+    inertial: {mass: 1.0, tensor: [diag, 0.01, 0.0833, 0.0833], pos: [0, 0.5, 0]}
+    shapes:
+      - {type: capsule, pos: [0, 0.5, 0], euler: [90, 0, 0], param: [0.02, 0.5], contact: [0, mat1], rgba: [0.4, 0.4, 0.4, 1.0]}
+      - {type: sphere, pos: [0, 1.0, 0], param: [0.08], contact: [0, mat2], rgba: [0.9, 0.4, 0.4, 1.0]}
+
+feeds:
+  - jointpos: [cart, pole]
+  - jointvel: [cart, pole]
