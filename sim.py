@@ -478,22 +478,32 @@ class Model:
 
         if fixed_base:
             i = 0
+            base_frames = []
             while True:
                 if config['bodies'][i]['name'] == 'root':
                     del config['bodies'][i]
                     continue
-                
+
                 if 'joint' in config['bodies'][i]:
                     if config['bodies'][i]['joint']['type'] == 'free':
                         head = config['bodies'][i]['name']
+                        # keep the free body's frames (incl. sensor frames injected
+                        # by _register_sensors): in a fixed-base model the world IS
+                        # the base origin, so re-anchoring them on root preserves
+                        # their pos/euler exactly. (The original root's frames are
+                        # still dropped — their anchor, the floating world, doesn't
+                        # exist in this model.)
+                        base_frames += config['bodies'][i].get('frames', [])
                         del config['bodies'][i]
                         continue
-                        
+
                     if config['bodies'][i]['joint']['parent'] == head:
                         config['bodies'][i]['joint']['parent'] = 'root'
 
                     i += 1
                 if i == len(config['bodies']): break;
+            if base_frames:
+                config['bodies'].insert(0, {'name': 'root', 'frames': base_frames})
 
         self.build(config, prefix, modelname)
 

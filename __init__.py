@@ -25,5 +25,17 @@ del _os
 from .rbd import *
 from .sim import *
 from .control import *
-from .wbc import WBC, BodyTask, SwingTask, PostureTask, CoMTask
-from .mpc import ConvexMPC
+
+# wbc/mpc import osqp+scipy at module top; load them lazily (PEP 562) so plain
+# `import tact` works in slim envs (e.g. RL venvs without osqp) that only need
+# rbd/sim/control. tact.WBC etc. resolve on first attribute access as before.
+_LAZY = {'WBC': '.wbc', 'BodyTask': '.wbc', 'SwingTask': '.wbc',
+         'PostureTask': '.wbc', 'CoMTask': '.wbc', 'ConvexMPC': '.mpc'}
+
+def __getattr__(name):
+    if name in _LAZY:
+        from importlib import import_module
+        val = getattr(import_module(_LAZY[name], __name__), name)
+        globals()[name] = val      # cache — later accesses bypass __getattr__
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
