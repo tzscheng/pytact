@@ -92,16 +92,20 @@ def _normalize_lidar(spec):
     # 2d → get_lidar_image: env.raymap() depth map, zstd float32 (same wire format as a
     # depth camera, but range-along-ray in meters with -1 for no-hit). dth = degrees per
     # pixel (horizontal FoV = res[0]*dth). pinhole/perpendicular default to the LiDAR
-    # convention (angular projection, range along ray). type 'pointcloud' is reserved.
+    # convention (angular projection, range along ray).
+    # 3d → get_lidar_points: env.raycloud() sensor-frame points, zstd float32
+    # (N, 3) — N varies per frame (no-hit rays dropped; `max_range` drops far hits).
+    # perpendicular doesn't apply (ranges are taken along the ray by construction).
     spec.setdefault('type', '2d')
-    if spec['type'] not in ('2d',):
+    if spec['type'] not in ('2d', '3d'):
         raise ValueError(f"lidar {spec['name']!r}: unsupported type {spec['type']!r} "
-                         f"(only '2d' is implemented; 'pointcloud' is planned)")
+                         f"(must be '2d' or '3d')")
     spec['res'] = list(spec.get('res', [120, 80]))
     spec.setdefault('fps', 30)
     spec.setdefault('dth', 1.0)            # degrees per pixel (horizontal)
     spec.setdefault('pinhole', False)      # False = angular (LiDAR-like) projection
     spec.setdefault('perpendicular', False)  # False = range along ray (LiDAR convention)
+    spec.setdefault('max_range', None)     # 3d only: drop hits beyond this (m)
 
 
 class Model:
@@ -1857,6 +1861,64 @@ class Env:
                                D.ctypes.data_as(_DBL))
         return D.reshape(height, width)
 
+    def _raycloud_rays(self, width, height, dth, pinhole):
+        """Unit ray directions (H*W, 3) in SENSOR-FRAME coordinates, cached per
+        (w, h, dth, pinhole). Mirrors tact_raymap_query's per-pixel ray generation
+        (tact.c), including the -90° roll about the optical (-Z) axis that the C
+        side bakes into the frame pose — applied here to the rays instead, so the
+        returned directions live in the frame as registered (YAML pos/euler), and
+        world points = Te[:3,:3] @ p + Te[:3,3] with the PLAIN m.fkh pose."""
+        key = (width, height, dth, bool(pinhole))
+        cache = getattr(self, '_raycloud_cache', None)
+        if cache is None:
+            cache = self._raycloud_cache = {}
+        if key in cache:
+            return cache[key]
+        i = np.arange(height, dtype=np.float64)         # row    (0 = top)
+        j = np.arange(width, dtype=np.float64)          # column (0 = left)
+        if pinhole:
+            f = (width / 2.0) / np.tan(np.radians(width * dth) / 2.0)
+            u = (j + 0.5 - width / 2.0) / f
+            v = (height / 2.0 - i - 0.5) / f
+            uu, vv = np.meshgrid(u, v, indexing='xy')   # (H, W) row-major like D
+            n = 1.0 / np.sqrt(uu**2 + vv**2 + 1.0)
+            cam = np.stack([uu * n, vv * n, -n], axis=-1)
+        else:                                           # angular (LiDAR-like)
+            # tact.c's even/odd cases both reduce to ((N-1)/2 - idx)*dth in real
+            # arithmetic: even N/2 - idx - 0.5 == odd (N-1)/2 - idx.
+            pitch = np.radians(((height - 1) / 2.0 - i) * dth)
+            tilt = np.radians(((width - 1) / 2.0 - j) * dth)
+            tt, pp = np.meshgrid(tilt, pitch, indexing='xy')
+            cam = np.stack([-np.sin(tt) * np.cos(pp), np.sin(pp),
+                            -np.cos(tt) * np.cos(pp)], axis=-1)
+        cam = cam.reshape(-1, 3)
+        # optical -> registered frame: p_f = Rz(-90°) @ p_opt  (rows [0,1,0],[-1,0,0],[0,0,1])
+        rays = np.stack([cam[:, 1], -cam[:, 0], cam[:, 2]], axis=-1)
+        cache[key] = rays
+        return rays
+
+    def raycloud(self, frame, width, height, dth, pinhole=False, max_range=None):
+        """3D twin of raymap(): point cloud (N, 3) float64 in SENSOR-FRAME
+        coordinates — the frame as registered in the YAML (pos/euler), not the
+        internal rolled optical frame, so world points are simply
+            Te = env.m.fkh([frame], env.q)[0];  pts_w = pts @ Te[:3,:3].T + Te[:3,3]
+        No-hit rays are dropped (raymap's -1 pixels), and hits beyond `max_range`
+        (meters) are optionally dropped too, so N varies per call.
+
+        Same args/projections as raymap; ranges are taken along the ray
+        (perpendicular=False internally), so each point is range * unit_ray.
+        Intended consumers: the lidar `type: 3d` wire encoder, and
+        map builders (tact.MiniElevationMap.insert) after pose composition — over
+        the wire the cloud stays sensor-frame; the consumer applies extrinsic +
+        its own pose estimate. NOTE: rays hit the robot's own shapes as well;
+        self-filtering is the consumer's job."""
+        D = self.raymap(frame, width, height, dth, pinhole=pinhole)
+        d = D.reshape(-1)
+        hit = d >= 0.0
+        if max_range is not None:
+            hit &= d <= max_range
+        return d[hit, None] * self._raycloud_rays(width, height, dth, pinhole)[hit]
+
     def _push_light(self):
         # Push lights[0] into render.c module statics. Cheap (no GL); called every
         # render so YAML-driven changes via env.m.lights[0][...] = ... apply immediately.
@@ -1997,11 +2059,33 @@ class Env:
         D = self.raymap(frame, width, height, dth, pinhole=pinhole, perpendicular=perpendicular)
         return self._zstd().compress(D.astype('<f4').tobytes())
 
+    def get_lidar_points(self, frame, res=None, dth=None, pinhole=None, max_range=None):
+        """Point-cloud LiDAR scan as zstd-compressed little-endian float32 (N, 3) in
+        SENSOR-FRAME coordinates (see raycloud — world points need the consumer to
+        compose the frame extrinsic with its own pose estimate). Decode:
+        `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(-1, 3)`.
+        Unlike the fixed-size 2d image, N varies per frame: no-hit rays are dropped,
+        and hits beyond `max_range` (here or on the lidar spec) are dropped too.
+        res/dth/pinhole/max_range default to the named lidar's spec; if `frame` isn't
+        a declared lidar they fall back to [120,80] / 1.0 deg-per-pixel / angular /
+        unlimited. A real-hardware lidar driver publishing this same wire format is
+        indistinguishable to the consumer."""
+        if frame not in self.m.fdict: return None
+        spec = next((l for l in self.m.lidars if l['name'] == frame), None)
+        if res is None:       res = spec['res'] if spec else [120, 80]
+        if dth is None:       dth = spec['dth'] if spec else 1.0
+        if pinhole is None:   pinhole = spec['pinhole'] if spec else False
+        if max_range is None: max_range = spec.get('max_range') if spec else None
+        pts = self.raycloud(frame, int(res[0]), int(res[1]), dth,
+                            pinhole=pinhole, max_range=max_range)
+        return self._zstd().compress(pts.astype('<f4').tobytes())
+
     def lidar_frames(self):
         """Yield (name, payload_bytes) for each lidar due to publish at the current step.
         Mirrors camera_frames: fps rate-gating against self.cnt (the same step counter that
         drives window redraw) and type→encoder dispatch ('2d' → get_lidar_image zstd
-        float32; 'pointcloud' is a future type) both live here, so the sim core stays
+        float32 image; '3d' → get_lidar_points zstd float32 (N,3) sensor-frame
+        points) both live here, so the sim core stays
         IPC-free — the caller owns sockets/transport. Cadence matches cameras (publish
         trails window redraw by one tick)."""
         for l in self.m.lidars:
@@ -2012,7 +2096,9 @@ class Env:
             if l['type'] == '2d':
                 buf = self.get_lidar_image(l['name'])
                 if buf is not None: yield l['name'], buf
-            # 'pointcloud': TODO — future encoder
+            elif l['type'] == '3d':
+                buf = self.get_lidar_points(l['name'])
+                if buf is not None: yield l['name'], buf
 
 
 class CEnv:
