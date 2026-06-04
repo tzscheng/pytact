@@ -1,7 +1,8 @@
 """Control & planning: PIDController, JacobianTranspose*, ComputedTorqueController,
 HybridForcePositionController, MovingAverageWaypointSmoother, pinch primitives, Envelope,
-StepGenerator2/4, and body-velocity estimators (ComplementaryEstimator, ContactAidedEKF,
-InvariantEKF). Controllers receive Model via duck typing (no Model import needed);
+StepGenerator2/4, body-velocity estimators (ComplementaryEstimator, ContactAidedEKF,
+InvariantEKF), and perception (MiniElevationMap — split out to a perception module if
+this section grows). Controllers receive Model via duck typing (no Model import needed);
 StepGenerator{2,4} reach into rbd for a few transform helpers; the estimators use
 expmap_so3/skew from rbd."""
 import numpy as np
@@ -1064,3 +1065,175 @@ class InvariantEKF:
                          P_ba_trace=float(np.trace(P[self.iba, self.iba])),
                          bias_active=bias_active)
         return self.v
+
+
+#---------------perception-----------------------------------------------------------------
+# MiniElevationMap — robot-centric 2.5D elevation map (mapping only, no SLAM).
+#
+#   Minimal numpy sibling of ETH's elevation_mapping: a square grid of per-cell
+#   (height, variance) 1-D Kalman filters that follows the robot, fuses world-frame
+#   point clouds, inflates uncertainty as the robot moves (odometry drift), and is
+#   sampled as a gravity-aligned, yaw-rotated height scan relative to the terrain
+#   under the base — the live counterpart of an RL env's analytic height scan
+#   (e.g. dog/rl/dog_stairs_env._height_scan).
+#
+#   Frame contract (caller-enforced, like the estimators above):
+#     - insert() points are in a gravity-aligned world/odom frame (z up). The caller
+#       applies sensor extrinsics and the pose estimate; the map never sees the robot
+#       or the sensor, and takes no frame-offset parameter.
+#     - the SAME pose source must feed insert() and sample(); the relative output
+#       then cancels common-mode (z/yaw) drift of that pose source.
+#     - self-filtering (removing the robot's own legs from the cloud) is the
+#       caller's job — it needs the robot's FK, which the map deliberately lacks.
+
+
+class MiniElevationMap:
+    """Robot-centric 2.5D elevation map with per-cell 1-D Kalman fusion.
+
+    Update loop:
+        m.move_to(base_xy)                      # follow the robot (shift + drift inflation)
+        m.insert(points_world)                  # per sensor frame (~10-30 Hz)
+        h = m.sample(base_xy, yaw, offsets)     # per control tick (~50 Hz)
+
+    sample() returns heights relative to the terrain under base_xy (world-z up),
+    so absolute z drift of the pose source drops out. Cells never observed (or
+    invalidated by the map shifting past them) fall back to `default` and are
+    flagged False in self.last['valid'].
+    """
+
+    def __init__(self, cell_size=0.04, map_size=4.0, center=(0.0, 0.0),
+                 sigma_meas=0.02, drift_rate=1e-3, gate=3.0):
+        self.cell = float(cell_size)
+        self.n = int(round(map_size / cell_size))
+        self.sigma_meas = sigma_meas
+        self.drift_rate = drift_rate        # height variance added per meter traveled
+        self.gate = gate                    # innovation gate (in sigmas) -> cell re-init
+        self.center = np.array(center, dtype=np.float64)   # world xy of grid center
+        self._trail = self.center.copy()    # last move_to position (drift accounting)
+        self.h = np.full((self.n, self.n), np.nan)          # cell height (world z)
+        self.P = np.full((self.n, self.n), np.inf)          # cell height variance
+        self.last = {}
+
+    def reset(self, center=None):
+        if center is not None:
+            self.center = np.array(center, dtype=np.float64)
+        self._trail = self.center.copy()
+        self.h[:] = np.nan
+        self.P[:] = np.inf
+
+    @property
+    def valid(self):
+        return ~np.isnan(self.h)
+
+    def move_to(self, base_xy):
+        """Re-center the grid on the robot. Shifts by whole cells (cells scrolling
+        off the far edge are invalidated) and inflates all variances by
+        drift_rate * distance traveled since the last call."""
+        c = np.asarray(base_xy, dtype=np.float64)[:2]
+        dist = float(np.linalg.norm(c - self._trail))
+        if dist > 0.0:
+            self.P += self.drift_rate * dist
+            self._trail = c.copy()
+        shift = np.round((c - self.center) / self.cell).astype(int)
+        if shift[0] == 0 and shift[1] == 0:
+            return
+        if abs(shift[0]) >= self.n or abs(shift[1]) >= self.n:
+            self.center += shift * self.cell
+            self.h[:] = np.nan
+            self.P[:] = np.inf
+            return
+        for axis, s in enumerate(shift):
+            if s == 0:
+                continue
+            self.h = np.roll(self.h, -s, axis=axis)
+            self.P = np.roll(self.P, -s, axis=axis)
+            sl = [slice(None)] * 2
+            sl[axis] = slice(self.n - s, None) if s > 0 else slice(None, -s)
+            self.h[tuple(sl)] = np.nan
+            self.P[tuple(sl)] = np.inf
+        self.center += shift * self.cell
+
+    def insert(self, points_world, sigma=None):
+        """Fuse a world-frame point cloud (N,3). Points sharing a cell are averaged
+        into one measurement (noise shrinks with the count); each hit cell gets a
+        scalar Kalman update. Innovations beyond `gate` sigmas re-initialize the
+        cell (terrain changed / stale memory) instead of being averaged in."""
+        pts = np.asarray(points_world, dtype=np.float64).reshape(-1, 3)
+        if pts.shape[0] == 0:
+            return
+        sigma = self.sigma_meas if sigma is None else sigma
+        n = self.n
+        gi = np.floor((pts[:, 0] - self.center[0]) / self.cell + 0.5 * n).astype(int)
+        gj = np.floor((pts[:, 1] - self.center[1]) / self.cell + 0.5 * n).astype(int)
+        m = (gi >= 0) & (gi < n) & (gj >= 0) & (gj < n)
+        if not m.any():
+            return
+        flat = gi[m] * n + gj[m]
+        cnt = np.bincount(flat, minlength=n * n)
+        zsum = np.bincount(flat, weights=pts[m, 2], minlength=n * n)
+        idx = np.flatnonzero(cnt)
+        z = zsum[idx] / cnt[idx]                    # per-cell measurement
+        # Averaging N same-frame points would shrink Rm as sigma^2/N, but same-frame
+        # noise is partly correlated (pose error, calibration bias), so cap the
+        # effective count — otherwise one dense frame (raycloud: tens of points per
+        # cell near the sensor) drives K -> 1 and overwrites fused history with a
+        # bias the gate can't see.
+        Rm = sigma**2 / np.minimum(cnt[idx], 25)    # averaged-measurement variance
+
+        h0 = self.h.flat[idx]
+        P0 = self.P.flat[idx]
+        fresh = np.isnan(h0)                        # never observed
+        h0s = np.where(fresh, 0.0, h0)              # finite stand-ins keep the
+        P0s = np.where(fresh, 1.0, P0)              # masked branches NaN/inf-free
+        outlier = ~fresh & ((z - h0s)**2 > self.gate**2 * (P0s + Rm))
+        reinit = fresh | outlier
+        P0s = np.where(reinit, 1.0, P0s)
+        K = P0s / (P0s + Rm)
+        self.h.flat[idx] = np.where(reinit, z, h0s + K * (z - h0s))
+        self.P.flat[idx] = np.where(reinit, Rm, (1.0 - K) * P0s)
+        self.last = dict(n_points=int(m.sum()), n_cells=len(idx),
+                         n_reinit=int(reinit.sum()))
+
+    def _interp(self, wx, wy, max_variance=None):
+        """Validity-weighted bilinear interpolation at world (wx, wy) arrays.
+        Returns (heights, ok); a query is ok if any of its 4 corners is valid."""
+        n = self.n
+        gx = (wx - self.center[0]) / self.cell + 0.5 * n - 0.5
+        gy = (wy - self.center[1]) / self.cell + 0.5 * n - 0.5
+        i0, j0 = np.floor(gx).astype(int), np.floor(gy).astype(int)
+        fx, fy = gx - i0, gy - j0
+        ok_cell = self.valid if max_variance is None else \
+            (self.valid & (self.P < max_variance))
+        hsum = np.zeros_like(gx)
+        wsum = np.zeros_like(gx)
+        for di, dj, w in ((0, 0, (1 - fx) * (1 - fy)), (1, 0, fx * (1 - fy)),
+                          (0, 1, (1 - fx) * fy),       (1, 1, fx * fy)):
+            i, j = i0 + di, j0 + dj
+            inb = (i >= 0) & (i < n) & (j >= 0) & (j < n)
+            ic, jc = np.clip(i, 0, n - 1), np.clip(j, 0, n - 1)
+            wv = w * inb * ok_cell[ic, jc]
+            hsum += wv * np.where(np.isnan(self.h[ic, jc]), 0.0, self.h[ic, jc])
+            wsum += wv
+        ok = wsum > 1e-9
+        return np.where(ok, hsum / np.where(ok, wsum, 1.0), np.nan), ok
+
+    def sample(self, base_xy, yaw, offsets, default=0.0, max_variance=None):
+        """Gravity-aligned height scan: rotate (G,2) yaw-frame offsets to world,
+        interpolate the map, subtract the height under base_xy. Mirrors the RL
+        env's _height_scan(). Invalid points return `default` ("same height as
+        under the base"); per-point validity lands in self.last['valid']. If the
+        under-base cell itself is invalid, the reference falls back to 0 absolute
+        (self.last['base_valid'] False) — heights are then absolute, not relative."""
+        off = np.asarray(offsets, dtype=np.float64).reshape(-1, 2)
+        bx, by = float(base_xy[0]), float(base_xy[1])
+        c, s = np.cos(yaw), np.sin(yaw)
+        wx = bx + c * off[:, 0] - s * off[:, 1]
+        wy = by + s * off[:, 0] + c * off[:, 1]
+        h, ok = self._interp(wx, wy, max_variance)
+        h0, ok0 = self._interp(np.array([bx]), np.array([by]), max_variance)
+        base_valid = bool(ok0[0])
+        ref = float(h0[0]) if base_valid else 0.0
+        out = np.where(ok, h - ref, default)
+        self.last = dict(valid=ok, base_valid=base_valid, ref=ref,
+                         n_valid=int(ok.sum()))
+        return out
