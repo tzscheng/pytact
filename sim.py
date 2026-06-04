@@ -1818,8 +1818,51 @@ class Env:
         self.m.is_locked = False
 
     def get_z(self, x, y, h=10.0):
+        # Legacy single-point terrain query (absolute z, silent 0.0 on miss),
+        # kept for existing callers — prefer height_scan() for terrain scanning.
         t = self.raycast(x, y, h, 0.0, 0.0, -1.0)
         return h - t if t >= 0 else 0.0
+
+    def height_scan(self, base_xy, yaw, offsets, z_top=100.0, default=0.0):
+        """Ground-truth terrain height scan — the sim-only twin of
+        tact.MiniElevationMap.sample(), with the SAME contract so the two are
+        drop-in providers for one consumer: `offsets` is a (G, 2) grid in the
+        gravity-aligned base-yaw frame; returns (G,) terrain-top heights
+        relative to the terrain under base_xy; points with no terrain hit
+        return `default`; per-point validity / base_valid / ref land in
+        self.last (dict, same keys as MiniElevationMap.sample).
+
+        One vertical raycast per point from z_top down, so it reads the true
+        scene with no sensor, map, latency, or drift. Use it where a terrain
+        scan must live in a single thread (tact-native RL, sim2sim, quick
+        prototyping) or as the GT baseline; it has no real-hardware
+        counterpart, so anything trained on it must be re-validated against
+        the perception path (lidar type 3d + mapper), which adds the holes/
+        staleness/odometry error this oracle doesn't have.
+
+        Assumes the robot's own shapes opt out of rays (`raycast: false`, the
+        convention for robot YAMLs) — otherwise the scan reads the robot's
+        back instead of the ground. Overhangs: the FIRST surface from z_top
+        down wins (terrain-top convention, like raymap)."""
+        off = np.asarray(offsets, dtype=np.float64).reshape(-1, 2)
+        c, s = np.cos(yaw), np.sin(yaw)
+        wx = float(base_xy[0]) + c * off[:, 0] - s * off[:, 1]
+        wy = float(base_xy[1]) + s * off[:, 0] + c * off[:, 1]
+        # G+1 single-ray queries (last = under-base reference). Each re-runs
+        # FK + shape-cache build; fine for scan-sized G — batch in C
+        # (tact_raycast_query with a ray list) if this ever turns hot.
+        h = np.empty(len(off) + 1)
+        for i, (x, y) in enumerate(zip(np.append(wx, base_xy[0]),
+                                       np.append(wy, base_xy[1]))):
+            t = self.raycast(x, y, z_top, 0.0, 0.0, -1.0)
+            h[i] = z_top - t if t >= 0.0 else np.nan
+        ok = ~np.isnan(h[:-1])
+        base_valid = not np.isnan(h[-1])
+        ref = float(h[-1]) if base_valid else 0.0
+        out = np.where(ok, h[:-1] - ref, default)
+        self.last = dict(valid=ok, base_valid=base_valid, ref=ref,
+                         n_valid=int(ok.sum()))
+        return out
 
     #def get_camera_name(self):
     #    return [k for k in self.m.fdict.keys() if k.endswith('cam')]
