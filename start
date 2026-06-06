@@ -99,15 +99,19 @@ rate = int(round(1.0/dt)) // arg.f if dt is not None else None
 
 proprio_update_cycle = 16 if arg.x else 33  # real HW ~120Hz vs sim ~30Hz
 
-# One ZMQ PUB per YAML camera (env.cameras; [] for CEnv/real backends → none bound).
-# Rate-gating + type dispatch live in env.camera_frames()/lidar_frames(); here we only
-# own the sockets, keyed by sensor name (names are unique across cameras and lidars).
+# Sensor publishing is a tact-only capability (docs/backend-interface.md): caller
+# guards on env.backend per the ledger convention — C backends have no YAML sensor
+# registry (real HW: device drivers publish to the same topics from outside).
+# One ZMQ PUB per declared sensor; rate-gating + type dispatch live in
+# env.camera_frames()/lidar_frames(), here we only own the sockets, keyed by
+# sensor name (names are unique across cameras and lidars).
 socks = {}
-for c in list(env.cameras) + list(env.lidars):
-    s = ctx.socket(zmq.PUB)
-    s.setsockopt(zmq.CONFLATE, 1)
-    s.bind('ipc:///dev/shm/%s' %c['name'])
-    socks[c['name']] = s
+if env.backend == 'tact':
+    for c in list(env.cameras) + list(env.lidars):
+        s = ctx.socket(zmq.PUB)
+        s.setsockopt(zmq.CONFLATE, 1)
+        s.bind('ipc:///dev/shm/%s' %c['name'])
+        socks[c['name']] = s
 
 if arg.d == None:
     fout = open('/dev/shm/out.txt', mode='w')
@@ -151,12 +155,12 @@ while True:
         proprio = y.astype(np.float32).tobytes() #proprioceptive data
         ppub.send(proprio) 
 
-    #update camera feedback — rate-gating + type dispatch in env.camera_frames()
-    for name, buf in env.camera_frames():
-        socks[name].send(buf)
-
-    #update lidar feedback — rate-gating + type dispatch in env.lidar_frames()
-    for name, buf in env.lidar_frames():
-        socks[name].send(buf)
+    #update camera/lidar feedback — tact-only capability, guarded by the socket
+    #table (empty for C backends); rate-gating + dispatch in env.*_frames()
+    if socks:
+        for name, buf in env.camera_frames():
+            socks[name].send(buf)
+        for name, buf in env.lidar_frames():
+            socks[name].send(buf)
 
     cnt += 1

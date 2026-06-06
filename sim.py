@@ -2156,9 +2156,13 @@ class Env:
 
 class CEnv:
     """Thin adapter that gives a ctypes.CDLL (bin/mjenv.so / chenv.so / eio.so)
-    the same .step/.reset/.finish interface as tact.Env, so callers (the start
-    script, RL envs) can stay backend-agnostic. Other C functions (e.g. unlock,
-    lock) are forwarded transparently via __getattr__.
+    the core backend contract (step/reset/finish/backend/has_pd/dt — see
+    docs/backend-interface.md) of tact.Env, so callers (the start script, RL
+    envs) can stay backend-agnostic. Capabilities beyond the core are optional
+    per backend (capability ledger in the same doc); C-symbol capabilities are
+    probed + argtypes-declared in __init__ (get_z is the model). Other C
+    functions (e.g. unlock, lock) are forwarded transparently via __getattr__
+    (legacy path — prefer ledger-declared methods).
 
     Usage: load and init the cdll yourself, then wrap:
         cdll = ctypes.CDLL(f'{tact.pkg_dir}/bin/mjenv.so')
@@ -2247,51 +2251,27 @@ class CEnv:
         return np.frombuffer(self._y, dtype=np.float64).copy()
     def finish(self): self.cdll.finish()
 
-    # Block topology-editing API at the CEnv boundary. Without these, __getattr__
-    # would forward to self.cdll and either AttributeError (mjenv/chenv/eio don't
-    # export `add`/`delete` symbols today) or — worst case — silently call an
-    # unrelated C symbol if a future backend happens to export the same name.
-    def add(self, *args, **kwargs):
-        raise NotImplementedError(
-            f"add() is tact-backend only; current backend={self.backend!r} "
-            f"does not support dynamic topology changes.")
-    def delete(self, *args, **kwargs):
-        raise NotImplementedError(
-            f"delete() is tact-backend only; current backend={self.backend!r} "
-            f"does not support dynamic topology changes.")
-    @property
-    def groups(self):
-        raise NotImplementedError(
-            f"groups is tact-backend only; current backend={self.backend!r} "
-            f"has no group ledger.")
     @property
     def dt(self):
         # Sim timestep if the backend exports get_dt (mujoco), else None. Explicit
         # property (not __getattr__) so `start` can sleep-pace + derive redraw uniformly.
         return self._dt
 
-    @property
-    def cameras(self):
-        # No YAML-driven camera registry on C backends, so `start` publishes no
-        # cameras for them. Explicit stub (returns []) so getattr(env,'cameras')
-        # doesn't forward to self.cdll via __getattr__ and accidentally hit a C symbol.
-        return []
+    # tact-only capabilities (sensor publishing, dynamic topology) are deliberately
+    # ABSENT here — no stubs. Per the core contract + capability ledger
+    # (docs/backend-interface.md) absence is legitimate: hasattr() probes False and
+    # callers guard on env.backend. The __getattr__ forwarding below stays — it is
+    # the canonical channel for per-robot eio commands (unlock, set_abf, ...) — but
+    # the tact-only names are blocked from it: they are mutation APIs with short,
+    # generic C names, and dlsym finding a same-named unrelated symbol in some
+    # future backend .so would otherwise become a silent wrong call (ctypes hands
+    # out argtypes-less _FuncPtrs for whatever dlsym resolves).
+    _TACT_ONLY = ('add', 'delete', 'groups',
+                  'cameras', 'lidars', 'camera_frames', 'lidar_frames')
 
-    @property
-    def lidars(self):
-        # No YAML lidar registry on C backends (same rationale as cameras above).
-        return []
-
-    def camera_frames(self):
-        # No YAML camera registry on C backends → nothing to publish. Empty generator
-        # (mirrors Env.camera_frames so runners can call it backend-agnostically).
-        return
-        yield  # pragma: no cover — makes this a generator
-
-    def lidar_frames(self):
-        # No YAML lidar registry on C backends → nothing to publish (mirrors
-        # Env.lidar_frames so runners can call it backend-agnostically).
-        return
-        yield  # pragma: no cover — makes this a generator
-
-    def __getattr__(self, name): return getattr(self.cdll, name)
+    def __getattr__(self, name):
+        if name in CEnv._TACT_ONLY:
+            raise AttributeError(
+                f"{name!r} is a tact-only capability (docs/backend-interface.md); "
+                f"backend={self.backend!r} does not provide it.")
+        return getattr(self.cdll, name)
