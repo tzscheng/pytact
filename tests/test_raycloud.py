@@ -1,5 +1,5 @@
 """Verify the lidar ray pipeline: _ray_grid (single-source ray generation) +
-tact_raycast_batch (pure C intersector) + the lidar_frames wire encoders.
+tact_raycast_frame (pure C intersector) + the lidar_frames wire encoders.
 
 raymap()/raycloud() were inlined into lidar_frames 2026-06-06; the canonical
 composition of the two primitives is exercised here via the local raymap64/
@@ -21,13 +21,13 @@ import numpy as np, tact
 
 def raymap64(env, frame, W, H, dth, pinhole=False):
     """Depth map (H, W) from the primitives — the pre-encoding 2d pipeline."""
-    return env._raycast_batch(frame, env._ray_grid(W, H, dth, pinhole)).reshape(H, W)
+    return env._raycast_frame(frame, env._ray_grid(W, H, dth, pinhole)).reshape(H, W)
 
 
 def raycloud64(env, frame, W, H, dth, pinhole=False, max_range=None):
     """Sensor-frame point cloud from the primitives — the pre-encoding 3d pipeline."""
     dirs = env._ray_grid(W, H, dth, pinhole)
-    t = env._raycast_batch(frame, dirs)
+    t = env._raycast_frame(frame, dirs)
     hit = t >= 0.0
     if max_range is not None:
         hit &= t <= max_range

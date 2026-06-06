@@ -764,14 +764,14 @@ void tact_bias_query(tact_t *h, double *q, double *qd, double *f_ext_in, double 
  * env interface; here we dispatch per ctype to the matching ray_intersects_*.
  *
  * tact_raycast_query: one shot. Recomputes _fk(q), then walks shapes.
- * tact_raycast_batch: n rays from a sensor frame (directions generated in
+ * tact_raycast_frame: n rays from a sensor frame (directions generated in
  *   Python — sim.py Env._ray_grid) over the shared per-shape loop (single
  *   _fk for the whole batch).
  *
  * Mesh raycast transforms the ray into shape-local frame (rotation transpose +
  * translation diff) so we don't have to transform every vertex per ray.
  * ============================================================================ */
-/* Per-frame precomputed shape pose cache. tact_raycast_batch fires n rays through a
+/* Per-frame precomputed shape pose cache. tact_raycast_frame fires n rays through a
  * single _fk(q) state, so each shape's world transform (body T @ ctran) is identical for
  * the whole batch — recomputing it per ray was pure waste (n matmuls per shape). We
  * hoist it: build this cache ONCE per frame (rc_build_cache), then every ray reads it
@@ -932,12 +932,21 @@ static double raycast_cached(const rc_shape *cache, int n, const double *R0, con
     return best;
 }
 
-double tact_raycast_query(tact_t *h, double *q, double *R0, double *Rd)
+/* n world-frame rays, per-ray origins — the general primitive (height_scan's
+ * vertical scan grid, single-shot queries). One _fk + shape cache for the
+ * batch, then raycast_cached per ray. No cone cull: that optimization assumes
+ * all rays share one origin (sensor batch below); here origins differ per ray
+ * and the per-shape bounding-sphere broad test inside raycast_cached is the
+ * broad phase. (Replaced the single-ray tact_raycast_query 2026-06-06 —
+ * height_scan's G+1-query loop re-ran _fk + cache per ray, 36x the fixed
+ * cost per scan; see tests/_prof_height_scan.py.) */
+void tact_raycast_world(tact_t *h, double *q, double *R0s, double *Rds, int n, double *t_out)
 {
     _fk(h->T, h->nb, h->Ti, h->parent, h->jtype, q);
     rc_shape cache[h->n_shape > 0 ? h->n_shape : 1];
-    int n = rc_build_cache(h, cache);
-    return raycast_cached(cache, n, R0, Rd);
+    int ncache = rc_build_cache(h, cache);
+    for (int k = 0; k < n; k++)
+        t_out[k] = raycast_cached(cache, ncache, R0s + 3*k, Rds + 3*k);
 }
 
 /* Batched raycast from a sensor frame. `dirs` = n unit ray directions in the
@@ -954,7 +963,7 @@ double tact_raycast_query(tact_t *h, double *q, double *R0, double *Rd)
  * (+margin) — contains every input ray by construction, so it never culls a
  * hittable shape; a degenerate mean (rays spanning >~180deg) disables it.
  * t_out[k] = forward range along dirs[k]; -1 = no hit. */
-void tact_raycast_batch(tact_t *h, double *q, int frame_idx, double *dirs, int n, double *t_out)
+void tact_raycast_frame(tact_t *h, double *q, int frame_idx, double *dirs, int n, double *t_out)
 {
     _fk(h->T, h->nb, h->Ti, h->parent, h->jtype, q);
     /* Hoist per-shape world transforms out of the ray loop (single _fk -> poses

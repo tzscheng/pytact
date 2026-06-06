@@ -330,13 +330,19 @@ int     tact_ik2_query    (tact_t *h, double *q_in, double *x_d,
                            double advance, double tolerance, double damping, int max_iter,
                            double *q_out);
 
-/* Raycast: single ray vs all collision shapes. Returns forward t (>0) or -1. */
-double  tact_raycast_query(tact_t *h, double *q, double *R0, double *Rd);
+/* Raycast: n world-frame rays vs all collision shapes — the general primitive.
+ * R0s/Rds = n per-ray origins/unit directions (3 doubles each). One _fk +
+ * shape-pose cache for the whole batch; no cone cull (it assumes a shared
+ * origin — the consumers here, height_scan / single-shot, fire from distinct
+ * origins). t_out[k] = forward range along Rds[k], -1 = no hit.
+ * (Replaced the single-ray tact_raycast_query 2026-06-06.) */
+void    tact_raycast_world      (tact_t *h, double *q, double *R0s, double *Rds,
+                           int n, double *t_out);
 /* Batched raycast from a sensor frame: `dirs` = n unit ray directions in the
  * frame's registered coordinates (ray generation lives in Python — single
- * source; replaced tact_raymap_query 2026-06-06). t_out[k] = forward range
- * along dirs[k], -1 = no hit. */
-void    tact_raycast_batch(tact_t *h, double *q, int frame_idx,
+ * source; replaced tact_raymap_query 2026-06-06). Shared origin → cone
+ * frustum cull. t_out[k] = forward range along dirs[k], -1 = no hit. */
+void    tact_raycast_frame(tact_t *h, double *q, int frame_idx,
                            double *dirs, int n, double *t_out);
 
 /* arena read-only accessors — Python wraps as numpy views.

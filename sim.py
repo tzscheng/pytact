@@ -81,7 +81,7 @@ def _normalize_lidar(spec):
     # 3d → sensor-frame points, RAW float32 (N, 3) — N varies per frame (no-hit
     # rays dropped; `max_range` drops far hits). perpendicular doesn't apply
     # (ranges are taken along the ray by construction).
-    # Both encode inline in Env.lidar_frames over _ray_grid + _raycast_batch.
+    # Both encode inline in Env.lidar_frames over _ray_grid + _raycast_frame.
     spec.setdefault('type', '2d')
     if spec['type'] not in ('2d', '3d'):
         raise ValueError(f"lidar {spec['name']!r}: unsupported type {spec['type']!r} "
@@ -1803,14 +1803,19 @@ class Env:
         c, s = np.cos(yaw), np.sin(yaw)
         wx = float(base_xy[0]) + c * off[:, 0] - s * off[:, 1]
         wy = float(base_xy[1]) + s * off[:, 0] + c * off[:, 1]
-        # G+1 single-ray queries (last = under-base reference). Each re-runs
-        # FK + shape-cache build; fine for scan-sized G — batch in C
-        # (tact_raycast_query with a ray list) if this ever turns hot.
-        h = np.empty(len(off) + 1)
-        for i, (x, y) in enumerate(zip(np.append(wx, base_xy[0]),
-                                       np.append(wy, base_xy[1]))):
-            t = self.raycast(x, y, z_top, 0.0, 0.0, -1.0)
-            h[i] = z_top - t if t >= 0.0 else np.nan
+        # G+1 vertical rays (last = under-base reference) in ONE tact_raycast_world
+        # call — one _fk + shape cache for the whole scan. The per-point
+        # query loop this replaced re-ran that fixed cost G+1 times and was
+        # 22.8% of a StairsPolicy oracle tick (tests/_prof_height_scan.py);
+        # same rays, so results are bit-identical.
+        G = len(off)
+        R0s = np.empty((G + 1, 3))
+        R0s[:G, 0], R0s[:G, 1] = wx, wy
+        R0s[G, 0], R0s[G, 1] = base_xy[0], base_xy[1]
+        R0s[:, 2] = z_top
+        Rds = np.zeros((G + 1, 3)); Rds[:, 2] = -1.0
+        t = self.raycast(R0s, Rds)
+        h = np.where(t >= 0.0, z_top - t, np.nan)
         ok = ~np.isnan(h[:-1])
         base_valid = not np.isnan(h[-1])
         ref = float(h[-1]) if base_valid else 0.0
@@ -1822,37 +1827,45 @@ class Env:
     #def get_camera_name(self):
     #    return [k for k in self.m.fdict.keys() if k.endswith('cam')]
 
-    def raycast(self, pos_x, pos_y, pos_z, dir_x, dir_y, dir_z):
-        """Single ray vs all collision shapes. Returns forward distance t (>0)
-        along the ray, or -1 on miss. ray_dir should be unit-norm (sphere
-        primitive in particular assumes |Rd|=1)."""
-        R0 = np.ascontiguousarray([pos_x, pos_y, pos_z], dtype=np.float64)
-        Rd = np.ascontiguousarray([dir_x, dir_y, dir_z], dtype=np.float64)
-        q  = np.ascontiguousarray(self.q, dtype=np.float64)
-        t = clib.tact_raycast_query(self.m._h, q.ctypes.data_as(_DBL),
-                                    R0.ctypes.data_as(_DBL), Rd.ctypes.data_as(_DBL))
-        return t
+    def raycast(self, origins, dirs):
+        """n world-frame rays vs all raycast-on collision shapes — the oracle
+        primitive. `origins`/`dirs` are (n, 3) (or a single ray as (3,));
+        directions should be unit-norm (sphere primitive in particular assumes
+        |Rd|=1). Returns (n,) forward distances t (>0), -1 = miss — a scalar
+        for (3,) input. One C call = one _fk + shape cache for the batch
+        (per-ray origins → no cone cull, unlike the sensor path
+        _raycast_frame)."""
+        R0 = np.ascontiguousarray(origins, dtype=np.float64)
+        Rd = np.ascontiguousarray(dirs, dtype=np.float64)
+        single = R0.ndim == 1
+        R0, Rd = np.atleast_2d(R0), np.atleast_2d(Rd)
+        t = np.empty(len(R0))
+        q = np.ascontiguousarray(self.q, dtype=np.float64)
+        clib.tact_raycast_world(self.m._h, q.ctypes.data_as(_DBL),
+                          R0.ctypes.data_as(_DBL), Rd.ctypes.data_as(_DBL),
+                          ctypes.c_int(len(R0)), t.ctypes.data_as(_DBL))
+        return float(t[0]) if single else t
 
     # NOTE: raymap()/raycloud() were inlined into lidar_frames 2026-06-06
-    # (principle (5)): after the tact_raycast_batch refactor they were thin
-    # compositions of _ray_grid + _raycast_batch with lidar_frames as the only
+    # (principle (5)): after the tact_raycast_frame refactor they were thin
+    # compositions of _ray_grid + _raycast_frame with lidar_frames as the only
     # production consumer. Ad-hoc/debug/bench access composes the two privates
     # directly:
     #     dirs = env._ray_grid(w, h, dth, pinhole)          # cached
-    #     t    = env._raycast_batch(frame, dirs)            # (N,) ranges, -1 miss
+    #     t    = env._raycast_frame(frame, dirs)            # (N,) ranges, -1 miss
     #     D    = t.reshape(h, w)                            # depth map
     #     pts  = t[t >= 0, None] * dirs[t >= 0]             # sensor-frame cloud
 
-    def _raycast_batch(self, frame, dirs):
+    def _raycast_frame(self, frame, dirs):
         """Fire `dirs` ((N, 3) unit, registered-frame) from the named frame's
-        origin through tact_raycast_batch; returns (N,) forward ranges, -1 = no
+        origin through tact_raycast_frame; returns (N,) forward ranges, -1 = no
         hit. One C call = one _fk + shape cache + frustum cull for the batch."""
         if frame not in self.m.fdict:
             raise KeyError(f"unknown frame: {frame!r}")
         dirs = np.ascontiguousarray(dirs, dtype=np.float64)
         t = np.empty(len(dirs), dtype=np.float64)
         q = np.ascontiguousarray(self.q, dtype=np.float64)
-        clib.tact_raycast_batch(self.m._h, q.ctypes.data_as(_DBL),
+        clib.tact_raycast_frame(self.m._h, q.ctypes.data_as(_DBL),
                                 ctypes.c_int(self.m.fdict[frame]),
                                 dirs.ctypes.data_as(_DBL),
                                 ctypes.c_int(len(dirs)),
@@ -1862,7 +1875,7 @@ class Env:
     def _ray_grid(self, width, height, dth, pinhole):
         """Unit ray directions (H*W, 3) in SENSOR-FRAME coordinates, cached per
         (w, h, dth, pinhole). This is THE single source of per-pixel ray
-        generation — C is a pure intersector (tact_raycast_batch takes these
+        generation — C is a pure intersector (tact_raycast_frame takes these
         directions verbatim; the old in-C duplicate in tact_raymap_query was
         removed 2026-06-06). Directions live in the frame as registered (YAML
         pos/euler) — the -90° optical roll of the camera/render convention is
@@ -1956,7 +1969,7 @@ class Env:
     # (principle (5)): consumers only ever read the frames() generators, and the
     # middle layers were 1-line delegations or re-looked up specs the caller
     # already held (plus dead undeclared-frame fallbacks). Ad-hoc/debug access:
-    # lidar → compose _ray_grid + _raycast_batch (recipe below); camera → iterate
+    # lidar → compose _ray_grid + _raycast_frame (recipe below); camera → iterate
     # camera_frames() on a due tick (cnt=0 publishes everything).
 
     def camera_frames(self):
@@ -2045,7 +2058,7 @@ class Env:
                 cyc = l['_cycle'] = max(1, round((1.0/self.m.dt)/l['fps'])) if l.get('fps') else 1
             if self.cnt % cyc: continue
             dirs = self._ray_grid(int(l['res'][0]), int(l['res'][1]), l['dth'], l['pinhole'])
-            t = self._raycast_batch(l['name'], dirs)
+            t = self._raycast_frame(l['name'], dirs)
             if l['type'] == '2d':
                 if l['perpendicular']:
                     # camera-Z depth = range × |cos to look dir| = -dir_z (the

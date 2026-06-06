@@ -1620,8 +1620,8 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
     return dqd, lam_c, info, f_ext_out
 
 #Ray-intersection primitives — ported to C (ray.c:ray_intersects_*) and
-#dispatched via tact_raycast_query / tact_raycast_batch. Env.raycast / raymap
-#no longer call these. Preserved as the reference implementation (verified
+#dispatched via tact_raycast_world / tact_raycast_frame. Env.raycast and the
+#lidar path no longer call these. Preserved as the reference implementation (verified
 #against 27 analytical + 82 cross-validation tests) and a Python fallback
 #if anyone needs it without going through the C handle.
 """

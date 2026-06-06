@@ -29,7 +29,7 @@ def render(env, frame, width, height, dth, pinhole, perpendicular):
     # (cached ray grid + one batched C raycast; perpendicular = -dir_z cos factor).
     t0 = time.perf_counter()
     dirs = env._ray_grid(width, height, dth, pinhole)
-    t = env._raycast_batch(frame, dirs)
+    t = env._raycast_frame(frame, dirs)
     if perpendicular:
         t = np.where(t >= 0.0, t * -dirs[:, 2], t)
     D = t.reshape(height, width)

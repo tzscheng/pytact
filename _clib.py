@@ -80,15 +80,18 @@ clib.tact_bias_query.restype  = None
 clib.tact_ik2_query.argtypes = [ctypes.c_void_p, _DBL, _DBL, ctypes.c_int, _INT, _INT, ctypes.c_char_p, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, _DBL]
 clib.tact_ik2_query.restype  = ctypes.c_int
 
-#h, q, R0[3], Rd[3] → t (or -1 on miss). Single ray vs all collision shapes.
-clib.tact_raycast_query.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL]
-clib.tact_raycast_query.restype  = ctypes.c_double
+#h, q, R0s (n*3, world), Rds (n*3, unit, world), n, t_out (n; -1 = no hit).
+#n world rays with per-ray origins — the general primitive (height_scan,
+#single-shot); no cone cull. Replaced tact_raycast_query 2026-06-06.
+clib.tact_raycast_world.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL, ctypes.c_int, _DBL]
+clib.tact_raycast_world.restype  = None
 
 #h, q, frame_idx, dirs (n*3, unit, registered-frame), n, t_out (n; -1 = no hit).
-#Batched raycast from a sensor frame — ray generation lives in Python
-#(sim.py Env._ray_grid); replaced tact_raymap_query 2026-06-06.
-clib.tact_raycast_batch.argtypes = [ctypes.c_void_p, _DBL, ctypes.c_int, _DBL, ctypes.c_int, _DBL]
-clib.tact_raycast_batch.restype  = None
+#Batched raycast from a sensor frame (shared origin → cone cull) — ray
+#generation lives in Python (sim.py Env._ray_grid); replaced tact_raymap_query
+#2026-06-06.
+clib.tact_raycast_frame.argtypes = [ctypes.c_void_p, _DBL, ctypes.c_int, _DBL, ctypes.c_int, _DBL]
+clib.tact_raycast_frame.restype  = None
 
 clib.tact_get_q_next.argtypes   = [ctypes.c_void_p]; clib.tact_get_q_next.restype   = _DBL
 clib.tact_get_qd_next.argtypes  = [ctypes.c_void_p]; clib.tact_get_qd_next.restype  = _DBL

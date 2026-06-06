@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run python
-# Single-thread raycast benchmark for the LiDAR depth path (tact_raycast_batch).
+# Single-thread raycast benchmark for the LiDAR depth path (tact_raycast_frame).
 #
-# Measures the pure raycast cost (cached _ray_grid + _raycast_batch), NOT the wire encoder — zstd is
+# Measures the pure raycast cost (cached _ray_grid + _raycast_frame), NOT the wire encoder — zstd is
 # a separate, unaffected stage. Two scenes:
 #   syn : synthetic scene, N raycast shapes scattered around the sensor (dial N to stress
 #         the per-ray shape loop; the real dog scene is low-N).
@@ -84,8 +84,8 @@ def scene_info(env):
 def raymap(env, frame, w, h, dth, pinhole):
     """Depth map from the primitives (raymap() was inlined into lidar_frames
     2026-06-06; this measures the same pre-encoding pipeline: cached _ray_grid
-    + one tact_raycast_batch call)."""
-    return env._raycast_batch(frame, env._ray_grid(w, h, dth, pinhole)).reshape(h, w)
+    + one tact_raycast_frame call)."""
+    return env._raycast_frame(frame, env._ray_grid(w, h, dth, pinhole)).reshape(h, w)
 
 
 def main():
