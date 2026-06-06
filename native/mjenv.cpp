@@ -404,26 +404,10 @@ extern "C" void finish(){
 }
 
 
-extern "C" void unlock(){
-
-    //2.3.7
-    //m->eq_active[idx] = 0;
-
-    //3.0.0
-    for(int i = 0; i < 16; i++){
-	//if(d->eq_active[i] != 0)
-	d->eq_active[i] = 0;
-    }
-}
-
-
-extern "C" int is_locked(){
-    for(int i = 0; i < 16; i++){
-	if(d->eq_active[i] != 0) return 1;
-    }
-
-    return 0;
-}
+// NOTE: unlock()/is_locked() (XML weld staging — the mujoco twin of tact's
+// removed `lock:` mechanism) were deleted 2026-06-06, sim-trick reduction.
+// The corresponding <equality><weld> blocks were removed from the project
+// XMLs at the same time.
 
 
 extern "C" void push(char* msg){

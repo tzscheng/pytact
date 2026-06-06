@@ -113,8 +113,9 @@ try:
 except AttributeError as e:
     check('height_scan' in str(e), 'get_z blocked on CEnv with a height_scan pointer', str(e)[:60])
 # forwarding check: a non-blocked attribute that EXISTS on the cdll comes through
-FakeCdll.unlock = staticmethod(lambda: 42)
-check(cenv.unlock() == 42, 'per-robot cdll symbols still forward via __getattr__ (eio channel)')
+# (set_abf = a real per-robot eio command, the canonical example)
+FakeCdll.set_abf = staticmethod(lambda: 42)
+check(cenv.set_abf() == 42, 'per-robot cdll symbols still forward via __getattr__ (eio channel)')
 
 print(f"\n{'ALL PASS' if fails == 0 else f'{fails} FAILURES'}")
 sys.exit(1 if fails else 0)

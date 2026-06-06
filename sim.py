@@ -23,27 +23,12 @@ class SolverState(NamedTuple):
     lam_fric: np.ndarray = None   # joint-friction warm-start λ, per-DoF (length nq); None = cold
     lam_limit: np.ndarray = None  # joint-limit warm-start λ, per-DoF (length nq); None = cold
 
-# Private PID used by Model to lock free joints at simulation start (e.g., to
-# keep a biped upright until the user's high-level controller takes over).
-# Mirrors control.PIDController in interface but kept here to avoid sim → control
-# coupling. Underscore prefix excludes it from `tact.*` flat namespace.
-class _PIDController:
-    def __init__(self, k_p, k_d, k_i, dt):
-        self.k_p, self.k_d, self.k_i, self.dt = k_p, k_d, k_i, dt
-        self.cnt = 0
-
-    def update(self, q_d, q, d):
-        return self.update_from_error(q_d - q, d)
-
-    def update_from_error(self, e, d):
-        """Same PID law but accept a pre-computed error vector (e.g., SO(3)-aware
-        for free-joint lock where straight q_d - q would mix world/body frames)."""
-        if self.cnt == 0: self.e_sum = np.zeros(len(e))
-        u = self.k_p*e - self.k_d*d + self.k_i*self.e_sum
-        self.e_sum += e*self.dt
-        self.cnt += 1
-        return u
-
+# NOTE: the free-joint locking mechanism (YAML `lock: true` → magic 6-DoF PD
+# wrench pinning the base at q0 until env.unlock()) was removed 2026-06-06,
+# sim-trick reduction. Its real-world twin is a gantry — if staging is ever
+# needed again, model it explicitly (a YAML gantry body) or start at a stable
+# q0 held by implicit joint-PD `k:` gains (the zen pattern). The private
+# _PIDController that powered it went with it.
 
 # Sensor (camera/lidar) parse helpers. A sensor in YAML is "a frame plus publish
 # metadata": _register_sensors injects each spec into its target body's `frames:`
@@ -190,9 +175,6 @@ class Model:
         # env.lidars to bind one ZMQ PUB per sensor and publish at each sensor's own rate.
         self.cameras = []
         self.lidars = []
-        self.lock_idx = []
-        #self.pid = _PIDController(np.array([5000, 5000, 5000, 50, 50, 50.]), np.array([50, 50, 50, 0.5, 0.5, 0.5]), 0, 0.001)
-        self.pid = _PIDController(np.array([40000, 40000, 40000, 400, 400, 400.]), np.array([400, 400, 400, 4, 4, 4.]), 0, 0.001)
 
         # Per-add() group ledger for delete(name). Each entry records the
         # half-open [lo, hi) ranges this add inserted into each parallel array,
@@ -220,7 +202,6 @@ class Model:
             'nfeeds': len(self.feeds),
             'ncameras': len(self.cameras),
             'nlidars': len(self.lidars),
-            'nlock':  len(self.lock_idx),
             'nfixed': len(self.fixed),
         }
 
@@ -517,14 +498,15 @@ class Model:
             'nfeeds':     (before['nfeeds'], after['nfeeds']),
             'ncameras':   (before['ncameras'], after['ncameras']),
             'nlidars':    (before['nlidars'], after['nlidars']),
-            'nlock':      (before['nlock'],  after['nlock']),
             'nfixed':     (before['nfixed'], after['nfixed']),
             'fdict_keys': list(set(self.fdict.keys()) - fdict_before),
         })
 
     def reset(self):
-        if len(self.lock_idx) > 0: self.is_locked = True
-        else: self.is_locked = False
+        # State restoration lives in Env.reset (q/qd/ctx); Model itself is
+        # stateless across steps. (Used to re-arm the free-joint lock —
+        # mechanism removed 2026-06-06.)
+        pass
 
     def get_inertia_matrix(self, body):
         if   body['inertial']['tensor'][0] == 'zero': I = np.zeros((3, 3))
@@ -665,9 +647,6 @@ class Model:
                     self.qd0 = np.append(self.qd0, body['joint']['qd0'])
                 else:
                     self.qd0 = np.append(self.qd0, [0, 0, 0, 0, 0, 0])
-
-                if 'lock' in body['joint']:
-                    if body['joint']['lock']: self.lock_idx.append(num)
 
                 self.fdict[name] = self.f_idx
                 self.fbody.append(len(self.jtype) - 1)
@@ -816,10 +795,6 @@ class Model:
 
         self.X = get_spatial_transform(self.Ti)
         self.I6 = get_spatial_inertia(self.m, self.c, self.I)
-                
-        #set initial body locking controller
-        if len(self.lock_idx) > 0: self.is_locked = True
-        else: self.is_locked = False
 
         self._rebuild_cpair()
 
@@ -922,13 +897,11 @@ class Model:
             if k in self.fdict: del self.fdict[k]
         self.f_idx -= df
 
-        # 5. Shift surviving body indices in parent/cbody/fbody/lock_idx/fixed.
+        # 5. Shift surviving body indices in parent/cbody/fbody/fixed.
         #    None / -1 (root sentinel) stay untouched because they're < nb_lo.
         self.parent = [p if (p is None or p < nb_lo) else p - db for p in self.parent]
         self.cbody  = [c if c < nb_lo else c - db for c in self.cbody]
         self.fbody  = [b if b < nb_lo else b - db for b in self.fbody]
-        self.lock_idx = [(x - db) if x >= nb_hi else x
-                         for x in self.lock_idx if not (nb_lo <= x < nb_hi)]
         self.fixed = [(x - db) if x >= nb_hi else x
                       for x in self.fixed if not (nb_lo <= x < nb_hi)]
 
@@ -964,7 +937,6 @@ class Model:
         nfeeds_d = feed_hi - feed_lo
         ncam_d   = cam_hi - cam_lo
         nlid_d   = lid_hi - lid_lo
-        nlock_d  = g['nlock'][1]  - g['nlock'][0]
         nfixed_d = g['nfixed'][1] - g['nfixed'][0]
         for g2 in self.groups[gi+1:]:
             g2['nb']     = (g2['nb'][0]     - db, g2['nb'][1]     - db)
@@ -974,7 +946,6 @@ class Model:
             g2['nfeeds'] = (g2['nfeeds'][0] - nfeeds_d, g2['nfeeds'][1] - nfeeds_d)
             g2['ncameras'] = (g2['ncameras'][0] - ncam_d, g2['ncameras'][1] - ncam_d)
             g2['nlidars'] = (g2['nlidars'][0] - nlid_d, g2['nlidars'][1] - nlid_d)
-            g2['nlock']  = (g2['nlock'][0]  - nlock_d,  g2['nlock'][1]  - nlock_d)
             g2['nfixed'] = (g2['nfixed'][0] - nfixed_d, g2['nfixed'][1] - nfixed_d)
         self.groups.pop(gi)
 
@@ -983,7 +954,6 @@ class Model:
         self.X  = get_spatial_transform(self.Ti)
         self.I6 = get_spatial_inertia(self.m, self.c, self.I)
         self._rebuild_cpair()
-        self.is_locked = len(self.lock_idx) > 0
         if self.use_c: self._create_c_handle()
 
     def edit(self, index, m=None, c=None, I=None, Ti=None):
@@ -1315,21 +1285,6 @@ class Model:
         # differ only when free6 (jtype=3) joints are present.
         if tau is None: tau = np.zeros(len(q))
 
-        #initial body fixing if fb test — SO(3)-aware error for free joint:
-        #  position error in body frame (R^T applied to world displacement)
-        #  rotation error via log(R^T · R0) (body-frame angular error vector)
-        #  qd is already body-frame [v; ω] under the axis-angle free convention.
-        if self.is_locked:
-            q_base, v_base, _, _, _, _ = _build_qidx(self.jtype)
-            for body_idx in self.lock_idx:
-                qb = q_base[body_idx]; vb = v_base[body_idx]
-                R  = expmap_so3(q[qb+3:qb+6])
-                R0 = expmap_so3(self.q0[qb+3:qb+6])
-                e_p = R.T @ (self.q0[qb:qb+3] - q[qb:qb+3])
-                e_w = logmap_so3(R.T @ R0)
-                e   = np.concatenate([e_p, e_w])
-                tau[vb:vb+6] += self.pid.update_from_error(e, qd[vb:vb+6])
-            
         if self.use_c and self.solver == 'lcp':
             #single ctypes round-trip into tact_step_lcp:
             #   _fk → aba(no-contact) → crb → contact_lcp → semi-implicit → feedback
@@ -1811,11 +1766,9 @@ class Env:
             if ret < 0: print('ESC pressed. exit...'); sys.exit()
         return y
 
-    def is_locked(self):
-        return self.m.is_locked
-
-    def unlock(self):
-        self.m.is_locked = False
+    # NOTE: is_locked()/unlock() (free-joint locking mechanism) were removed
+    # 2026-06-06 with the YAML `lock:` key — see the note above _register_sensors
+    # in this file. Last users (mk2/mk3) moved to fgx; they return lock-free.
 
     # NOTE: get_z(x, y) (absolute world-z terrain query) was removed 2026-06-06
     # as part of sim-trick reduction: no real robot can observe absolute terrain
@@ -2161,9 +2114,9 @@ class CEnv:
     docs/backend-interface.md) of tact.Env, so callers (the start script, RL
     envs) can stay backend-agnostic. Capabilities beyond the core are optional
     per backend (capability ledger in the same doc); C-symbol capabilities are
-    probed + argtypes-declared in __init__ (get_z is the model). Other C
-    functions (e.g. unlock, lock) are forwarded transparently via __getattr__
-    (legacy path — prefer ledger-declared methods).
+    probed + argtypes-declared in __init__ (the get_dt probe is the model).
+    Other per-robot C commands (e.g. eio's set_abf) are forwarded transparently
+    via __getattr__ (caller owns the signature — prefer ledger-declared methods).
 
     Usage: load and init the cdll yourself, then wrap:
         cdll = ctypes.CDLL(f'{tact.pkg_dir}/bin/mjenv.so')
@@ -2290,7 +2243,7 @@ class CEnv:
     # ABSENT here — no stubs. Per the core contract + capability ledger
     # (docs/backend-interface.md) absence is legitimate: hasattr() probes False and
     # callers guard on env.backend. The __getattr__ forwarding below stays — it is
-    # the canonical channel for per-robot eio commands (unlock, set_abf, ...) — but
+    # the canonical channel for per-robot eio commands (set_abf, ...) — but
     # the tact-only names are blocked from it: they are mutation APIs with short,
     # generic C names, and dlsym finding a same-named unrelated symbol in some
     # future backend .so would otherwise become a silent wrong call (ctypes hands

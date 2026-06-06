@@ -51,7 +51,6 @@ kida.run 등 runner / controller)가 backend 에 기대하는 표면**이다.
 | ~~`get_z(x, y)`~~ | **2026-06-06 제거** (sim-trick 최소화): 절대 world-z 는 실기에 존재하지 않는 양. 후속은 `height_scan` + "stance-foot FK z anchor + 상대 Δh" 레시피 (`StepGenerator2/4` 참조). mjenv/chenv 의 C export 는 legacy 잔존 — CEnv 는 이름 차단으로 포워딩 사고 방지 | ✗ | ✗ | ✗ | ✗ | — |
 | `get_rgb_image` | named camera → JPEG bytes | ✓ `(frame, res, vfov)` | ✗ — CEnv wrapper 는 2026-06-06 삭제 (원칙 (5): live 호출자 0, 옛 streaming 유물). C export 는 `mjenv.cpp` 에 존치 — 재도입 시 Env 시그니처로 통일 | ✗ | ✗ | 후보 |
 | `height_scan` | **유일한 terrain 쿼리** — base-relative (G,2) offsets → 상대고도 (G,), `MiniElevationMap.sample` 계약의 GT twin. 실 elevation map 이 주는 양과 동일 형태라 trick-free | ✓ | ✓ (CEnv parity wrapper — mjenv `get_z` C export 를 init-probe 해 instance 에 bind; miss → NaN → validity. probe 실패 backend 는 `hasattr` False) | ✗ | ✗ (소비자는 blind fallback) | **달성 (tact+mujoco)** |
-| `is_locked` / `unlock` | 시뮬 일시정지 질의/해제 | ✓ | (export 시) | (export 시) | ✗ | 비목표 |
 | `cameras` / `lidars` / `camera_frames()` / `lidar_frames()` | 센서 publish 명세 + (name, bytes) frame 공급 | ✓ | ✗ | ✗ | ✗ (실 드라이버가 동일 topic 직접 publish) | **비목표** — sim 전용 드라이버 대역 |
 | `add` / `delete` / `groups` / `edit` | 동적 토폴로지 편집 | ✓ | ✗ | ✗ | ✗ | 비목표 — CEnv 에서 부재 (`hasattr` False) + `__getattr__` 차단 리스트로 dlsym 충돌 방어 (§4) |
 | `raymap` / `raycloud` / `raycast` / `env.m.*` (fk, jacob, …) | sim-native 도구상자 | ✓ | ✗ | ✗ | ✗ | 비목표 |
@@ -69,8 +68,8 @@ parity 열: **지향** = 여러 backend 가 같은 계약으로 구현해야 하
 - **ledger 에 선언된 capability 는 선언된 메서드로 호출한다.** CEnv 에서 C 심볼 기반
   capability 는 `CEnv.__init__` 의 probe + `argtypes`/`restype` 선언을 마친 메서드를
   통한다 (`get_dt` probe 가 모범). raw `__getattr__` 포워딩은 **per-robot eio 고유 명령의
-  정규 통로로 존치한다** (실측: `unlock`/`is_locked` — mk1/mk2/mk3, `set_abf` —
-  dog/module; 로봇별 심볼이라 tact 쪽 allowlist 로 대체 불가). 단 두 가지 제약:
+  정규 통로로 존치한다** (실측: `set_abf` — dog/module; 로봇별 심볼이라 tact 쪽
+  allowlist 로 대체 불가). 단 두 가지 제약:
   ① 포워딩으로 부르는 심볼의 시그니처 책임은 그 프로젝트(eio 작성자)에 있다 —
   ctypes 는 argtypes 미선언 `_FuncPtr` 를 그대로 내주므로 double↔int 조용한 marshal
   오답이 가능. ② **tact 전용 이름 (`add`/`delete`/`groups` + sensor publishing 4종)
