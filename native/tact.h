@@ -332,14 +332,12 @@ int     tact_ik2_query    (tact_t *h, double *q_in, double *x_d,
 
 /* Raycast: single ray vs all collision shapes. Returns forward t (>0) or -1. */
 double  tact_raycast_query(tact_t *h, double *q, double *R0, double *Rd);
-/* Raymap: depth image from a camera frame. dth = degrees per pixel (horizontal).
- * projection: 0 = angular (LiDAR-like, equirectangular), 1 = pinhole (rectilinear).
- * perpendicular: 1 = multiply hit distance by cos factor → camera-Z depth (planes
- * stay flat); 0 = raw range along ray. D_out row-major (height, width). */
-void    tact_raymap_query (tact_t *h, double *q, int frame_idx,
-                           int width, int height, double dth,
-                           int projection, int perpendicular,
-                           double *D_out);
+/* Batched raycast from a sensor frame: `dirs` = n unit ray directions in the
+ * frame's registered coordinates (ray generation lives in Python — single
+ * source; replaced tact_raymap_query 2026-06-06). t_out[k] = forward range
+ * along dirs[k], -1 = no hit. */
+void    tact_raycast_batch(tact_t *h, double *q, int frame_idx,
+                           double *dirs, int n, double *t_out);
 
 /* arena read-only accessors — Python wraps as numpy views.
  * Views are valid only until the next tact_destroy on this handle (§3.5 invariant). */

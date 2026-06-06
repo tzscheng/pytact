@@ -764,15 +764,16 @@ void tact_bias_query(tact_t *h, double *q, double *qd, double *f_ext_in, double 
  * env interface; here we dispatch per ctype to the matching ray_intersects_*.
  *
  * tact_raycast_query: one shot. Recomputes _fk(q), then walks shapes.
- * tact_raymap_query : depth image from a camera frame; iterates h×w pixels
- *   over the shared per-shape loop (single _fk for the whole image).
+ * tact_raycast_batch: n rays from a sensor frame (directions generated in
+ *   Python — sim.py Env._ray_grid) over the shared per-shape loop (single
+ *   _fk for the whole batch).
  *
  * Mesh raycast transforms the ray into shape-local frame (rotation transpose +
  * translation diff) so we don't have to transform every vertex per ray.
  * ============================================================================ */
-/* Per-frame precomputed shape pose cache. tact_raymap_query fires W*H rays through a
+/* Per-frame precomputed shape pose cache. tact_raycast_batch fires n rays through a
  * single _fk(q) state, so each shape's world transform (body T @ ctran) is identical for
- * the whole image — recomputing it per ray was pure waste (W*H matmuls per shape). We
+ * the whole batch — recomputing it per ray was pure waste (n matmuls per shape). We
  * hoist it: build this cache ONCE per frame (rc_build_cache), then every ray reads it
  * (raycast_cached). The cache is frame-local and read-only during the ray loop — the
  * frustum cull (rc_frustum_cull) compacts it once per frame, and the same property is the
@@ -939,130 +940,71 @@ double tact_raycast_query(tact_t *h, double *q, double *R0, double *Rd)
     return raycast_cached(cache, n, R0, Rd);
 }
 
-/* Camera frame raymap. dth = degrees per pixel (horizontal). D_out row-major (height, width).
+/* Batched raycast from a sensor frame. `dirs` = n unit ray directions in the
+ * frame's REGISTERED coordinates (YAML pos/euler) — ray GENERATION lives in
+ * Python (sim.py Env._ray_grid, the single source); this side only intersects.
+ * The old tact_raymap_query (in-C angular/pinhole pixel loops + the -90deg
+ * optical roll baked into the frame pose) was removed 2026-06-06: raycloud had
+ * to bit-mirror that ray generation in Python to back-project ranges, a fragile
+ * duplication. perpendicular mode also moved to Python (t *= -dir_z, one line).
  *
- *   projection=0  (angular / LiDAR-like): ray = -Z of R_cam·rot_y(pitch)·rot_x(tilt).
- *                 Pitch/tilt are linear in pixel index (angular sampling). Lines on
- *                 a plane curve in image (equirectangular-like). Sphere primitive's
- *                 |Rd|=1 holds for free (rotation matrix col is unit).
- *
- *   projection=1  (pinhole / standard camera): rectilinear, lines on a plane stay
- *                 straight. fov_h = width*dth (total horizontal FoV). Focal length
- *                 f = (W/2)/tan(fov_h/2). Per-pixel camera-frame ray (u,v,-1) is
- *                 normalized so sphere primitive sees a unit Rd.
- *                   u = (j + 0.5 - W/2)/f          (j=0 left → u<0)
- *                   v = (H/2 - i - 0.5)/f          (i=0 top  → v>0)
- *
- *   perpendicular=1: multiply hit distance by per-pixel cos factor → camera-Z
- *                    component (depth, not range). Planes stay flat.
- *                    angular: cos(pitch)·cos(tilt).  pinhole: 1/√(u²+v²+1).
- */
-void tact_raymap_query(tact_t *h, double *q, int frame_idx, int width, int height, double dth, int projection, int perpendicular, double *D_out)
+ * One _fk + shape-pose cache + frustum cull for the whole batch, then one
+ * raycast_cached per ray. The cull cone is computed FROM the input rays:
+ * axis = normalized mean direction, half-angle = max ray-to-axis angle
+ * (+margin) — contains every input ray by construction, so it never culls a
+ * hittable shape; a degenerate mean (rays spanning >~180deg) disables it.
+ * t_out[k] = forward range along dirs[k]; -1 = no hit. */
+void tact_raycast_batch(tact_t *h, double *q, int frame_idx, double *dirs, int n, double *t_out)
 {
     _fk(h->T, h->nb, h->Ti, h->parent, h->jtype, q);
-    /* Hoist per-shape world transforms out of the W*H ray loop (single _fk → poses fixed
-     * for the whole image). Frame-local, read-only during the loop below. */
+    /* Hoist per-shape world transforms out of the ray loop (single _fk -> poses
+     * fixed for the whole batch). Frame-local, read-only during the loop. */
     rc_shape cache[h->n_shape > 0 ? h->n_shape : 1];
     int ncache = rc_build_cache(h, cache);
+
     int bi = h->fbody[frame_idx];
     double Twf[16];
     if (bi < 0) memcpy(Twf, h->ftran + 16*frame_idx, 16*sizeof(double));
     else matmul(Twf, h->T + 16*bi, h->ftran + 16*frame_idx, 4, 4, 4);
 
-    /* Unify the raymap (lidar) frame convention with the camera path: sim.py's
-     * _render_frame renders from Twf @ Rz(-90deg), so apply the same roll about the
-     * optical (-Z) axis here. A roll about Z leaves the look direction (-Z) unchanged
-     * and only rotates the image axes (image-up: frame +Y -> +X, image-right: +X -> -Y),
-     * so one sensor-frame euler now aims AND orients a camera and a lidar identically. */
-    {
-        double Rz_n90[16] = {  0, 1, 0, 0,
-                              -1, 0, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1 };  /* not const: matmul takes double* */
-        double Twf_r[16];
-        matmul(Twf_r, Twf, Rz_n90, 4, 4, 4);
-        memcpy(Twf, Twf_r, sizeof(Twf));
-    }
-
     double R0[3] = {Twf[3], Twf[7], Twf[11]};
     double Rc[9] = {Twf[0],Twf[1],Twf[2], Twf[4],Twf[5],Twf[6], Twf[8],Twf[9],Twf[10]};
-    double PI = 3.14159265358979323846, DEG = PI / 180.0;
+    double PI = 3.14159265358979323846;
 
-    /* Frustum cull (once per frame): drop cache shapes outside the sensor's view cone, so
-     * every ray below iterates N_visible instead of N. `fwd` = camera -Z in world (look
-     * dir; Rc columns are unit). `max_half_angle` = diagonal corner half-angle (+tiny
-     * margin); a degenerate FoV>=180deg disables the cull (keeps all). The discretized
-     * max |pitch|/|tilt| is (.../2 - 0.5)*dth ≤ (.../2)*dth used here, so the cone is a
-     * conservative over-estimate and never culls a shape a ray could hit. */
-    {
-        double fwd[3] = {-Rc[2], -Rc[5], -Rc[8]};
-        double max_half_angle;
-        if (projection == 1) {
-            double fov_h_rad = width * dth * DEG;
-            double f = (width / 2.0) / tan(fov_h_rad / 2.0);
-            if (f > 0.0) {
-                double umax = (width / 2.0) / f, vmax = (height / 2.0) / f;
-                max_half_angle = atan(sqrt(umax*umax + vmax*vmax)) + 1e-4;
-            } else max_half_angle = PI;  /* FoV>=180deg: rectilinear undefined, cull nothing */
-        } else {
-            double cc = cos((height / 2.0) * dth * DEG) * cos((width / 2.0) * dth * DEG);
-            if (cc < -1.0) cc = -1.0; else if (cc > 1.0) cc = 1.0;
-            max_half_angle = acos(cc) + 1e-4;
-        }
-        if (max_half_angle > PI) max_half_angle = PI;
-        ncache = rc_frustum_cull(cache, ncache, R0, fwd, max_half_angle);
-    }
-
-    if (projection == 1) {
-        double fov_h_rad = width * dth * DEG;
-        double f = (width / 2.0) / tan(fov_h_rad / 2.0);
-        double cx = width / 2.0, cy = height / 2.0;
-        for (int i = 0; i < height; i++) {
-            double v = (cy - i - 0.5) / f;
-            for (int j = 0; j < width; j++) {
-                double u = (j + 0.5 - cx) / f;
-                double norm_inv = 1.0 / sqrt(u*u + v*v + 1.0);
-                double cx_ray = u * norm_inv, cy_ray = v * norm_inv, cz_ray = -norm_inv;
-                double Rd[3] = {
-                    Rc[0]*cx_ray + Rc[1]*cy_ray + Rc[2]*cz_ray,
-                    Rc[3]*cx_ray + Rc[4]*cy_ray + Rc[5]*cz_ray,
-                    Rc[6]*cx_ray + Rc[7]*cy_ray + Rc[8]*cz_ray,
-                };
-                double t = raycast_cached(cache, ncache, R0, Rd);
-                if (t >= 0.0 && perpendicular) t *= norm_inv;
-                D_out[i*width + j] = t;
+    if (n > 0) {
+        double ax = 0.0, ay = 0.0, az = 0.0;
+        for (int k = 0; k < n; k++) { ax += dirs[3*k]; ay += dirs[3*k+1]; az += dirs[3*k+2]; }
+        double an = sqrt(ax*ax + ay*ay + az*az);
+        if (an > 1e-9) {
+            ax /= an; ay /= an; az /= an;
+            double cmin = 1.0;
+            for (int k = 0; k < n; k++) {
+                double c = ax*dirs[3*k] + ay*dirs[3*k+1] + az*dirs[3*k+2];
+                if (c < cmin) cmin = c;
+            }
+            if (cmin > 1.0) cmin = 1.0;
+            if (cmin > -1.0 + 1e-9) {
+                double max_half_angle = acos(cmin) + 1e-4;
+                if (max_half_angle < PI) {
+                    double fwd[3] = {   /* cone axis: registered frame -> world */
+                        Rc[0]*ax + Rc[1]*ay + Rc[2]*az,
+                        Rc[3]*ax + Rc[4]*ay + Rc[5]*az,
+                        Rc[6]*ax + Rc[7]*ay + Rc[8]*az,
+                    };
+                    ncache = rc_frustum_cull(cache, ncache, R0, fwd, max_half_angle);
+                }
             }
         }
-        return;
     }
 
-    /* projection == 0: angular (standard axes — i↔camera +Y, j↔camera +X)
-     * Per pixel:
-     *   pitch_i (around camera X) — i=0 top → pitch>0 → ray Y component positive
-     *   tilt_j  (around camera Y) — j=0 left → tilt>0 → ray X component negative
-     *   cam_ray = rot_y(tilt) · rot_x(pitch) · (0,0,-1) = (-sin(tilt)·cos(pitch),
-     *             sin(pitch), -cos(tilt)·cos(pitch))
-     *   |cam_ray_z| = cos(pitch)·cos(tilt) → cos factor for perpendicular mode. */
-    for (int i = 0; i < height; i++) {
-        double pitch = (height % 2 == 0)
-            ? (( height/2.0)*dth - dth*i - 0.5*dth) * DEG  /* i=0 top → positive */
-            : (((height-1)/2.0)*dth - dth*i)        * DEG;
-        double cp = cos(pitch), sp = sin(pitch);
-        for (int j = 0; j < width; j++) {
-            double tilt = (width % 2 == 0)
-                ? (( width/2.0)*dth - dth*j - 0.5*dth) * DEG  /* j=0 left → positive */
-                : (((width-1)/2.0)*dth - dth*j)        * DEG;
-            double ct = cos(tilt), st = sin(tilt);
-            double cx_ray = -st*cp, cy_ray = sp, cz_ray = -ct*cp;
-            double Rd[3] = {
-                Rc[0]*cx_ray + Rc[1]*cy_ray + Rc[2]*cz_ray,
-                Rc[3]*cx_ray + Rc[4]*cy_ray + Rc[5]*cz_ray,
-                Rc[6]*cx_ray + Rc[7]*cy_ray + Rc[8]*cz_ray,
-            };
-            double t = raycast_cached(cache, ncache, R0, Rd);
-            if (t >= 0.0 && perpendicular) t *= cp * ct;
-            D_out[i*width + j] = t;
-        }
+    for (int k = 0; k < n; k++) {
+        double dx = dirs[3*k], dy = dirs[3*k+1], dz = dirs[3*k+2];
+        double Rd[3] = {
+            Rc[0]*dx + Rc[1]*dy + Rc[2]*dz,
+            Rc[3]*dx + Rc[4]*dy + Rc[5]*dz,
+            Rc[6]*dx + Rc[7]*dy + Rc[8]*dz,
+        };
+        t_out[k] = raycast_cached(cache, ncache, R0, Rd);
     }
 }
 

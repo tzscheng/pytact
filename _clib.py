@@ -84,10 +84,11 @@ clib.tact_ik2_query.restype  = ctypes.c_int
 clib.tact_raycast_query.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL]
 clib.tact_raycast_query.restype  = ctypes.c_double
 
-#h, q, frame_idx, width, height, dth (deg/px), projection (0=angular,1=pinhole),
-#perpendicular (0/1), D_out (height*width row-major)
-clib.tact_raymap_query.argtypes = [ctypes.c_void_p, _DBL, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_double, ctypes.c_int, ctypes.c_int, _DBL]
-clib.tact_raymap_query.restype  = None
+#h, q, frame_idx, dirs (n*3, unit, registered-frame), n, t_out (n; -1 = no hit).
+#Batched raycast from a sensor frame — ray generation lives in Python
+#(sim.py Env._ray_grid); replaced tact_raymap_query 2026-06-06.
+clib.tact_raycast_batch.argtypes = [ctypes.c_void_p, _DBL, ctypes.c_int, _DBL, ctypes.c_int, _DBL]
+clib.tact_raycast_batch.restype  = None
 
 clib.tact_get_q_next.argtypes   = [ctypes.c_void_p]; clib.tact_get_q_next.restype   = _DBL
 clib.tact_get_qd_next.argtypes  = [ctypes.c_void_p]; clib.tact_get_qd_next.restype  = _DBL

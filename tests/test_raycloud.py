@@ -1,15 +1,18 @@
 """Verify Env.raycloud(): the 3D point-cloud twin of Env.raymap().
 
-The Python-side ray reconstruction must mirror tact_raymap_query's (tact.c)
-per-pixel ray generation exactly — angular & pinhole projections and the -90°
-optical roll. The decisive check is geometric: points back-projected from
-raymap ranges and transformed by the frame's PLAIN fkh pose must land exactly
-on known world surfaces (a floor plane, an offset box). Any ray-direction or
-roll mismatch pushes them off-surface.
+Ray generation is single-source (Env._ray_grid — C's tact_raycast_batch is a
+pure intersector taking those directions verbatim, 2026-06-06). The decisive
+check is geometric: points back-projected from raymap ranges and transformed
+by the frame's PLAIN fkh pose must land exactly on known world surfaces (a
+floor plane, an offset box). Any ray-direction or roll error in the grid
+pushes them off-surface.
 
-Run:  uv run --no-project python /home/ubuntu/uv/fg/tact/tests/test_raycloud.py
+Run:  uv run --no-project python tact/tests/test_raycloud.py
 """
-import sys; sys.path.insert(0, '/home/ubuntu/uv/fg')
+import sys, os.path
+# fg dir (= parent of the tact package this file lives in), NOT a hardcoded
+# workspace path — the repo root differs per machine.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import os, tempfile
 import numpy as np, tact
 
@@ -82,8 +85,8 @@ for mode, pinhole in (('angular', False), ('pinhole', True)):
           'max_range=2.0 drops far hits', f'{len(pts)} -> {len(pts_r)}')
 
 # 5) ray cache: repeated calls reuse the cached grid (same object)
-r1 = env._raycloud_rays(W, H, DTH, False)
-r2 = env._raycloud_rays(W, H, DTH, False)
+r1 = env._ray_grid(W, H, DTH, False)
+r2 = env._ray_grid(W, H, DTH, False)
 check(r1 is r2, 'ray grid cached per (w,h,dth,pinhole)')
 
 # 6) end-to-end: raycloud -> MiniElevationMap.insert -> sample reads the scene.

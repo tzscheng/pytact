@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run python
-# Single-thread raycast/raymap benchmark for the LiDAR depth path (tact_raymap_query).
+# Single-thread raycast/raymap benchmark for the LiDAR depth path (tact_raycast_batch).
 #
 # Measures the pure raycast cost (env.raymap), NOT get_lidar_image — zstd compression is
 # a separate, unaffected stage. Two scenes:

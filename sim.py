@@ -1838,10 +1838,10 @@ class Env:
         name registered in the model; the sensor looks along the frame's -Z.
         `dth` = degrees per pixel (horizontal); horizontal FoV = width × dth.
 
-        Frame convention is unified with the camera path: tact_raymap_query applies
-        the same -90° roll about -Z that `_render_frame` applies for get_rgb_image/
-        get_depth_image, so a camera and a lidar at the same frame pos/euler produce
-        the identically-oriented image. An upright, forward-looking sensor pitched α°
+        Frame convention is unified with the camera path: _ray_grid folds the same
+        -90° roll about -Z that `_render_frame` applies into the ray directions, so
+        a camera and a lidar at the same frame pos/euler produce the
+        identically-oriented image. An upright, forward-looking sensor pitched α°
         down is a pure Y rotation: euler [0, α-90, 0] (xyz, deg).
 
         pinhole:
@@ -1856,30 +1856,45 @@ class Env:
           True — multiplies by per-pixel cos factor → camera-Z depth. Flat
               surfaces stay flat. Cos formula auto-selected per projection.
         """
+        dirs = self._ray_grid(width, height, dth, pinhole)
+        t = self._raycast_batch(frame, dirs)
+        if perpendicular:
+            # camera-Z depth = range × |cos to look dir|. The optical roll is about
+            # Z, so the look direction is the frame's -Z and the factor is -dir_z
+            # for BOTH projections (angular: cos(pitch)cos(tilt); pinhole: 1/√(u²+v²+1)).
+            t = np.where(t >= 0.0, t * -dirs[:, 2], t)
+        return t.reshape(height, width)
+
+    def _raycast_batch(self, frame, dirs):
+        """Fire `dirs` ((N, 3) unit, registered-frame) from the named frame's
+        origin through tact_raycast_batch; returns (N,) forward ranges, -1 = no
+        hit. One C call = one _fk + shape cache + frustum cull for the batch."""
         if frame not in self.m.fdict:
             raise KeyError(f"unknown frame: {frame!r}")
-        D = np.empty(height * width, dtype=np.float64)
+        dirs = np.ascontiguousarray(dirs, dtype=np.float64)
+        t = np.empty(len(dirs), dtype=np.float64)
         q = np.ascontiguousarray(self.q, dtype=np.float64)
-        clib.tact_raymap_query(self.m._h, q.ctypes.data_as(_DBL),
-                               ctypes.c_int(self.m.fdict[frame]),
-                               ctypes.c_int(width), ctypes.c_int(height),
-                               ctypes.c_double(dth),
-                               ctypes.c_int(1 if pinhole else 0),
-                               ctypes.c_int(1 if perpendicular else 0),
-                               D.ctypes.data_as(_DBL))
-        return D.reshape(height, width)
+        clib.tact_raycast_batch(self.m._h, q.ctypes.data_as(_DBL),
+                                ctypes.c_int(self.m.fdict[frame]),
+                                dirs.ctypes.data_as(_DBL),
+                                ctypes.c_int(len(dirs)),
+                                t.ctypes.data_as(_DBL))
+        return t
 
-    def _raycloud_rays(self, width, height, dth, pinhole):
+    def _ray_grid(self, width, height, dth, pinhole):
         """Unit ray directions (H*W, 3) in SENSOR-FRAME coordinates, cached per
-        (w, h, dth, pinhole). Mirrors tact_raymap_query's per-pixel ray generation
-        (tact.c), including the -90° roll about the optical (-Z) axis that the C
-        side bakes into the frame pose — applied here to the rays instead, so the
-        returned directions live in the frame as registered (YAML pos/euler), and
-        world points = Te[:3,:3] @ p + Te[:3,3] with the PLAIN m.fkh pose."""
+        (w, h, dth, pinhole). This is THE single source of per-pixel ray
+        generation — C is a pure intersector (tact_raycast_batch takes these
+        directions verbatim; the old in-C duplicate in tact_raymap_query was
+        removed 2026-06-06). Directions live in the frame as registered (YAML
+        pos/euler) — the -90° optical roll of the camera/render convention is
+        folded into the rays — so world points = Te[:3,:3] @ p + Te[:3,3] with
+        the PLAIN m.fkh pose. row-major: index i*W+j ↔ pixel (i=row from top,
+        j=col from left), matching raymap's D layout."""
         key = (width, height, dth, bool(pinhole))
-        cache = getattr(self, '_raycloud_cache', None)
+        cache = getattr(self, '_ray_grid_cache', None)
         if cache is None:
-            cache = self._raycloud_cache = {}
+            cache = self._ray_grid_cache = {}
         if key in cache:
             return cache[key]
         i = np.arange(height, dtype=np.float64)         # row    (0 = top)
@@ -1920,12 +1935,12 @@ class Env:
         the wire the cloud stays sensor-frame; the consumer applies extrinsic +
         its own pose estimate. NOTE: rays hit the robot's own shapes as well;
         self-filtering is the consumer's job."""
-        D = self.raymap(frame, width, height, dth, pinhole=pinhole)
-        d = D.reshape(-1)
+        dirs = self._ray_grid(width, height, dth, pinhole)
+        d = self._raycast_batch(frame, dirs)
         hit = d >= 0.0
         if max_range is not None:
             hit &= d <= max_range
-        return d[hit, None] * self._raycloud_rays(width, height, dth, pinhole)[hit]
+        return d[hit, None] * dirs[hit]
 
     def _push_light(self):
         # Push lights[0] into render.c module statics. Cheap (no GL); called every
