@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run python
 # Single-thread raycast benchmark for the LiDAR depth path (tact_raycast_frame).
 #
-# Measures the pure raycast cost (cached _ray_grid + _raycast_frame), NOT the wire encoder — zstd is
+# Measures the pure raycast cost (cached _ray_grid + tact_raycast_frame), NOT the wire encoder — zstd is
 # a separate, unaffected stage. Two scenes:
 #   syn : synthetic scene, N raycast shapes scattered around the sensor (dial N to stress
 #         the per-ray shape loop; the real dog scene is low-N).
@@ -82,10 +82,19 @@ def scene_info(env):
     return len(cast), on, dict(hist)
 
 def raymap(env, frame, w, h, dth, pinhole):
-    """Depth map from the primitives (raymap() was inlined into lidar_frames
-    2026-06-06; this measures the same pre-encoding pipeline: cached _ray_grid
-    + one tact_raycast_frame call)."""
-    return env._raycast_frame(frame, env._ray_grid(w, h, dth, pinhole)).reshape(h, w)
+    """Depth map from the primitives (raymap()/Env._raycast_frame were inlined
+    into lidar_frames 2026-06-06; this measures the same pre-encoding pipeline:
+    cached _ray_grid + one tact_raycast_frame call via clib)."""
+    import ctypes
+    from tact._clib import clib, _DBL
+    dirs = env._ray_grid(w, h, dth, pinhole)
+    t = np.empty(len(dirs))
+    q = np.ascontiguousarray(env.q)
+    clib.tact_raycast_frame(env.m._h, q.ctypes.data_as(_DBL),
+                            ctypes.c_int(env.m.fdict[frame]),
+                            dirs.ctypes.data_as(_DBL), ctypes.c_int(len(dirs)),
+                            t.ctypes.data_as(_DBL))
+    return t.reshape(h, w)
 
 
 def main():

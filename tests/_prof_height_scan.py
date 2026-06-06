@@ -9,16 +9,17 @@ into one C call (per-ray-origin tact_raycast_world) worth doing?
 Measures, on the live `./start dog -e stairs` scene:
   (a) one full height_scan (current 36-single-query loop), flat + stairs region
   (b) single raycast cost (loop body)
-  (c) batch amortization: _raycast_frame at n=36 vs n=360 from a frame
+  (c) batch amortization: tact_raycast_frame at n=36 vs n=360 from a frame
       -> slope = per-ray cost, intercept ~= fk + cache + call overhead
       -> predicted batched-scan cost ~= intercept + 36*slope
   (d) env.step for budget context (50 Hz tick = 20 steps at dt=1ms)
 """
-import sys, time, pathlib
+import sys, time, pathlib, ctypes
 FG = pathlib.Path(__file__).resolve().parents[2]   # .../fg
 sys.path.insert(0, str(FG))
 import os; os.chdir(FG / 'dog')                    # dog.yml relative paths
 import numpy as np, tact
+from tact._clib import clib, _DBL
 
 env = tact.Env('dog', render=False)
 env.add('yml/stairs')
@@ -45,8 +46,6 @@ for tag, xy in [('flat  xy=(0,0)', (0.0, 0.0)), ('stairs xy=(8,0)', (8.0, 0.0))]
 
 # (b) single ray — the old per-query loop body (n=1 tact_raycast_world call;
 # Env.raycast was inlined into height_scan 2026-06-06, so go via clib)
-import ctypes
-from tact._clib import clib, _DBL
 R0 = np.ascontiguousarray([[8.0, 0.0, 100.0]]); Rd = np.ascontiguousarray([[0.0, 0.0, -1.0]])
 t1 = np.empty(1)
 def one_ray():
@@ -59,13 +58,22 @@ print(f"(b) single raycast:        {ms1:7.4f} ms  (x36 = {36*ms1:7.4f} ms)")
 
 # (c) batch slope/intercept through an existing frame (foot1). Dirs in a small
 # cone so the frustum cull stays active like a real sensor batch.
+# (Env._raycast_frame was inlined into lidar_frames 2026-06-06 — go via clib.)
 rng = np.random.default_rng(0)
 def cone_dirs(n):
     v = rng.normal(size=(n, 3)) * 0.15 + np.array([0.0, 0.0, -1.0])
     return v / np.linalg.norm(v, axis=1, keepdims=True)
 d36, d360 = cone_dirs(36), cone_dirs(360)
-b36  = t_ms(lambda: env._raycast_frame('foot1', d36), 500)
-b360 = t_ms(lambda: env._raycast_frame('foot1', d360), 200)
+def frame_rays(dirs):
+    t = np.empty(len(dirs))
+    q = np.ascontiguousarray(env.q)
+    clib.tact_raycast_frame(env.m._h, q.ctypes.data_as(_DBL),
+                            ctypes.c_int(env.m.fdict['foot1']),
+                            dirs.ctypes.data_as(_DBL), ctypes.c_int(len(dirs)),
+                            t.ctypes.data_as(_DBL))
+    return t
+b36  = t_ms(lambda: frame_rays(d36), 500)
+b360 = t_ms(lambda: frame_rays(d360), 200)
 slope = (b360 - b36) / (360 - 36)
 icept = b36 - 36 * slope
 print(f"(c) batch n=36: {b36:7.4f} ms   n=360: {b360:7.4f} ms")

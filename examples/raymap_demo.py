@@ -22,6 +22,20 @@ import matplotlib.pyplot as plt
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(_here)))
 import tact
+import ctypes
+from tact._clib import clib, _DBL
+
+
+def rays_from_frame(env, frame, dirs):
+    """One tact_raycast_frame call (Env._raycast_frame was inlined into
+    lidar_frames 2026-06-06 — ad-hoc access goes via clib, recipe in sim.py)."""
+    t = np.empty(len(dirs))
+    q = np.ascontiguousarray(env.q)
+    clib.tact_raycast_frame(env.m._h, q.ctypes.data_as(_DBL),
+                            ctypes.c_int(env.m.fdict[frame]),
+                            dirs.ctypes.data_as(_DBL), ctypes.c_int(len(dirs)),
+                            t.ctypes.data_as(_DBL))
+    return t
 
 
 def render(env, frame, width, height, dth, pinhole, perpendicular):
@@ -29,7 +43,7 @@ def render(env, frame, width, height, dth, pinhole, perpendicular):
     # (cached ray grid + one batched C raycast; perpendicular = -dir_z cos factor).
     t0 = time.perf_counter()
     dirs = env._ray_grid(width, height, dth, pinhole)
-    t = env._raycast_frame(frame, dirs)
+    t = rays_from_frame(env, frame, dirs)
     if perpendicular:
         t = np.where(t >= 0.0, t * -dirs[:, 2], t)
     D = t.reshape(height, width)

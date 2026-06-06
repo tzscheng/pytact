@@ -15,19 +15,32 @@ import sys, os.path
 # fg dir (= parent of the tact package this file lives in), NOT a hardcoded
 # workspace path — the repo root differs per machine.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-import os, tempfile
+import os, tempfile, ctypes
 import numpy as np, tact
+from tact._clib import clib, _DBL
+
+
+def rays_from_frame(env, frame, dirs):
+    """One tact_raycast_frame call (Env._raycast_frame was inlined into
+    lidar_frames 2026-06-06 — ad-hoc access goes via clib, recipe in sim.py)."""
+    t = np.empty(len(dirs))
+    q = np.ascontiguousarray(env.q)
+    clib.tact_raycast_frame(env.m._h, q.ctypes.data_as(_DBL),
+                            ctypes.c_int(env.m.fdict[frame]),
+                            dirs.ctypes.data_as(_DBL), ctypes.c_int(len(dirs)),
+                            t.ctypes.data_as(_DBL))
+    return t
 
 
 def raymap64(env, frame, W, H, dth, pinhole=False):
     """Depth map (H, W) from the primitives — the pre-encoding 2d pipeline."""
-    return env._raycast_frame(frame, env._ray_grid(W, H, dth, pinhole)).reshape(H, W)
+    return rays_from_frame(env, frame, env._ray_grid(W, H, dth, pinhole)).reshape(H, W)
 
 
 def raycloud64(env, frame, W, H, dth, pinhole=False, max_range=None):
     """Sensor-frame point cloud from the primitives — the pre-encoding 3d pipeline."""
     dirs = env._ray_grid(W, H, dth, pinhole)
-    t = env._raycast_frame(frame, dirs)
+    t = rays_from_frame(env, frame, dirs)
     hit = t >= 0.0
     if max_range is not None:
         hit &= t <= max_range

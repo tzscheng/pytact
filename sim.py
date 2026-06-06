@@ -81,7 +81,7 @@ def _normalize_lidar(spec):
     # 3d → sensor-frame points, RAW float32 (N, 3) — N varies per frame (no-hit
     # rays dropped; `max_range` drops far hits). perpendicular doesn't apply
     # (ranges are taken along the ray by construction).
-    # Both encode inline in Env.lidar_frames over _ray_grid + _raycast_frame.
+    # Both encode inline in Env.lidar_frames over _ray_grid + tact_raycast_frame.
     spec.setdefault('type', '2d')
     if spec['type'] not in ('2d', '3d'):
         raise ValueError(f"lidar {spec['name']!r}: unsupported type {spec['type']!r} "
@@ -1838,31 +1838,19 @@ class Env:
     #         R0s.ctypes.data_as(_DBL), Rds.ctypes.data_as(_DBL),
     #         ctypes.c_int(len(R0s)), t.ctypes.data_as(_DBL))
 
-    # NOTE: raymap()/raycloud() were inlined into lidar_frames 2026-06-06
-    # (principle (5)): after the tact_raycast_frame refactor they were thin
-    # compositions of _ray_grid + _raycast_frame with lidar_frames as the only
-    # production consumer. Ad-hoc/debug/bench access composes the two privates
-    # directly:
+    # NOTE: raymap()/raycloud() (2026-06-06) and then Env._raycast_frame itself
+    # were inlined into lidar_frames (principle (5)): each was a thin layer with
+    # lidar_frames as the only production consumer. Ad-hoc/debug/bench access
+    # composes _ray_grid with the C primitive directly — dirs (N, 3) unit,
+    # registered-frame; t (N,) forward ranges, -1 = miss:
     #     dirs = env._ray_grid(w, h, dth, pinhole)          # cached
-    #     t    = env._raycast_frame(frame, dirs)            # (N,) ranges, -1 miss
+    #     t = np.empty(len(dirs))
+    #     clib.tact_raycast_frame(env.m._h,
+    #         np.ascontiguousarray(env.q).ctypes.data_as(_DBL),
+    #         ctypes.c_int(env.m.fdict[frame]), dirs.ctypes.data_as(_DBL),
+    #         ctypes.c_int(len(dirs)), t.ctypes.data_as(_DBL))
     #     D    = t.reshape(h, w)                            # depth map
     #     pts  = t[t >= 0, None] * dirs[t >= 0]             # sensor-frame cloud
-
-    def _raycast_frame(self, frame, dirs):
-        """Fire `dirs` ((N, 3) unit, registered-frame) from the named frame's
-        origin through tact_raycast_frame; returns (N,) forward ranges, -1 = no
-        hit. One C call = one _fk + shape cache + frustum cull for the batch."""
-        if frame not in self.m.fdict:
-            raise KeyError(f"unknown frame: {frame!r}")
-        dirs = np.ascontiguousarray(dirs, dtype=np.float64)
-        t = np.empty(len(dirs), dtype=np.float64)
-        q = np.ascontiguousarray(self.q, dtype=np.float64)
-        clib.tact_raycast_frame(self.m._h, q.ctypes.data_as(_DBL),
-                                ctypes.c_int(self.m.fdict[frame]),
-                                dirs.ctypes.data_as(_DBL),
-                                ctypes.c_int(len(dirs)),
-                                t.ctypes.data_as(_DBL))
-        return t
 
     def _ray_grid(self, width, height, dth, pinhole):
         """Unit ray directions (H*W, 3) in SENSOR-FRAME coordinates, cached per
@@ -1961,7 +1949,7 @@ class Env:
     # (principle (5)): consumers only ever read the frames() generators, and the
     # middle layers were 1-line delegations or re-looked up specs the caller
     # already held (plus dead undeclared-frame fallbacks). Ad-hoc/debug access:
-    # lidar → compose _ray_grid + _raycast_frame (recipe below); camera → iterate
+    # lidar → compose _ray_grid + clib.tact_raycast_frame (recipe below); camera → iterate
     # camera_frames() on a due tick (cnt=0 publishes everything).
 
     def camera_frames(self):
@@ -2050,7 +2038,16 @@ class Env:
                 cyc = l['_cycle'] = max(1, round((1.0/self.m.dt)/l['fps'])) if l.get('fps') else 1
             if self.cnt % cyc: continue
             dirs = self._ray_grid(int(l['res'][0]), int(l['res'][1]), l['dth'], l['pinhole'])
-            t = self._raycast_frame(l['name'], dirs)
+            # one tact_raycast_frame call = one _fk + shape cache + frustum cull
+            # for the whole bundle (frame is guaranteed: _register_sensors
+            # registered every lidar as a named frame at parse time)
+            t = np.empty(len(dirs))
+            q = np.ascontiguousarray(self.q, dtype=np.float64)
+            clib.tact_raycast_frame(self.m._h, q.ctypes.data_as(_DBL),
+                                    ctypes.c_int(self.m.fdict[l['name']]),
+                                    dirs.ctypes.data_as(_DBL),
+                                    ctypes.c_int(len(dirs)),
+                                    t.ctypes.data_as(_DBL))
             if l['type'] == '2d':
                 if l['perpendicular']:
                     # camera-Z depth = range × |cos to look dir| = -dir_z (the
