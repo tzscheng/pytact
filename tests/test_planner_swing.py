@@ -20,7 +20,7 @@ hips = np.array([
     [-0.34,  +0.13, -0.38],   # RL
     [-0.34,  -0.13, -0.38],   # RR
 ])
-fp = tact.FootstepPlanner(hips, k=0.03, foot_radius=0.025)
+fp = tact.FootstepPlanner(hips, k=0.03)
 R = np.eye(3); p = np.array([0.0, 0.0, 0.5])
 v = np.zeros(3); vd = np.zeros(3)
 for i in range(4):
@@ -54,14 +54,15 @@ p_step = fp.target(0, R_yaw90, p, v, vd, T_stance=T_stance)
 expected = R_yaw90 @ hips[0] + p
 check(np.allclose(p_step, expected), 'hip rotated by yaw=90°')
 
-# ----- 5) FootstepPlanner: env.get_z overrides z -----
-print('\n[5] FootstepPlanner: env terrain snaps z')
-class FlatGround:
-    def get_z(self, x, y): return 0.1   # flat at 0.1
+# ----- 5) FootstepPlanner: z carries from hip projection (no terrain oracle) -----
+# The env.get_z(x,y)+foot_radius z-snap was removed 2026-06-06 (sim-trick
+# reduction): terrain-aware z is the caller's job — anchor to a stance foot's
+# FK z plus a relative elevation-scan delta.
+print('\n[5] FootstepPlanner: z carries through from the hip projection')
 v = np.zeros(3); vd = np.zeros(3)
-p_step = fp.target(0, R, p, v, vd, T_stance=T_stance, env=FlatGround())
-check(abs(p_step[2] - (0.1 + 0.025)) < 1e-12, 'z = get_z + foot_radius',
-      f'z={p_step[2]}, expected={0.1+0.025}')
+p_step = fp.target(0, R, p, v, vd, T_stance=T_stance)
+check(abs(p_step[2] - (hips[0] + p)[2]) < 1e-12, 'z == hip-projection z (no snap)',
+      f'z={p_step[2]}')
 
 # ----- 6) BezierSwing: endpoints exact -----
 print('\n[6] BezierSwing: endpoints')

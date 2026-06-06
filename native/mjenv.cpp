@@ -457,9 +457,13 @@ extern "C" double get_z(double x, double y){
     double dist = mj_ray(m, d, pos, ray, group, 1, -1, &geomid, NULL);
 
     //printf("x:%lf  y:%lf  geomid: %d  dist: %lf\n", x, y, geomid, dist);
-    
-    double z = pos[2] - dist;
-    return z;
+
+    // miss → NaN so CEnv's height_scan parity wrapper can build a validity
+    // mask (was: 10-(-1)=11.0 garbage). Absolute world-z is no longer a
+    // controller-facing capability (removed 2026-06-06); this export only
+    // feeds the base-relative height_scan contract.
+    if(dist < 0) return NAN;
+    return pos[2] - dist;
 }
 
 extern "C" int get_rgb_image(const char* frame, unsigned char* out_buf){

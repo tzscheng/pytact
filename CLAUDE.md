@@ -122,7 +122,7 @@ Key classes:
 - `Env` (1811) — wraps `Model`, owns the render window and an EGL image buffer (1024×768×4). `step(u)` expands `u` (active-only) into joint torques, calls `model.step`, optionally redraws every `redraw` ticks. `add(..., name=)` composes multiple YAMLs into one tree (e.g. robot + env scene); `delete(name)` removes a previously added group (see "Dynamic add/delete" below). `env.groups` lists active group names.
 - Controllers: `PIDController` (vectorized), `JacobianTransposeController` (task-space PD via Jacobian transpose), `JacobianTransposeForce` (task-space feed-forward), `ComputedTorqueController` (computed torque), `HybridForcePositionController` (hybrid force/position with selection matrix from contact force normal). `MovingAverageWaypointSmoother` is a sliding-window way-point smoother used to ramp targets — see `cartpole.py` for use with `PIDController`.
 - Pinching primitives: `pinch2`, `pinch3p`, `pinch3_icra2012`, `pinch3_piony`. `Envelope` is a fixed-pose holder.
-- Step generators: `StepGenerator2` (biped, with terrain-edge "line_adjust" using `env.get_z`) and `StepGenerator4` (quadruped).
+- Step generators: `StepGenerator2` (biped) and `StepGenerator4` (quadruped). Terrain handling is trick-free as of 2026-06-06: edge-detect ("line_adjust") and foothold z consume only base-relative `env.height_scan` deltas anchored to a stance foot's FK z — `env.get_z` (absolute world-z oracle) was REMOVED; no controller may read absolute terrain height (no real-robot counterpart).
 - `stream_assembler` (2459) — reassembles fragmented UDP camera frames matching `camera.c`'s 16-byte header (`<IHHII`); 200 ms stale-frame timeout.
 
 ### YAML scene format

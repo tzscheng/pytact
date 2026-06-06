@@ -367,9 +367,13 @@ class StepGenerator2: #step generator for biped
         L6 = homogeneous_to_xyzeuler(T_GB @ T_BL)
         R6 = homogeneous_to_xyzeuler(T_GB @ T_BR)
 
-        #-------------followin does not necessariliy executed----------------------
-        L6[2] = self.env.get_z(L6[0], L6[1]); L6[3:5] = [0, 0]
-        R6[2] = self.env.get_z(R6[0], R6[1]); R6[3:5] = [0, 0]
+        # Stance feet ARE the height reference: their FK z (joint encoders through
+        # the estimated base pose) is knowable on a real robot, so it stays as-is.
+        # (The old env.get_z snap-to-terrain overwrite here was an absolute-world-z
+        # oracle — a sim trick, removed 2026-06-06.) Roll/pitch still flattened so
+        # the ref frame stays gravity-aligned.
+        L6[3:5] = [0, 0]
+        R6[3:5] = [0, 0]
 
         cp = (L6[:3] + R6[:3])/2
         #print('cp:', cp)
@@ -385,25 +389,31 @@ class StepGenerator2: #step generator for biped
         elif form == 'v7': return np.array([xyzeuler_to_xyzquat(B6), xyzeuler_to_xyzquat(L6), xyzeuler_to_xyzquat(R6)])
         
     def line_adjust(self, ref):
-        fz, rz = [], []
+        # Terrain-edge detect along the candidate foothold's heading axis, on
+        # RELATIVE heights: only Δh between scan points is consumed, so the
+        # scan's base reference cancels — this reads exactly what a real
+        # elevation map provides (env.height_scan = the sim-GT provider of that
+        # same contract; was env.get_z absolute-z per point, a sim trick,
+        # removed 2026-06-06).
         adjust = 0
-        
-        for i in range(self.n_scan): #forward scan
-            sp = ref @ np.array([[1, 0, self.scan_step*i], [0, 1, 0], [0, 0, 1]])
-            fz.append(self.env.get_z(sp[0][2], sp[1][2]))
-        
+
+        xy = (ref[0][2], ref[1][2])
+        yaw = np.arctan2(-ref[0][1], ref[1][1])
+        d = self.scan_step * np.arange(self.n_scan)
+        offs = np.zeros((2*self.n_scan, 2))
+        offs[:self.n_scan, 0] = d       #forward scan
+        offs[self.n_scan:, 0] = -d      #backward scan (higher priority)
+        h = self.env.height_scan(xy, yaw, offs)
+        fz, rz = h[:self.n_scan], h[self.n_scan:]
+
         for i in range(self.n_scan-1):
             if   fz[i+1] - fz[i] >  0.01: adjust = self.scan_step*i - 0.10; break  #rising edge detect
             elif fz[i+1] - fz[i] < -0.01: adjust = self.scan_step*i + 0.10; break  #falling edge detect
 
-        for i in range(self.n_scan): #backward scan (higer prioriry)
-            sp = ref @ np.array([[1, 0, -self.scan_step*i], [0, 1, 0], [0, 0, 1]])
-            rz.append(self.env.get_z(sp[0][2], sp[1][2]))
-
         for i in range(self.n_scan-1):
             if   rz[i+1] - rz[i] >  0.01: adjust = -self.scan_step*i - 0.10; break  #rising edge detect
             elif rz[i+1] - rz[i] < -0.01: adjust = -self.scan_step*i + 0.10; break  #falling edge detect
-                       
+
         out = ref @ np.array([[1, 0, adjust], [0, 1, 0], [0, 0, 1]])
         return out #: 3x3 matrix
         
@@ -464,22 +474,29 @@ class StepGenerator4:
     def line_adjust(self, P0, P1):
         unit = 0.005
         norm = np.linalg.norm(P1 - P0)
+        # Degenerate target (P1 == P0): nothing to scan. (The old code fed
+        # nan through goal_dir into the per-point queries and fell through to
+        # `return P1` anyway — same result, now explicit and warning-free.)
+        if norm < 1e-9: return P1
         goal_dir = (P1 - P0)/norm
         coverage = 1.3*norm
         n_check = int(coverage/unit)
         min_z_diff = 0.01
-        
+
+        # Relative-height scan along P0→P1 (n_check+1 points, `unit` apart): only
+        # consecutive Δh is consumed, so the scan's base reference cancels — same
+        # edge logic as the old per-point env.get_z but trick-free (no absolute-z
+        # oracle; height_scan is the contract a real elevation map provides).
+        yaw = np.arctan2(goal_dir[1], goal_dir[0])
+        offs = np.zeros((n_check + 1, 2))
+        offs[:, 0] = unit * np.arange(n_check + 1)
+        hz = self.env.height_scan(P0, yaw, offs)
+
         for i in range(n_check):
             off1 = unit*i
             off2 = unit*(i+1)
-            
-            chk1 = P0 + off1*goal_dir
-            chk2 = P0 + off2*goal_dir
-            
-            z1 = self.env.get_z(chk1[0], chk1[1])
-            z2 = self.env.get_z(chk2[0], chk2[1])
 
-            z_diff = z2 -z1
+            z_diff = hz[i+1] - hz[i]
             off_eff = 0.5*(off1 + off2)
             #print(z_diff, n_check, coverage, norm)
             
@@ -503,9 +520,10 @@ class StepGenerator4:
         
     def swing_foot_target(self, B, p1, p2, p3, p4, phase):
         T0b = xyzquat_to_homogeneous(B)
-        FF0 = p1[:2] if phase == 0 else p2[:2]
-        RF0 = p3[:2] if phase == 0 else p4[:2]
-        
+        FF0p = p1 if phase == 0 else p2   # current stance-pair foot poses (world FK)
+        RF0p = p3 if phase == 0 else p4
+        FF0, RF0 = FF0p[:2], RF0p[:2]
+
         if phase == 0: y_off = self.y_off
         else: y_off = -self.y_off
 
@@ -520,8 +538,16 @@ class StepGenerator4:
         RF1 = (T0b @ RF1)[:2, 3]
         RF = self.line_adjust(RF0, RF1)
 
-        out1 = np.array([FF[0], FF[1], self.env.get_z(FF[0], FF[1]) + self.foot_radius])
-        out2 = np.array([RF[0], RF[1], self.env.get_z(RF[0], RF[1]) + self.foot_radius])
+        # New foot-center z = CURRENT foot's FK z + relative terrain delta
+        # old-xy → new-xy (the scan's base ref cancels in the single-offset
+        # query). On terrain this equals the old env.get_z(new_xy)+foot_radius
+        # whenever the current foot rests on the ground, but every term is
+        # knowable on a real robot (kinematics + elevation map) — no
+        # absolute-world-z oracle (get_z removed 2026-06-06).
+        dz_f = self.env.height_scan(FF0, 0.0, [FF - FF0])[0]
+        dz_r = self.env.height_scan(RF0, 0.0, [RF - RF0])[0]
+        out1 = np.array([FF[0], FF[1], FF0p[2] + dz_f])
+        out2 = np.array([RF[0], RF[1], RF0p[2] + dz_r])
 
         out1 = np.concatenate((out1, [1, 0, 0, 0])) #new front
         out2 = np.concatenate((out2, [1, 0, 0, 0])) #new rear
@@ -606,23 +632,20 @@ class FootstepPlanner:
     midpoint of the next stance (mean foot-under-body drift); the third is a
     capture-point-like velocity-error correction (Raibert).
 
-    If `env` is provided, the z coordinate is set to env.get_z(x, y) + foot_radius
-    so the step rests on the terrain. Otherwise the world-z carries through from
-    the hip projection."""
+    The z coordinate carries through from the hip projection; terrain-aware z is
+    the caller's job — anchor to a stance foot's FK z plus a relative elevation
+    scan delta (see StepGenerator4.swing_foot_target for the recipe). The old
+    optional env.get_z(x, y)+foot_radius snap was an absolute-world-z oracle (sim
+    trick) and was removed 2026-06-06."""
 
-    def __init__(self, hips_body, k=0.03, foot_radius=0.0):
+    def __init__(self, hips_body, k=0.03):
         self.hips_body   = np.asarray(hips_body, dtype=float)   # (n, 3)
         self.k           = float(k)
-        self.foot_radius = float(foot_radius)
         self.n           = self.hips_body.shape[0]
 
-    def target(self, foot_id, R, p_base, v_world, v_des_world, T_stance, env=None):
+    def target(self, foot_id, R, p_base, v_world, v_des_world, T_stance):
         hip_world = R @ self.hips_body[foot_id] + p_base
-        p_step = hip_world + 0.5 * v_world * float(T_stance) + self.k * (v_world - v_des_world)
-        if env is not None:
-            p_step = p_step.copy()
-            p_step[2] = env.get_z(p_step[0], p_step[1]) + self.foot_radius
-        return p_step
+        return hip_world + 0.5 * v_world * float(T_stance) + self.k * (v_world - v_des_world)
 
 
 class BezierSwing:

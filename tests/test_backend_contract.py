@@ -54,8 +54,11 @@ check(y1.shape == y0.shape and y1.dtype == y0.dtype,
       'step() y matches reset() y in shape/dtype', f'shape={y1.shape}')
 check(env.finish() is None, 'finish() is callable (tact no-op)')
 # tact-only capabilities present (ledger: 비목표/단일 backend rows)
-check(all(hasattr(env, n) for n in SENSOR_NAMES + ['add', 'delete', 'get_z', 'height_scan']),
+check(all(hasattr(env, n) for n in SENSOR_NAMES + ['add', 'delete', 'height_scan']),
       'tact-only capabilities live on Env')
+# get_z removed 2026-06-06 (sim-trick reduction): absolute world-z has no
+# real-robot counterpart — height_scan (base-relative) is the only terrain query.
+check(not hasattr(env, 'get_z'), 'get_z REMOVED from Env (absolute-z oracle)')
 
 # 3) CEnv satisfies the core contract — fake cdll, no .so needed.
 #    The fake's reset writes a sentinel and counts step calls, so the zero-step
@@ -103,6 +106,12 @@ try:
     cenv.add; check(False, 'blocked names raise a pointered AttributeError')
 except AttributeError as e:
     check('tact-only' in str(e), 'blocked names raise a pointered AttributeError', str(e)[:64])
+# get_z is blocked from forwarding (mjenv.so still exports the C symbol — a stale
+# caller must fail fast, not silently garbage-marshal through an argtypes-less ptr)
+try:
+    cenv.get_z; check(False, 'get_z blocked on CEnv with a height_scan pointer')
+except AttributeError as e:
+    check('height_scan' in str(e), 'get_z blocked on CEnv with a height_scan pointer', str(e)[:60])
 # forwarding check: a non-blocked attribute that EXISTS on the cdll comes through
 FakeCdll.unlock = staticmethod(lambda: 42)
 check(cenv.unlock() == 42, 'per-robot cdll symbols still forward via __getattr__ (eio channel)')

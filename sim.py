@@ -1817,11 +1817,12 @@ class Env:
     def unlock(self):
         self.m.is_locked = False
 
-    def get_z(self, x, y, h=10.0):
-        # Legacy single-point terrain query (absolute z, silent 0.0 on miss),
-        # kept for existing callers — prefer height_scan() for terrain scanning.
-        t = self.raycast(x, y, h, 0.0, 0.0, -1.0)
-        return h - t if t >= 0 else 0.0
+    # NOTE: get_z(x, y) (absolute world-z terrain query) was removed 2026-06-06
+    # as part of sim-trick reduction: no real robot can observe absolute terrain
+    # height in a global frame. height_scan below — base-relative, the contract a
+    # real elevation map provides — is the only terrain query. Foothold code
+    # anchors to a stance foot's FK z and adds relative scan deltas instead
+    # (see StepGenerator2/4 in control.py).
 
     def height_scan(self, base_xy, yaw, offsets, z_top=100.0, default=0.0):
         """Ground-truth terrain height scan — the sim-only twin of
@@ -2192,12 +2193,19 @@ class CEnv:
         self.cdll.step.argtypes = [_DBL, _DBL, _DBL, _DBL]
         self.cdll.reset.restype  = None
         self.cdll.reset.argtypes = [_DBL]
-        # Optional ground-height query — exported by MuJoCo (mjenv.cpp) and Chrono backends
-        # that simulate a static terrain. Real-HW backend doesn't. Probed once here so
-        # controllers can call `env.get_z(x, y)` directly without per-controller setup.
+        # Terrain primitive probe for the height_scan parity wrapper below. The
+        # raw absolute-z C export is NOT exposed to callers (`get_z` is blocked
+        # in __getattr__ — removed 2026-06-06, sim-trick reduction); only the
+        # base-relative height_scan contract crosses the interface. height_scan
+        # is bound as an INSTANCE attribute iff the backend has the export, so
+        # hasattr(env, 'height_scan') stays False on chrono/real and scan
+        # consumers (e.g. dog.py StairsPolicy) fall back to blind mode.
+        self._get_z = None
         try:
             self.cdll.get_z.restype  = ctypes.c_double
             self.cdll.get_z.argtypes = [ctypes.c_double, ctypes.c_double]
+            self._get_z = self.cdll.get_z
+            self.height_scan = self._height_scan
         except AttributeError:
             pass
         # Optional sim-timestep query — exported by mjenv (mujoco). Cached here (constant)
@@ -2239,6 +2247,31 @@ class CEnv:
     # declared wrapper matching Env's signature (frame, res, vfov) — see the
     # capability ledger (docs/backend-interface.md).
 
+    def _height_scan(self, base_xy, yaw, offsets, z_top=None, default=0.0):
+        """Base-relative terrain scan — the parity implementation of
+        Env.height_scan with the SAME contract (yaw-frame (G, 2) offsets →
+        (G,) heights relative to the terrain under base_xy; miss → default;
+        validity/base_valid/ref in self.last). Built on the backend's get_z C
+        export, probed in __init__ (mjenv returns NaN on ray miss); bound to
+        self.height_scan there iff present. Only the RELATIVE quantity crosses
+        the interface, so sim2sim controllers stay trick-free. z_top is
+        accepted for signature parity but ignored (the C export casts its own
+        fixed-origin ray)."""
+        off = np.asarray(offsets, dtype=np.float64).reshape(-1, 2)
+        c, s = np.cos(yaw), np.sin(yaw)
+        wx = float(base_xy[0]) + c * off[:, 0] - s * off[:, 1]
+        wy = float(base_xy[1]) + s * off[:, 0] + c * off[:, 1]
+        h = np.array([self._get_z(x, y)
+                      for x, y in zip(np.append(wx, float(base_xy[0])),
+                                      np.append(wy, float(base_xy[1])))])
+        ok = ~np.isnan(h[:-1])
+        base_valid = not np.isnan(h[-1])
+        ref = float(h[-1]) if base_valid else 0.0
+        out = np.where(ok, h[:-1] - ref, default)
+        self.last = dict(valid=ok, base_valid=base_valid, ref=ref,
+                         n_valid=int(ok.sum()))
+        return out
+
     def reset(self):
         """Reset backend state and return the initial observation y. C-side reset()
         fills self._y directly (no extra step), so the returned y is the true
@@ -2270,4 +2303,12 @@ class CEnv:
             raise AttributeError(
                 f"{name!r} is a tact-only capability (docs/backend-interface.md); "
                 f"backend={self.backend!r} does not provide it.")
+        if name == 'get_z':
+            # Removed 2026-06-06 (sim-trick reduction): absolute world-z terrain
+            # queries have no real-robot counterpart. mjenv.so still exports the
+            # C symbol, so without this block a stale caller would get an
+            # argtypes-less _FuncPtr and silently garbage-marshal doubles.
+            raise AttributeError(
+                "get_z was removed — use the base-relative height_scan / "
+                "scan-provider contract instead (docs/backend-interface.md).")
         return getattr(self.cdll, name)

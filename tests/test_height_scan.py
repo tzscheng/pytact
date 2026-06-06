@@ -2,9 +2,12 @@
 with tact.MiniElevationMap.sample() (yaw-frame offsets, under-base-relative
 heights, invalid -> default, validity in .last).
 
-Run:  uv run --no-project python /home/ubuntu/uv/fg/tact/tests/test_height_scan.py
+Run:  uv run --no-project python tact/tests/test_height_scan.py
 """
-import sys; sys.path.insert(0, '/home/ubuntu/uv/fg')
+import sys, os.path
+# fg dir (= parent of the tact package this file lives in), NOT a hardcoded
+# workspace path — the repo root differs per machine.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import os, tempfile
 import numpy as np, tact
 
