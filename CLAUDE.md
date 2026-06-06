@@ -83,7 +83,7 @@ The argv tail (`cartpole`) names a Python module to import — that module must 
 Bound by `start` over ZMQ IPC on `/dev/shm`:
 - PULL `ipc:///dev/shm/default` — incoming commands (whitespace-split string). Words `quit` and `reset` are handled in `start`; everything else is forwarded to `controller.msgproc(w)`.
 - PUB `ipc:///dev/shm/proprio` (CONFLATE) — float32 packed proprioceptive vector `y`, sent every 20 sim steps.
-- PUB `ipc:///dev/shm/<camera-name>` / `<lidar-name>` per `cameras:`/`lidars:` entry — `env.camera_frames()`/`lidar_frames()` own the rate-gating (`fps` vs `env.cnt`) and `type`→encoder dispatch, yielding `(name, bytes)` for due sensors: rgb→JPEG, depth/lidar-2d→zstd float32. Sim core has no zmq (sockets/send stay in the runner). CEnv backends publish nothing. Full wire format → `docs/runtime.md`.
+- PUB `ipc:///dev/shm/<camera-name>` / `<lidar-name>` per `cameras:`/`lidars:` entry — `env.camera_frames()`/`lidar_frames()` own the rate-gating (`fps` vs `env.cnt`) and `type`→encoder dispatch, yielding `(name, bytes)` for due sensors: rgb→JPEG, depth-camera→zstd float32 (C-side), lidar 2d/3d→**raw float32** (Python-side zstd removed 2026-06-06 — floats compress ~×1.5 at real sim-loop cost vs ~1000× IPC headroom). Sim core has no zmq (sockets/send stay in the runner). CEnv backends publish nothing. Full wire format → `docs/runtime.md`.
 - Without `-d`, every received command is logged to `/dev/shm/out.txt` with the step counter.
 
 The cartpole subdir has its own (identical) `start`; new projects typically copy this script.

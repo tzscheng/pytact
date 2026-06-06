@@ -74,11 +74,11 @@ def _normalize_camera(spec):
 
 
 def _normalize_lidar(spec):
-    # 2d → depth map, zstd float32 (same wire format as a depth camera, but
-    # range-along-ray in meters with -1 for no-hit). dth = degrees per pixel
-    # (horizontal FoV = res[0]*dth). pinhole/perpendicular default to the LiDAR
-    # convention (angular projection, range along ray).
-    # 3d → sensor-frame points, zstd float32 (N, 3) — N varies per frame (no-hit
+    # 2d → depth map, RAW float32 (range-along-ray in meters with -1 for no-hit;
+    # zstd removed 2026-06-06 — depth CAMERAS still compress C-side). dth = degrees
+    # per pixel (horizontal FoV = res[0]*dth). pinhole/perpendicular default to the
+    # LiDAR convention (angular projection, range along ray).
+    # 3d → sensor-frame points, RAW float32 (N, 3) — N varies per frame (no-hit
     # rays dropped; `max_range` drops far hits). perpendicular doesn't apply
     # (ranges are taken along the ray by construction).
     # Both encode inline in Env.lidar_frames over _ray_grid + _raycast_batch.
@@ -2020,15 +2020,12 @@ class Env:
                                      c.get('res'), c.get('vfov'))
             if buf is not None: yield c['name'], buf
 
-    def _zstd(self):
-        # Cached zstd compressor for the lidar payload (depth cameras compress C-side
-        # in egl_render; the raymap path returns raw doubles, so we compress in Python).
-        # Lazy import keeps zstandard out of the sim-core import path for camera-only use.
-        z = getattr(self, '_zstd_c', None)
-        if z is None:
-            import zstandard
-            z = self._zstd_c = zstandard.ZstdCompressor()
-        return z
+    # NOTE: the lidar wire is RAW float32 since 2026-06-06 (Python-side zstd
+    # removed): float coordinates compress only ~x1.5 (high-entropy mantissas)
+    # at ~0.5 ms/frame on the single-threaded sim loop, while /dev/shm IPC has
+    # ~1000x bandwidth headroom (3d cloud raw ≈ 5.6 MB/s @ 30 fps) — and real
+    # lidar drivers publish raw frames too. Depth CAMERAS still arrive
+    # zstd-compressed (C-side in egl_render, a separate path); rgb stays JPEG.
 
     def lidar_frames(self):
         """Yield (name, payload_bytes) for each lidar due to publish at the current step.
@@ -2038,18 +2035,17 @@ class Env:
         one tick). A real-hardware lidar driver publishing the same wire format is
         indistinguishable to the consumer.
 
-        Wire formats (per lidar `type`):
-          2d → zstd-compressed little-endian float32, row-major top-to-bottom — the
-               same wire format as a depth camera, so decode is identical:
-               `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(h, w)` with
-               (w, h) = the lidar `res`. Values are range-along-ray in meters
-               (LiDAR convention), with -1 for pixels that hit nothing (vs. a depth
-               camera's 200 m far plane).
-          3d → zstd-compressed little-endian float32 (N, 3) points in SENSOR-FRAME
-               coordinates — the frame as registered in the YAML, so the consumer
-               composes the frame extrinsic with its own pose estimate
-               (pts_w = pts @ Te[:3,:3].T + Te[:3,3], Te = plain fkh). Decode:
-               `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(-1, 3)`.
+        Wire formats (per lidar `type`) — RAW little-endian float32, no compression:
+          2d → row-major top-to-bottom depth map. Decode:
+               `np.frombuffer(buf, '<f4').reshape(h, w)` with (w, h) = the lidar
+               `res`. Values are range-along-ray in meters (LiDAR convention),
+               with -1 for pixels that hit nothing. (A depth CAMERA's wire is the
+               same float32 image but zstd-compressed C-side and far-plane 200 m
+               instead of -1.)
+          3d → (N, 3) points in SENSOR-FRAME coordinates — the frame as registered
+               in the YAML, so the consumer composes the frame extrinsic with its
+               own pose estimate (pts_w = pts @ Te[:3,:3].T + Te[:3,3], Te = plain
+               fkh). Decode: `np.frombuffer(buf, '<f4').reshape(-1, 3)`.
                N varies per frame: no-hit rays are dropped, and hits beyond the
                spec's `max_range` are dropped too. Rays hit the robot's own
                raycast-on shapes as well — self-filtering is the consumer's job."""
@@ -2066,13 +2062,13 @@ class Env:
                     # optical roll is about Z) — same factor for both projections
                     # (angular: cos(pitch)cos(tilt); pinhole: 1/√(u²+v²+1)).
                     t = np.where(t >= 0.0, t * -dirs[:, 2], t)
-                yield l['name'], self._zstd().compress(t.astype('<f4').tobytes())
+                yield l['name'], t.astype('<f4').tobytes()
             elif l['type'] == '3d':
                 hit = t >= 0.0
                 if l.get('max_range') is not None:
                     hit &= t <= l['max_range']
                 pts = t[hit, None] * dirs[hit]
-                yield l['name'], self._zstd().compress(pts.astype('<f4').tobytes())
+                yield l['name'], pts.astype('<f4').tobytes()
 
 
 class CEnv:

@@ -129,9 +129,8 @@ check(not v[3] and h[3] == 0.0,
 check(not m.last['base_valid'],
       'under-base out of forward FoV in a single frame (map memory fills it while walking)')
 
-# 7) wire format: lidars `type: 3d` -> lidar_frames() -> zstd (N,3) f32 roundtrip
+# 7) wire format: lidars `type: 3d` -> lidar_frames() -> RAW (N,3) f32 roundtrip
 print('\n[3d (pointcloud) wire type]')
-import zstandard
 YML_PC = YML.replace(
     "{name: lid, type: 2d, body: root, pos: [0, 0, 0.6], euler: [0, -60, 0], eulerseq: xyz, res: [64, 48], dth: 1.0, fps: 30}",
     "{name: lid, type: 3d, body: root, pos: [0, 0, 0.6], euler: [0, -60, 0], eulerseq: xyz, res: [64, 48], dth: 1.0, fps: 30, max_range: 2.0}")
@@ -141,7 +140,7 @@ env_pc = tact.Env(base_pc, render=False)
 env_pc.reset()
 frames = dict(env_pc.lidar_frames())
 check('lid' in frames, "lidar_frames() publishes the pointcloud lidar")
-dec = np.frombuffer(zstandard.decompress(frames['lid']), '<f4').reshape(-1, 3)
+dec = np.frombuffer(frames['lid'], '<f4').reshape(-1, 3)   # raw f32 wire (zstd removed 2026-06-06)
 ref = raycloud64(env_pc, 'lid', W, H, DTH, max_range=2.0).astype('<f4')
 check(dec.shape == ref.shape and np.array_equal(dec, ref),
       'wire roundtrip == primitive pipeline (max_range from spec), f32-exact',
