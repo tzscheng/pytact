@@ -49,7 +49,7 @@ kida.run 등 runner / controller)가 backend 에 기대하는 표면**이다.
 | capability | 계약 (요지) | tact | mujoco | chrono | real | parity |
 |---|---|:-:|:-:|:-:|:-:|---|
 | ~~`get_z(x, y)`~~ | **2026-06-06 제거** (sim-trick 최소화): 절대 world-z 는 실기에 존재하지 않는 양. 후속은 `height_scan` + "stance-foot FK z anchor + 상대 Δh" 레시피 (`StepGenerator2/4` 참조). mjenv/chenv 의 C export 는 legacy 잔존 — CEnv 는 이름 차단으로 포워딩 사고 방지 | ✗ | ✗ | ✗ | ✗ | — |
-| `get_rgb_image` | named camera → JPEG bytes | ✓ `(frame, res, vfov)` | ✗ — CEnv wrapper 는 2026-06-06 삭제 (원칙 (5): live 호출자 0, 옛 streaming 유물). C export 는 `mjenv.cpp` 에 존치 — 재도입 시 Env 시그니처로 통일 | ✗ | ✗ | 후보 |
+| ~~`get_rgb_image`~~ (+ `get_depth_image`/`get_lidar_image`/`get_lidar_points`) | **2026-06-06 전부 제거** (원칙 (5)): CEnv wrapper 는 live 호출자 0 의 streaming 유물이었고, Env 쪽 4종은 `camera_frames`/`lidar_frames` 로 inline (소비자는 frames() generator 만 읽음; ad-hoc 접근은 `_render_frame`/`raymap`/`raycloud` primitive). C export 는 `mjenv.cpp` 에 존치 | ✗ | ✗ | ✗ | ✗ | — |
 | `height_scan` | **유일한 terrain 쿼리** — base-relative (G,2) offsets → 상대고도 (G,), `MiniElevationMap.sample` 계약의 GT twin. 실 elevation map 이 주는 양과 동일 형태라 trick-free | ✓ | ✓ (CEnv parity wrapper — mjenv `get_z` C export 를 init-probe 해 instance 에 bind; miss → NaN → validity. probe 실패 backend 는 `hasattr` False) | ✗ | ✗ (소비자는 blind fallback) | **달성 (tact+mujoco)** |
 | `cameras` / `lidars` / `camera_frames()` / `lidar_frames()` | 센서 publish 명세 + (name, bytes) frame 공급 | ✓ | ✗ | ✗ | ✗ (실 드라이버가 동일 topic 직접 publish) | **비목표** — sim 전용 드라이버 대역 |
 | `add` / `delete` / `groups` / `edit` | 동적 토폴로지 편집 | ✓ | ✗ | ✗ | ✗ | 비목표 — CEnv 에서 부재 (`hasattr` False) + `__getattr__` 차단 리스트로 dlsym 충돌 방어 (§4) |

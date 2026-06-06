@@ -62,7 +62,7 @@ def _register_sensors(config, specs, prefix, registry, *, kind, normalize):
 
 
 def _normalize_camera(spec):
-    # rgb → get_rgb_image (JPEG); depth → get_depth_image (zstd float32). res [w,h]
+    # rgb → JPEG; depth → zstd float32 (encoders in Env.camera_frames). res [w,h]
     # sizes the EGL render (grow-only); vfov = vertical FOV (deg, MuJoCo fovy convention).
     spec.setdefault('type', 'rgb')
     if spec['type'] not in ('rgb', 'depth'):
@@ -74,13 +74,14 @@ def _normalize_camera(spec):
 
 
 def _normalize_lidar(spec):
-    # 2d → get_lidar_image: env.raymap() depth map, zstd float32 (same wire format as a
-    # depth camera, but range-along-ray in meters with -1 for no-hit). dth = degrees per
+    # 2d → env.raymap() depth map, zstd float32 (same wire format as a depth
+    # camera, but range-along-ray in meters with -1 for no-hit). dth = degrees per
     # pixel (horizontal FoV = res[0]*dth). pinhole/perpendicular default to the LiDAR
     # convention (angular projection, range along ray).
-    # 3d → get_lidar_points: env.raycloud() sensor-frame points, zstd float32
-    # (N, 3) — N varies per frame (no-hit rays dropped; `max_range` drops far hits).
-    # perpendicular doesn't apply (ranges are taken along the ray by construction).
+    # 3d → env.raycloud() sensor-frame points, zstd float32 (N, 3) — N varies per
+    # frame (no-hit rays dropped; `max_range` drops far hits). perpendicular doesn't
+    # apply (ranges are taken along the ray by construction).
+    # Encoders live in Env.lidar_frames.
     spec.setdefault('type', '2d')
     if spec['type'] not in ('2d', '3d'):
         raise ValueError(f"lidar {spec['name']!r}: unsupported type {spec['type']!r} "
@@ -170,9 +171,9 @@ class Model:
         # Sensor publish registries, declared via the YAML top-level `cameras:` /
         # `lidars:` blocks. Each entry is the publish metadata ({name, type, res, fps,
         # ...}); the sensor's pose is registered as a frame (in fdict) attached to its
-        # `body`, so the resolver methods (get_rgb_image/get_depth_image for cameras,
-        # get_lidar_image for lidars) look it up by name. `start` iterates env.cameras /
-        # env.lidars to bind one ZMQ PUB per sensor and publish at each sensor's own rate.
+        # `body`, so the frame-pose resolution inside Env.camera_frames/lidar_frames
+        # looks it up by name. `start` iterates env.cameras / env.lidars to bind one
+        # ZMQ PUB per sensor and publish at each sensor's own rate.
         self.cameras = []
         self.lidars = []
 
@@ -238,9 +239,9 @@ class Model:
         # _register_sensors helper injects each spec into its target body's `frames:` list
         # (default body = root) so it reuses the full frame machinery below — default-fill,
         # root-offset application, fdict/fbody/ftran registration, and add/delete group
-        # handling — without a parallel code path. The resolver methods then look the
-        # sensor up by frame name (cameras: get_rgb_image/get_depth_image; lidars:
-        # get_lidar_image via raymap). Only the normalized publish metadata is kept, in
+        # handling — without a parallel code path. Env.camera_frames/lidar_frames then
+        # look the sensor up by frame name (cameras: egl_render via _render_frame;
+        # lidars: raymap/raycloud). Only the normalized publish metadata is kept, in
         # self.cameras / self.lidars. Extra keys (e.g. a transport `port` for a runner that
         # also binds a LAN socket) pass through untouched.
         _register_sensors(config, config.get('cameras', []) or [], prefix,
@@ -1682,7 +1683,7 @@ class Env:
     def cameras(self):
         """Camera publish specs from the YAML `cameras:` block, in declaration
         order. Each is a dict {name, type, res, fps}; `name` is the
-        registered frame name (get_rgb_image/raymap key) and the ZMQ endpoint.
+        registered frame name (the camera_frames render key) and the ZMQ endpoint.
         `start` iterates this to set up per-camera PUB sockets."""
         return self.m.cameras
 
@@ -1690,8 +1691,8 @@ class Env:
     def lidars(self):
         """LiDAR publish specs from the YAML `lidars:` block, in declaration order.
         Each is a dict {name, type, res, dth, fps, ...}; `name` is the registered
-        frame name (get_lidar_image / raymap key) and the ZMQ endpoint. `start`
-        iterates this to set up per-lidar PUB sockets, mirroring cameras."""
+        frame name (the lidar_frames raymap/raycloud key) and the ZMQ endpoint.
+        `start` iterates this to set up per-lidar PUB sockets, mirroring cameras."""
         return self.m.lidars
 
     def edit(self, index, **kw):
@@ -2005,38 +2006,39 @@ class Env:
                                  self._imgbuf, opt, width, height, ctypes.c_float(vfov))
         return ctypes.string_at(self._imgbuf, imglen)
 
-    def get_rgb_image(self, frame, res=None, vfov=None):
-        """RGB frame as JPEG bytes (decode with PIL/cv2/turbojpeg)."""
-        return self._render_frame(frame, 1, res, vfov)
-
-    def get_depth_image(self, frame, res=None, vfov=None):
-        """Depth frame: zstd-compressed little-endian float32, row-major top-to-bottom,
-        linear eye-space distance in meters (no-geometry pixels read the far plane,
-        200 m). Decode: `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(h, w)`
-        where (w, h) = the camera `res`."""
-        return self._render_frame(frame, 2, res, vfov)
+    # NOTE: the per-type getters (get_rgb_image/get_depth_image/get_lidar_image/
+    # get_lidar_points) were inlined into camera_frames/lidar_frames 2026-06-06
+    # (principle (5)): consumers only ever read the frames() generators, the
+    # getters were 1-line delegations or re-looked the spec up by name that the
+    # caller already held. Ad-hoc/debug access goes through the primitives that
+    # remain: _render_frame (EGL rgb/depth), raymap/raycloud (lidar).
 
     def camera_frames(self):
         """Yield (name, payload_bytes) for each camera due to publish at the current
         step. Rate-gating (camera `fps` vs the internal step counter self.cnt, the
-        same one that drives window redraw) and type→getter dispatch (rgb →
-        get_rgb_image JPEG, depth → get_depth_image zstd float32; lidar via raymap is
-        a TODO) both live here; the per-camera
-        publish cycle is computed from the sim dt and cached. Sockets/transport stay
-        with the caller — this only renders + gates, so the sim core has no IPC
-        dependency. self.cnt is the post-step value (the caller runs this after step()),
-        so the publish phase trails window redraw by one tick — cadence is identical."""
+        same one that drives window redraw) and type→encoder dispatch both live
+        here; the per-camera publish cycle is computed from the sim dt and cached.
+        Sockets/transport stay with the caller — this only renders + gates, so the
+        sim core has no IPC dependency. self.cnt is the post-step value (the caller
+        runs this after step()), so the publish phase trails window redraw by one
+        tick — cadence is identical.
+
+        Wire formats (per camera `type`):
+          rgb   → JPEG bytes (decode with PIL/cv2/turbojpeg), encoded C-side in
+                  egl_render.
+          depth → zstd-compressed little-endian float32, row-major top-to-bottom,
+                  linear eye-space distance in meters (no-geometry pixels read the
+                  far plane, 200 m). Decode:
+                  `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(h, w)`
+                  with (w, h) = the camera `res`."""
         for c in self.m.cameras:
             cyc = c.get('_cycle')
             if cyc is None:
                 cyc = c['_cycle'] = max(1, round((1.0/self.m.dt)/c['fps'])) if c.get('fps') else 1
             if self.cnt % cyc: continue
-            if c['type'] == 'rgb':
-                buf = self.get_rgb_image(c['name'], c.get('res'), c.get('vfov'))
-                if buf is not None: yield c['name'], buf
-            elif c['type'] == 'depth':
-                buf = self.get_depth_image(c['name'], c.get('res'), c.get('vfov'))
-                if buf is not None: yield c['name'], buf
+            buf = self._render_frame(c['name'], 1 if c['type'] == 'rgb' else 2,
+                                     c.get('res'), c.get('vfov'))
+            if buf is not None: yield c['name'], buf
 
     def _zstd(self):
         # Cached zstd compressor for the lidar payload (depth cameras compress C-side
@@ -2048,64 +2050,41 @@ class Env:
             z = self._zstd_c = zstandard.ZstdCompressor()
         return z
 
-    def get_lidar_image(self, frame, res=None, dth=None, pinhole=None, perpendicular=None):
-        """2D LiDAR scan as zstd-compressed little-endian float32, row-major top-to-bottom
-        — the same wire format as get_depth_image, so decode is identical:
-        `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(h, w)` with (w, h) = the
-        lidar `res`. Values are range-along-ray in meters (LiDAR convention), with -1 for
-        pixels that hit nothing (vs. a depth camera's 200 m far plane). res/dth/pinhole/
-        perpendicular default to the named lidar's spec; if `frame` isn't a declared lidar
-        they fall back to [120,80] / 1.0 deg-per-pixel / angular range."""
-        if frame not in self.m.fdict: return None
-        spec = next((l for l in self.m.lidars if l['name'] == frame), None)
-        if res is None:           res = spec['res'] if spec else [120, 80]
-        if dth is None:           dth = spec['dth'] if spec else 1.0
-        if pinhole is None:       pinhole = spec['pinhole'] if spec else False
-        if perpendicular is None: perpendicular = spec['perpendicular'] if spec else False
-        width, height = int(res[0]), int(res[1])
-        D = self.raymap(frame, width, height, dth, pinhole=pinhole, perpendicular=perpendicular)
-        return self._zstd().compress(D.astype('<f4').tobytes())
-
-    def get_lidar_points(self, frame, res=None, dth=None, pinhole=None, max_range=None):
-        """Point-cloud LiDAR scan as zstd-compressed little-endian float32 (N, 3) in
-        SENSOR-FRAME coordinates (see raycloud — world points need the consumer to
-        compose the frame extrinsic with its own pose estimate). Decode:
-        `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(-1, 3)`.
-        Unlike the fixed-size 2d image, N varies per frame: no-hit rays are dropped,
-        and hits beyond `max_range` (here or on the lidar spec) are dropped too.
-        res/dth/pinhole/max_range default to the named lidar's spec; if `frame` isn't
-        a declared lidar they fall back to [120,80] / 1.0 deg-per-pixel / angular /
-        unlimited. A real-hardware lidar driver publishing this same wire format is
-        indistinguishable to the consumer."""
-        if frame not in self.m.fdict: return None
-        spec = next((l for l in self.m.lidars if l['name'] == frame), None)
-        if res is None:       res = spec['res'] if spec else [120, 80]
-        if dth is None:       dth = spec['dth'] if spec else 1.0
-        if pinhole is None:   pinhole = spec['pinhole'] if spec else False
-        if max_range is None: max_range = spec.get('max_range') if spec else None
-        pts = self.raycloud(frame, int(res[0]), int(res[1]), dth,
-                            pinhole=pinhole, max_range=max_range)
-        return self._zstd().compress(pts.astype('<f4').tobytes())
-
     def lidar_frames(self):
         """Yield (name, payload_bytes) for each lidar due to publish at the current step.
-        Mirrors camera_frames: fps rate-gating against self.cnt (the same step counter that
-        drives window redraw) and type→encoder dispatch ('2d' → get_lidar_image zstd
-        float32 image; '3d' → get_lidar_points zstd float32 (N,3) sensor-frame
-        points) both live here, so the sim core stays
-        IPC-free — the caller owns sockets/transport. Cadence matches cameras (publish
-        trails window redraw by one tick)."""
+        Mirrors camera_frames: fps rate-gating against self.cnt and type→encoder
+        dispatch both live here, so the sim core stays IPC-free — the caller owns
+        sockets/transport. Cadence matches cameras (publish trails window redraw by
+        one tick). A real-hardware lidar driver publishing the same wire format is
+        indistinguishable to the consumer.
+
+        Wire formats (per lidar `type`):
+          2d → zstd-compressed little-endian float32, row-major top-to-bottom — the
+               same wire format as a depth camera, so decode is identical:
+               `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(h, w)` with
+               (w, h) = the lidar `res`. Values are range-along-ray in meters
+               (LiDAR convention), with -1 for pixels that hit nothing (vs. a depth
+               camera's 200 m far plane).
+          3d → zstd-compressed little-endian float32 (N, 3) points in SENSOR-FRAME
+               coordinates (see raycloud — world points need the consumer to compose
+               the frame extrinsic with its own pose estimate). Decode:
+               `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(-1, 3)`.
+               N varies per frame: no-hit rays are dropped, and hits beyond the
+               spec's `max_range` are dropped too."""
         for l in self.m.lidars:
             cyc = l.get('_cycle')
             if cyc is None:
                 cyc = l['_cycle'] = max(1, round((1.0/self.m.dt)/l['fps'])) if l.get('fps') else 1
             if self.cnt % cyc: continue
+            w, h = int(l['res'][0]), int(l['res'][1])
             if l['type'] == '2d':
-                buf = self.get_lidar_image(l['name'])
-                if buf is not None: yield l['name'], buf
+                D = self.raymap(l['name'], w, h, l['dth'], pinhole=l['pinhole'],
+                                perpendicular=l['perpendicular'])
+                yield l['name'], self._zstd().compress(D.astype('<f4').tobytes())
             elif l['type'] == '3d':
-                buf = self.get_lidar_points(l['name'])
-                if buf is not None: yield l['name'], buf
+                pts = self.raycloud(l['name'], w, h, l['dth'], pinhole=l['pinhole'],
+                                    max_range=l.get('max_range'))
+                yield l['name'], self._zstd().compress(pts.astype('<f4').tobytes())
 
 
 class CEnv:
