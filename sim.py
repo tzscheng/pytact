@@ -1359,14 +1359,14 @@ class Model:
             # slice the unified ctx.lam into contact_lcp's per-type warm-starts
             # (views — contact_lcp reads them without mutating, so ctx stays
             # immutable), then pack its per-type outputs back into one vector.
-            lam_prev       = None if ctx is None else ctx.lam_contact
-            lam_fric_prev  = None if ctx is None else ctx.lam_fric
-            lam_limit_prev = None if ctx is None else ctx.lam_limit
+            lam_contact_prev = None if ctx is None else ctx.lam_contact
+            lam_fric_prev    = None if ctx is None else ctx.lam_fric
+            lam_limit_prev   = None if ctx is None else ctx.lam_limit
             dqd, lam, lcp_info, f_ext = contact_lcp(T, self.parent, self.jtype, self.cpair, self.ctype, self.cbody, self.ctran, self.cshape, self.cparam, qd_free, M, self.dt,
                                                     erp=self.erp, slop=self.slop, cfm_scale=self.cfm_scale, v_rest_thresh=self.v_rest_thresh, iters=self.iters, tol=self.tol,
-                                                    lam_prev=lam_prev, floss=self.floss, lam_fric_prev=lam_fric_prev,
+                                                    lam_contact_prev=lam_contact_prev, floss=self.floss, lam_fric_prev=lam_fric_prev,
                                                     q=q, jnt_lo=self.jnt_lo, jnt_hi=self.jnt_hi, lam_limit_prev=lam_limit_prev)
-            cblk = lcp_info['lam_full']
+            cblk = lcp_info['lam_contact_full']
             clen = 6 * MAX_PTS_PER_PAIR * max(len(self.cpair), 1)
             if len(cblk) != clen:   # npair==0: rbd sizes by npair (0), layout keeps the 1-pair slot
                 cblk = np.zeros(clen)

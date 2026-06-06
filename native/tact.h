@@ -14,8 +14,8 @@
 
 /* Contact manifold capacity per cpair. Currently the narrowphase still returns 1
  * point per pair (sub_id always 0), so slots 1..3 are unused. Phase 2+: box-box
- * SAT/clipping narrowphase will fill 0..MAX_PTS_PER_PAIR-1. Cost: lam_prev buffer
- * and LCP A workspace scale as MAX_PTS² in the worst case (currently dominated by
+ * SAT/clipping narrowphase will fill 0..MAX_PTS_PER_PAIR-1. Cost: the contact
+ * warm-start block and LCP A workspace scale as MAX_PTS² in the worst case (currently dominated by
  * other terms since most slots stay empty). Indexing convention: warm-start slot =
  * cpair_idx * MAX_PTS_PER_PAIR + sub_id. */
 #define MAX_PTS_PER_PAIR 4
@@ -227,7 +227,7 @@ void choose_rotation(double *z_in, double *R);
  *   ctran[16*nshape], cshape[3*nshape], cparam[13*nshape]   contact geometry/material
  *   qd_free[nb], M_full[nb*nb], dt                    pre-contact predictor + mass matrix
  *   erp, slop, cfm_scale, v_rest_thresh, iters, tol   solver parameters
- *   lam_prev[6*n_pair] or NULL                        warm-start (cpair-indexed); NULL=cold
+ *   lam_contact_prev[6*n_pair] or NULL                        warm-start (cpair-indexed); NULL=cold
  *   floss[nq] or NULL                                 per-DoF joint Coulomb bound (N·m / N);
  *                                                     0/NULL = no friction row (jtype 1/2 only)
  *   lam_fric[nq] or NULL                              per-DoF friction warm-start, in-place carry
@@ -238,7 +238,7 @@ void choose_rotation(double *z_in, double *R);
  *
  * Outputs:
  *   dqd_out[nb]            velocity correction (qd_next = qd_free + dqd)
- *   lam_full_out[6*n_pair] λ scattered back to cpair index (warm-start carry)
+ *   lam_contact_out[6*n_pair] λ scattered back to cpair index (warm-start carry)
  *   f_ext_out[6*nb]        body-frame wrench (zero on bodies with no contact)
  *   *nc_out                number of active contacts this step
  *   *iters_out             actual PGS iterations consumed (≤ iters)
@@ -251,10 +251,10 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
                  double erp, double slop, double cfm_scale,
                  double v_rest_thresh,
                  int iters, double tol,
-                 double *lam_prev,
+                 double *lam_contact_prev,
                  double *floss, double *lam_fric,
                  double *q, double *jnt_lo, double *jnt_hi, double *lam_limit,
-                 double *dqd_out, double *lam_full_out, double *f_ext_out,
+                 double *dqd_out, double *lam_contact_out, double *f_ext_out,
                  int *nc_out, int *iters_out, double *residual_out,
                  double *workspace);
 

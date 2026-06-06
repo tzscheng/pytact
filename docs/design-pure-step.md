@@ -77,8 +77,10 @@ pure 가 된다.
   - **C 경로** (`use_c`): `ctx.lam`(없으면 zeros)을 `lam_in`, fresh `lam_out` 을 받아
     `tact_step_lcp` 에 전달 → `ctx_next = SolverState(lam=lam_out, nq=nq)`. 통합 벡터
     1쌍이 전부 — per-type 버퍼/인자는 없다.
-  - **Python 경로** (`use_c=False`): `ctx.lam` 을 view 로 3분할해 `contact_lcp(lam_prev=,
-    lam_fric_prev=, lam_limit_prev=)` 에 전달 (rbd.py 인터페이스는 per-type 유지), 출력
+  - **Python 경로** (`use_c=False`): `ctx.lam` 을 view 로 3분할해 `contact_lcp(lam_contact_prev=,
+    lam_fric_prev=, lam_limit_prev=)` 에 전달 (rbd.py 인터페이스는 per-type 유지 — solver
+    core 의 자연 분해라 통합 벡터를 안으로 밀지 않는다; 명명만 2026-06-06 `lam_contact_*` 로
+    대칭화), 출력
     3개를 `np.concatenate` 로 재포장. npair==0 일 때 rbd 의 contact 블록은 길이 0 —
     layout 의 1-pair 슬롯(24)으로 패딩해 cross-path ctx 호환 유지.
   - **minimal 솔버**: warm-start 없음 → `ctx_next = ctx` (passthrough).
@@ -90,7 +92,7 @@ pure 가 된다.
 - `tact_step_lcp(..., double *lam_in, double *lam_out)`: **REQUIRED, non-NULL** (NULL
   fallback 은 2026-06-06 제거 — 호출자는 Model.step 뿐이고 항상 버퍼를 공급).
   - 진입부에서 offset 산술로 3블록 포인터 분해: contact 는 `contact_lcp` 가
-    `lam_prev`(in)/`lam_full_out`(out) 분리 지원으로 직접 seed, per-DoF 블록(fric+limit,
+    `lam_contact_prev`(in)/`lam_contact_out`(out) 분리 지원으로 직접 seed, per-DoF 블록(fric+limit,
     layout 상 인접)은 `memcpy(lam_out+C, lam_in+C, 2·nq)` 한 번으로 seed → **`lam_in` 불변**.
 - `h->lam_prev`/`lam_fric_prev`/`lam_limit_prev` arena 필드 **제거** (2026-06-06) —
   handle 은 스텝 간 솔버 상태를 일절 보유하지 않는다.

@@ -1197,7 +1197,7 @@ def contact_ground_sphere(T, parent, jtype, ctype, cbody, ctran, cshape, cparam,
 def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
                 qd_free, M, dt,
                 erp=0.2, slop=1e-4, cfm_scale=1e-6, v_rest_thresh=3e-2, iters=20, tol=1e-6, cff=False,
-                lam_prev=None, floss=None, lam_fric_prev=None,
+                lam_contact_prev=None, floss=None, lam_fric_prev=None,
                 q=None, jnt_lo=None, jnt_hi=None, lam_limit_prev=None):
     """
     Soft-constrained LCP contact solver with Coulomb friction (Stewart-Trinkle /
@@ -1228,7 +1228,7 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
       cfm_scale                  -- regularization scale; maps k_n/k_t,d_n/d_t → R diagonal
       iters, tol                 -- PGS budget and convergence threshold on max |Δλ|
       cff                        -- if True, also return per-contact force list (for viz/log)
-      lam_prev (npair*6,)        -- λ from the previous step indexed by cpair index
+      lam_contact_prev (npair*6,)        -- λ from the previous step indexed by cpair index
                                     (zeros for inactive pairs). If provided, PGS
                                     initializes from these values (warm-start), which
                                     typically cuts PGS iterations needed and stabilizes
@@ -1240,9 +1240,9 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
                               [n, t1, t2, spin, r1, r2,  n, t1, t2, spin, r1, r2, ...]
       info      dict       -- {nc, iters, residual, points, normals, depths, R_tan,
                               lam_n, lam_t1, lam_t2, lam_spin, lam_r1, lam_r2,
-                              lam_full, cpair_idx}
-                              lam_full is npair*6, indexed by cpair position — pass back
-                              as lam_prev next step to warm-start.
+                              lam_contact_full, cpair_idx}
+                              lam_contact_full is npair*6, indexed by cpair position — pass back
+                              as lam_contact_prev next step to warm-start.
       f_ext     (nb, 6)    -- equivalent body-frame spatial wrench per body
                               (format [moment, force])
       (cfs)                -- if cff: list of [px, py, pz, fx, fy, fz, i, j] (world)
@@ -1350,7 +1350,7 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
                       'points': [], 'normals': [], 'depths': [], 'R_tan': [],
                       'lam_n':    np.zeros(0), 'lam_t1':   np.zeros(0), 'lam_t2': np.zeros(0),
                       'lam_spin': np.zeros(0), 'lam_r1':   np.zeros(0), 'lam_r2': np.zeros(0),
-                      'lam_full': np.zeros(6 * MAX_PTS_PER_PAIR * npair),
+                      'lam_contact_full': np.zeros(6 * MAX_PTS_PER_PAIR * npair),
                       'lam_fric_full': np.zeros(nq),
                       'lam_limit_full': np.zeros(nq),
                       'cpair_idx': np.zeros(0, dtype=int)}
@@ -1453,13 +1453,13 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
     # All three friction cones share λ_n as their budget — projected
     # independently each sweep. Inner loop order: normal first (so the bound
     # is fresh), then tangent, spin, roll.
-    # Warm-start: if lam_prev (length 6*MAX_PTS_PER_PAIR*npair, indexed by
+    # Warm-start: if lam_contact_prev (length 6*MAX_PTS_PER_PAIR*npair, indexed by
     # slot = cpair_idx * MAX_PTS_PER_PAIR + sub_id) is given, seed lam from it.
     lam = np.zeros(6 * nc + n_fric + n_limit)
-    if lam_prev is not None and len(lam_prev) >= 6 * MAX_PTS_PER_PAIR * npair:
+    if lam_contact_prev is not None and len(lam_contact_prev) >= 6 * MAX_PTS_PER_PAIR * npair:
         for k in range(nc):
             slot = cdata[k][16] * MAX_PTS_PER_PAIR + cdata[k][17]
-            lam[6*k:6*k+6] = lam_prev[6*slot:6*slot+6]
+            lam[6*k:6*k+6] = lam_contact_prev[6*slot:6*slot+6]
     if n_fric and lam_fric_prev is not None:
         for r, (fpos, vidx, bound) in enumerate(fric):
             lam[6*nc + r] = lam_fric_prev[vidx]
@@ -1561,17 +1561,17 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
     lam_r2   = lam_c[5::6]
     # Scatter active-contact λ back to per-(cpair_idx, sub_id) slot storage for
     # warm-start. Inactive slots keep their previous value (if any) so transient
-    # separations don't immediately lose their warm-start budget. lam_full is
+    # separations don't immediately lose their warm-start budget. lam_contact_full is
     # sized 6 * MAX_PTS_PER_PAIR * npair (one 6-vec per slot).
-    lam_full_size = 6 * MAX_PTS_PER_PAIR * npair
-    lam_full = lam_prev.copy() if lam_prev is not None and len(lam_prev) >= lam_full_size else np.zeros(lam_full_size)
+    lam_contact_size = 6 * MAX_PTS_PER_PAIR * npair
+    lam_contact_full = lam_contact_prev.copy() if lam_contact_prev is not None and len(lam_contact_prev) >= lam_contact_size else np.zeros(lam_contact_size)
     cpair_idx = np.empty(nc, dtype=int)
     for k in range(nc):
         cp_idx = cdata[k][16]
         sub_id = cdata[k][17]
         slot   = cp_idx * MAX_PTS_PER_PAIR + sub_id
         cpair_idx[k] = cp_idx
-        lam_full[6*slot:6*slot+6] = lam[6*k:6*k+6]
+        lam_contact_full[6*slot:6*slot+6] = lam[6*k:6*k+6]
     info = {
         'nc': nc, 'iters': it + 1, 'residual': residual,
         'points':  [d[2] for d in cdata],
@@ -1580,7 +1580,7 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
         'R_tan':   [d[3] for d in cdata],
         'lam_n':    lam_n,    'lam_t1': lam_t1, 'lam_t2': lam_t2,
         'lam_spin': lam_spin, 'lam_r1': lam_r1, 'lam_r2': lam_r2,
-        'lam_full': lam_full, 'lam_fric_full': lam_fric_full,
+        'lam_contact_full': lam_contact_full, 'lam_fric_full': lam_fric_full,
         'lam_limit_full': lam_limit_full, 'cpair_idx': cpair_idx,
     }
 

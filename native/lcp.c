@@ -201,10 +201,10 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
                  double erp, double slop, double cfm_scale,
                  double v_rest_thresh,
                  int iters, double tol,
-                 double *lam_prev,
+                 double *lam_contact_prev,
                  double *floss, double *lam_fric,
                  double *q, double *jnt_lo, double *jnt_hi, double *lam_limit,
-                 double *dqd_out, double *lam_full_out, double *f_ext_out,
+                 double *dqd_out, double *lam_contact_out, double *f_ext_out,
                  int *nc_out, int *iters_out, double *residual_out,
                  double *workspace)
 {
@@ -279,12 +279,12 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
     /* ---- defaults / scalar init -------------------------------------------- */
     memset(f_ext_out, 0, 6*nb*sizeof(double));
     memset(dqd_out,   0,    nq*sizeof(double));
-    /* lam_full carries previous values forward on inactive (cpair, sub_id) slots, so
-       initialize from lam_prev (zero if NULL). lam_prev and lam_full_out may alias —
+    /* lam_contact_out carries previous values forward on inactive (cpair, sub_id) slots, so
+       initialize from lam_contact_prev (zero if NULL). lam_contact_prev and lam_contact_out may alias —
        when they do, the seed copy is already done (and a self-memcpy would be UB).
        Length: 6 * MAX_PTS_PER_PAIR * n_pair (one 6-vec per (cpair_idx, sub_id) slot). */
-    if (!lam_prev)                          memset(lam_full_out, 0, 6*MAX_PTS_PER_PAIR*n_pair*sizeof(double));
-    else if (lam_prev != lam_full_out)      memcpy(lam_full_out, lam_prev, 6*MAX_PTS_PER_PAIR*n_pair*sizeof(double));
+    if (!lam_contact_prev)                          memset(lam_contact_out, 0, 6*MAX_PTS_PER_PAIR*n_pair*sizeof(double));
+    else if (lam_contact_prev != lam_contact_out)      memcpy(lam_contact_out, lam_contact_prev, 6*MAX_PTS_PER_PAIR*n_pair*sizeof(double));
 
     /* Newton restitution: e is per-contact (min-blended material, mat[12*k+11]);
      * v_rest_thresh is a global numerical gate, now passed in (was hardcoded 3e-2). */
@@ -642,12 +642,12 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
     PROF_TS(t_p4);
 
     /* ---- PASS 4: warm-start λ and PGS sweep with 4 cones ------------------- */
-    /* warm-start: gather from lam_full_out (already seeded from lam_prev). Active
-       contacts' slots in lam_full_out will be overwritten in pass 5 — read first.
+    /* warm-start: gather from lam_contact_out (already seeded from lam_contact_prev). Active
+       contacts' slots in lam_contact_out will be overwritten in pass 5 — read first.
        Slot index: cp_idx[k] * MAX_PTS_PER_PAIR + sub_id[k]. */
     for (int k = 0; k < nc; k++) {
         int slot = cp_idx[k] * MAX_PTS_PER_PAIR + sub_id[k];
-        memcpy(lam + 6*k, lam_full_out + 6*slot, 6*sizeof(double));
+        memcpy(lam + 6*k, lam_contact_out + 6*slot, 6*sizeof(double));
     }
     /* friction rows warm-start from the per-DoF lam_fric carry (0 if cold). */
 #ifndef TACT_NO_JFRIC
@@ -820,10 +820,10 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
     for (int i = 0, fi = 0; i < nq; i++) {
         if (free_map[i] >= 0) dqd_out[i] = tmp[fi++];
     }
-    /* scatter λ to lam_full_out at (cpair_idx, sub_id) slot for next step's warm-start */
+    /* scatter λ to lam_contact_out at (cpair_idx, sub_id) slot for next step's warm-start */
     for (int k = 0; k < nc; k++) {
         int slot = cp_idx[k] * MAX_PTS_PER_PAIR + sub_id[k];
-        memcpy(lam_full_out + 6*slot, lam + 6*k, 6*sizeof(double));
+        memcpy(lam_contact_out + 6*slot, lam + 6*k, 6*sizeof(double));
     }
     /* scatter friction λ to the per-DoF lam_fric carry (in-place warm-start). */
 #ifndef TACT_NO_JFRIC
