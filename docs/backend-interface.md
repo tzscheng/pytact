@@ -39,7 +39,7 @@ kida.run 등 runner / controller)가 backend 에 기대하는 표면**이다.
   것 (encoder, IMU, 그리고 f/t 센서·contact switch 처럼 버스에 실리는 신호 포함).
 - **sensor topic** = exteroception — 별도 디바이스 드라이버가 비동기 publish 하는
   것 (camera/lidar). sim 에서는 tact 전용 capability (§3) 가 그 드라이버의 대역.
-- **oracle 쿼리** (`height_scan`, `raymap` 등) = sim-only GT — 런타임 센서
+- **oracle 쿼리** (`height_scan`, `raycast` 등) = sim-only GT — 런타임 센서
   아키텍처가 아니라 학습/디버그용 치트 경로. 분류 기준은 proprio/extero 의미가
   아니라 **"실기에서 어느 배선으로 오는가"** (control bus 동기 → y, 드라이버
   비동기 → topic).
@@ -49,11 +49,11 @@ kida.run 등 runner / controller)가 backend 에 기대하는 표면**이다.
 | capability | 계약 (요지) | tact | mujoco | chrono | real | parity |
 |---|---|:-:|:-:|:-:|:-:|---|
 | ~~`get_z(x, y)`~~ | **2026-06-06 제거** (sim-trick 최소화): 절대 world-z 는 실기에 존재하지 않는 양. 후속은 `height_scan` + "stance-foot FK z anchor + 상대 Δh" 레시피 (`StepGenerator2/4` 참조). mjenv/chenv 의 C export 는 legacy 잔존 — CEnv 는 이름 차단으로 포워딩 사고 방지 | ✗ | ✗ | ✗ | ✗ | — |
-| ~~`get_rgb_image`~~ (+ `get_depth_image`/`get_lidar_image`/`get_lidar_points`) | **2026-06-06 전부 제거** (원칙 (5)): CEnv wrapper 는 live 호출자 0 의 streaming 유물이었고, Env 쪽 4종은 `camera_frames`/`lidar_frames` 로 inline (소비자는 frames() generator 만 읽음; ad-hoc 접근은 `_render_frame`/`raymap`/`raycloud` primitive). C export 는 `mjenv.cpp` 에 존치 | ✗ | ✗ | ✗ | ✗ | — |
+| ~~`get_rgb_image`~~ (+ `get_depth_image`/`get_lidar_image`/`get_lidar_points`) | **2026-06-06 전부 제거** (원칙 (5)): CEnv wrapper 는 live 호출자 0 의 streaming 유물이었고, Env 쪽 4종은 `camera_frames`/`lidar_frames` 로 inline (소비자는 frames() generator 만 읽음; ad-hoc 접근은 `_render_frame`/`_ray_grid`+`_raycast_batch` primitive (raymap/raycloud 도 2026-06-06 lidar_frames 로 inline)). C export 는 `mjenv.cpp` 에 존치 | ✗ | ✗ | ✗ | ✗ | — |
 | `height_scan` | **유일한 terrain 쿼리** — base-relative (G,2) offsets → 상대고도 (G,), `MiniElevationMap.sample` 계약의 GT twin. 실 elevation map 이 주는 양과 동일 형태라 trick-free | ✓ | ✓ (CEnv parity wrapper — mjenv `get_z` C export 를 init-probe 해 instance 에 bind; miss → NaN → validity. probe 실패 backend 는 `hasattr` False) | ✗ | ✗ (소비자는 blind fallback) | **달성 (tact+mujoco)** |
 | `cameras` / `lidars` / `camera_frames()` / `lidar_frames()` | 센서 publish 명세 + (name, bytes) frame 공급 | ✓ | ✗ | ✗ | ✗ (실 드라이버가 동일 topic 직접 publish) | **비목표** — sim 전용 드라이버 대역 |
 | `add` / `delete` / `groups` / `edit` | 동적 토폴로지 편집 | ✓ | ✗ | ✗ | ✗ | 비목표 — CEnv 에서 부재 (`hasattr` False) + `__getattr__` 차단 리스트로 dlsym 충돌 방어 (§4) |
-| `raymap` / `raycloud` / `raycast` / `env.m.*` (fk, jacob, …) | sim-native 도구상자 | ✓ | ✗ | ✗ | ✗ | 비목표 |
+| `raycast` / `height_scan` / `env.m.*` (fk, jacob, …) | sim-native 도구상자 / oracle | ✓ | (height_scan 은 parity ✓ — 위 row) | ✗ | ✗ | 비목표 |
 | `get_dt` / `set_redraw` | runner 전용 plumbing — CEnv init 에서 probe, core `dt` 와 render cadence 의 구현 수단 | — | ✓ | ✗ | ✗ | (사용자 호출 대상 아님) |
 
 parity 열: **지향** = 여러 backend 가 같은 계약으로 구현해야 하는 항목 (이름이 같으면

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run python
-# Single-thread raycast/raymap benchmark for the LiDAR depth path (tact_raycast_batch).
+# Single-thread raycast benchmark for the LiDAR depth path (tact_raycast_batch).
 #
-# Measures the pure raycast cost (env.raymap), NOT get_lidar_image — zstd compression is
+# Measures the pure raycast cost (cached _ray_grid + _raycast_batch), NOT the wire encoder — zstd is
 # a separate, unaffected stage. Two scenes:
 #   syn : synthetic scene, N raycast shapes scattered around the sensor (dial N to stress
 #         the per-ray shape loop; the real dog scene is low-N).
@@ -81,6 +81,13 @@ def scene_info(env):
     hist = Counter(names.get(env.m.ctype[i], env.m.ctype[i]) for i in range(len(env.m.ctype)) if cast[i])
     return len(cast), on, dict(hist)
 
+def raymap(env, frame, w, h, dth, pinhole):
+    """Depth map from the primitives (raymap() was inlined into lidar_frames
+    2026-06-06; this measures the same pre-encoding pipeline: cached _ray_grid
+    + one tact_raycast_batch call)."""
+    return env._raycast_batch(frame, env._ray_grid(w, h, dth, pinhole)).reshape(h, w)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--scene', choices=['syn','dog'], default='syn')
@@ -106,7 +113,7 @@ def main():
 
     # warmup (also triggers any mesh lazy-load before timing)
     for _ in range(args.warmup):
-        D = env.raymap(frame, args.w, args.h, args.dth, pinhole=ph)
+        D = raymap(env, frame, args.w, args.h, args.dth, ph)
 
     if args.save_ref:
         np.save(args.save_ref, D); print(f"saved ref -> {args.save_ref}")
@@ -122,7 +129,7 @@ def main():
     for _ in range(args.reps):
         t0 = time.perf_counter()
         for _ in range(args.iters):
-            env.raymap(frame, args.w, args.h, args.dth, pinhole=ph)
+            raymap(env, frame, args.w, args.h, args.dth, ph)
         dt = time.perf_counter() - t0
         per_frame_ms.append(dt / args.iters * 1e3)
     per_frame_ms = np.array(per_frame_ms)

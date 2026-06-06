@@ -1,11 +1,13 @@
-"""Verify Env.raycloud(): the 3D point-cloud twin of Env.raymap().
+"""Verify the lidar ray pipeline: _ray_grid (single-source ray generation) +
+tact_raycast_batch (pure C intersector) + the lidar_frames wire encoders.
 
-Ray generation is single-source (Env._ray_grid — C's tact_raycast_batch is a
-pure intersector taking those directions verbatim, 2026-06-06). The decisive
-check is geometric: points back-projected from raymap ranges and transformed
-by the frame's PLAIN fkh pose must land exactly on known world surfaces (a
-floor plane, an offset box). Any ray-direction or roll error in the grid
-pushes them off-surface.
+raymap()/raycloud() were inlined into lidar_frames 2026-06-06; the canonical
+composition of the two primitives is exercised here via the local raymap64/
+raycloud64 helpers (float64, the same 3 lines lidar_frames runs before
+encoding). The decisive check is geometric: points back-projected from ranges
+and transformed by the frame's PLAIN fkh pose must land exactly on known world
+surfaces (a floor plane, an offset box). Any ray-direction or roll error in
+the grid pushes them off-surface.
 
 Run:  uv run --no-project python tact/tests/test_raycloud.py
 """
@@ -15,6 +17,21 @@ import sys, os.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import os, tempfile
 import numpy as np, tact
+
+
+def raymap64(env, frame, W, H, dth, pinhole=False):
+    """Depth map (H, W) from the primitives — the pre-encoding 2d pipeline."""
+    return env._raycast_batch(frame, env._ray_grid(W, H, dth, pinhole)).reshape(H, W)
+
+
+def raycloud64(env, frame, W, H, dth, pinhole=False, max_range=None):
+    """Sensor-frame point cloud from the primitives — the pre-encoding 3d pipeline."""
+    dirs = env._ray_grid(W, H, dth, pinhole)
+    t = env._raycast_batch(frame, dirs)
+    hit = t >= 0.0
+    if max_range is not None:
+        hit &= t <= max_range
+    return t[hit, None] * dirs[hit]
 
 PASS, FAIL = '\033[32mPASS\033[0m', '\033[31mFAIL\033[0m'
 fails = 0
@@ -54,8 +71,8 @@ def on_box(pw, tol=1e-6):
 
 for mode, pinhole in (('angular', False), ('pinhole', True)):
     print(f'\n[{mode}]')
-    D = env.raymap('lid', W, H, DTH, pinhole=pinhole)
-    pts = env.raycloud('lid', W, H, DTH, pinhole=pinhole)
+    D = raymap64(env, 'lid', W, H, DTH, pinhole=pinhole)
+    pts = raycloud64(env, 'lid', W, H, DTH, pinhole=pinhole)
     d = D.ravel()
     hit = d >= 0.0
 
@@ -79,7 +96,7 @@ for mode, pinhole in (('angular', False), ('pinhole', True)):
           f'{int(above.sum())} pts, y_mean={pw[above, 1].mean():+.2f}')
 
     # 4) max_range filter
-    pts_r = env.raycloud('lid', W, H, DTH, pinhole=pinhole, max_range=2.0)
+    pts_r = raycloud64(env, 'lid', W, H, DTH, pinhole=pinhole, max_range=2.0)
     check(len(pts_r) < len(pts) and
           float(np.linalg.norm(pts_r, axis=1).max()) <= 2.0 + 1e-12,
           'max_range=2.0 drops far hits', f'{len(pts)} -> {len(pts_r)}')
@@ -97,7 +114,7 @@ check(r1 is r2, 'ray grid cached per (w,h,dth,pinhole)')
 print('\n[raycloud -> MiniElevationMap]')
 m = tact.MiniElevationMap(cell_size=0.04, sigma_meas=0.005)
 m.move_to([0.0, 0.0])
-m.insert(world(env.raycloud('lid', W, H, DTH)))
+m.insert(world(raycloud64(env, 'lid', W, H, DTH)))
 probe = np.array([[0.6, -0.2], [1.0, 0.0],                      # near floor (dense)
                   [BOX_C[0] - 0.1, BOX_C[1]],                   # box
                   [2.5, -0.5]])                                  # far floor (sparse)
@@ -125,9 +142,9 @@ env_pc.reset()
 frames = dict(env_pc.lidar_frames())
 check('lid' in frames, "lidar_frames() publishes the pointcloud lidar")
 dec = np.frombuffer(zstandard.decompress(frames['lid']), '<f4').reshape(-1, 3)
-ref = env_pc.raycloud('lid', W, H, DTH, max_range=2.0).astype('<f4')
+ref = raycloud64(env_pc, 'lid', W, H, DTH, max_range=2.0).astype('<f4')
 check(dec.shape == ref.shape and np.array_equal(dec, ref),
-      'wire roundtrip == raycloud(max_range from spec), f32-exact',
+      'wire roundtrip == primitive pipeline (max_range from spec), f32-exact',
       f'N={len(dec)}')
 check(float(np.linalg.norm(dec.astype(np.float64), axis=1).max()) <= 2.0 + 1e-6,
       'spec max_range honored on the wire')

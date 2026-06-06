@@ -25,9 +25,14 @@ import tact
 
 
 def render(env, frame, width, height, dth, pinhole, perpendicular):
+    # raymap() was inlined into lidar_frames 2026-06-06 — compose the primitives
+    # (cached ray grid + one batched C raycast; perpendicular = -dir_z cos factor).
     t0 = time.perf_counter()
-    D = env.raymap(frame, width=width, height=height, dth=dth,
-                   pinhole=pinhole, perpendicular=perpendicular)
+    dirs = env._ray_grid(width, height, dth, pinhole)
+    t = env._raycast_batch(frame, dirs)
+    if perpendicular:
+        t = np.where(t >= 0.0, t * -dirs[:, 2], t)
+    D = t.reshape(height, width)
     dt_ms = (time.perf_counter() - t0) * 1000
     n_hit = int((D >= 0).sum())
     return D, dt_ms, n_hit
