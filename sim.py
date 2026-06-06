@@ -240,7 +240,7 @@ class Model:
         # (default body = root) so it reuses the full frame machinery below — default-fill,
         # root-offset application, fdict/fbody/ftran registration, and add/delete group
         # handling — without a parallel code path. Env.camera_frames/lidar_frames then
-        # look the sensor up by frame name (cameras: egl_render via _render_frame;
+        # look the sensor up by frame name (cameras: egl_render;
         # lidars: raymap/raycloud). Only the normalized publish metadata is kept, in
         # self.cameras / self.lidars. Extra keys (e.g. a transport `port` for a runner that
         # also binds a LAN socket) pass through untouched.
@@ -1950,48 +1950,14 @@ class Env:
         ret = clib.win_render(len(_type), _type, _shape, _objcolor,_objpose, _campose)
         return ret
     
-    def _render_frame(self, frame, opt, res, vfov):
-        # Shared EGL render for a camera frame. opt=1 -> RGB JPEG bytes;
-        # opt=2 -> depth (linear eye-space meters, float32, zstd-compressed).
-        # Output size = the YAML camera `res`, vertical FOV = the camera `vfov` (deg);
-        # both forwarded to the renderer (`res` sizes its pbuffer/FBO, `vfov` drives
-        # the projection). If unset, look them up by camera name; frames that aren't
-        # declared cameras fall back to the legacy 640x480 / 45° vfov.
-        if frame not in self.m.fdict: return None
-        if res is None:
-            res = next((c['res'] for c in self.m.cameras if c['name'] == frame), [640, 480])
-        if vfov is None:
-            vfov = next((c['vfov'] for c in self.m.cameras if c['name'] == frame), 45)
-        width, height = int(res[0]), int(res[1])
-        # Grow the receive buffer to the worst-case payload. JPEG (opt=1) is bounded
-        # well under width*height*4. zstd of a width*height float32 depth map (opt=2)
-        # can slightly exceed its width*height*4 raw size (ZSTD_compressBound), so add
-        # slack (> raw/255) on the depth path.
-        need = width * height * 4
-        if opt == 2: need += width * height // 16 + 4096
-        if ctypes.sizeof(self._imgbuf) < need:
-            self._imgbuf = (ctypes.c_ubyte * need)()
-
-        _type, _shape, _objcolor, _objpose = self._geom_arrays()
-
-        tmp = self.m.fkh([frame], self.q)[0]
-        tmp = tmp @ xyzeuler_to_homogeneous([0, 0, 0, 0, 0, -np.pi/2])
-        campose = np.linalg.inv(tmp).T.flatten()
-        _campose = (ctypes.c_float*len(campose))(*campose)
-
-        self._push_light()
-        # vfov passed as c_float: egl_render has no declared argtypes, so a bare
-        # Python float would be marshalled as c_double and misread by the C `float`.
-        imglen = clib.egl_render(len(_type), _type, _shape, _objcolor, _objpose, _campose,
-                                 self._imgbuf, opt, width, height, ctypes.c_float(vfov))
-        return ctypes.string_at(self._imgbuf, imglen)
-
     # NOTE: the per-type getters (get_rgb_image/get_depth_image/get_lidar_image/
-    # get_lidar_points) were inlined into camera_frames/lidar_frames 2026-06-06
-    # (principle (5)): consumers only ever read the frames() generators, the
-    # getters were 1-line delegations or re-looked the spec up by name that the
-    # caller already held. Ad-hoc/debug access goes through the primitives that
-    # remain: _render_frame (EGL rgb/depth), raymap/raycloud (lidar).
+    # get_lidar_points) and the intermediate wrappers (raymap/raycloud,
+    # _render_frame) were inlined into camera_frames/lidar_frames 2026-06-06
+    # (principle (5)): consumers only ever read the frames() generators, and the
+    # middle layers were 1-line delegations or re-looked up specs the caller
+    # already held (plus dead undeclared-frame fallbacks). Ad-hoc/debug access:
+    # lidar → compose _ray_grid + _raycast_batch (recipe below); camera → iterate
+    # camera_frames() on a due tick (cnt=0 publishes everything).
 
     def camera_frames(self):
         """Yield (name, payload_bytes) for each camera due to publish at the current
@@ -2016,9 +1982,33 @@ class Env:
             if cyc is None:
                 cyc = c['_cycle'] = max(1, round((1.0/self.m.dt)/c['fps'])) if c.get('fps') else 1
             if self.cnt % cyc: continue
-            buf = self._render_frame(c['name'], 1 if c['type'] == 'rgb' else 2,
-                                     c.get('res'), c.get('vfov'))
-            if buf is not None: yield c['name'], buf
+            opt = 1 if c['type'] == 'rgb' else 2
+            w, h = int(c['res'][0]), int(c['res'][1])
+            # Grow the receive buffer to the worst-case payload. JPEG (opt=1) is
+            # bounded well under w*h*4. zstd of a w*h float32 depth map (opt=2) can
+            # slightly exceed its raw size (ZSTD_compressBound), so add slack
+            # (> raw/255) on the depth path.
+            need = w * h * 4
+            if opt == 2: need += w * h // 16 + 4096
+            if ctypes.sizeof(self._imgbuf) < need:
+                self._imgbuf = (ctypes.c_ubyte * need)()
+
+            _type, _shape, _objcolor, _objpose = self._geom_arrays()
+
+            # Camera pose: registered frame + the -90° optical roll about -Z — the
+            # render-path twin of the roll _ray_grid folds into the lidar rays.
+            tmp = self.m.fkh([c['name']], self.q)[0]
+            tmp = tmp @ xyzeuler_to_homogeneous([0, 0, 0, 0, 0, -np.pi/2])
+            campose = np.linalg.inv(tmp).T.flatten()
+            _campose = (ctypes.c_float*len(campose))(*campose)
+
+            self._push_light()
+            # vfov passed as c_float: egl_render has no declared argtypes, so a bare
+            # Python float would be marshalled as c_double and misread by the C `float`.
+            imglen = clib.egl_render(len(_type), _type, _shape, _objcolor, _objpose,
+                                     _campose, self._imgbuf, opt, w, h,
+                                     ctypes.c_float(c['vfov']))
+            if imglen > 0: yield c['name'], ctypes.string_at(self._imgbuf, imglen)
 
     # NOTE: the lidar wire is RAW float32 since 2026-06-06 (Python-side zstd
     # removed): float coordinates compress only ~x1.5 (high-entropy mantissas)
