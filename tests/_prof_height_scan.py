@@ -43,8 +43,18 @@ for tag, xy in [('flat  xy=(0,0)', (0.0, 0.0)), ('stairs xy=(8,0)', (8.0, 0.0))]
     ms = t_ms(lambda xy=xy: env.height_scan(xy, 0.0, offsets), 200)
     print(f"(a) height_scan {tag}: {ms:7.4f} ms  ({env.last['n_valid']}/35 valid)")
 
-# (b) single ray
-ms1 = t_ms(lambda: env.raycast([8.0, 0.0, 100.0], [0.0, 0.0, -1.0]), 2000)
+# (b) single ray — the old per-query loop body (n=1 tact_raycast_world call;
+# Env.raycast was inlined into height_scan 2026-06-06, so go via clib)
+import ctypes
+from tact._clib import clib, _DBL
+R0 = np.ascontiguousarray([[8.0, 0.0, 100.0]]); Rd = np.ascontiguousarray([[0.0, 0.0, -1.0]])
+t1 = np.empty(1)
+def one_ray():
+    q = np.ascontiguousarray(env.q)
+    clib.tact_raycast_world(env.m._h, q.ctypes.data_as(_DBL),
+                            R0.ctypes.data_as(_DBL), Rd.ctypes.data_as(_DBL),
+                            ctypes.c_int(1), t1.ctypes.data_as(_DBL))
+ms1 = t_ms(one_ray, 2000)
 print(f"(b) single raycast:        {ms1:7.4f} ms  (x36 = {36*ms1:7.4f} ms)")
 
 # (c) batch slope/intercept through an existing frame (foot1). Dirs in a small

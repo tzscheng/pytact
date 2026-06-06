@@ -1798,7 +1798,7 @@ class Env:
         Assumes the robot's own shapes opt out of rays (`raycast: false`, the
         convention for robot YAMLs) — otherwise the scan reads the robot's
         back instead of the ground. Overhangs: the FIRST surface from z_top
-        down wins (terrain-top convention, like raymap)."""
+        down wins (terrain-top convention, like the lidar 2d path)."""
         off = np.asarray(offsets, dtype=np.float64).reshape(-1, 2)
         c, s = np.cos(yaw), np.sin(yaw)
         wx = float(base_xy[0]) + c * off[:, 0] - s * off[:, 1]
@@ -1814,7 +1814,11 @@ class Env:
         R0s[G, 0], R0s[G, 1] = base_xy[0], base_xy[1]
         R0s[:, 2] = z_top
         Rds = np.zeros((G + 1, 3)); Rds[:, 2] = -1.0
-        t = self.raycast(R0s, Rds)
+        t = np.empty(G + 1)
+        q = np.ascontiguousarray(self.q, dtype=np.float64)
+        clib.tact_raycast_world(self.m._h, q.ctypes.data_as(_DBL),
+                                R0s.ctypes.data_as(_DBL), Rds.ctypes.data_as(_DBL),
+                                ctypes.c_int(G + 1), t.ctypes.data_as(_DBL))
         h = np.where(t >= 0.0, z_top - t, np.nan)
         ok = ~np.isnan(h[:-1])
         base_valid = not np.isnan(h[-1])
@@ -1824,27 +1828,15 @@ class Env:
                          n_valid=int(ok.sum()))
         return out
 
-    #def get_camera_name(self):
-    #    return [k for k in self.m.fdict.keys() if k.endswith('cam')]
-
-    def raycast(self, origins, dirs):
-        """n world-frame rays vs all raycast-on collision shapes — the oracle
-        primitive. `origins`/`dirs` are (n, 3) (or a single ray as (3,));
-        directions should be unit-norm (sphere primitive in particular assumes
-        |Rd|=1). Returns (n,) forward distances t (>0), -1 = miss — a scalar
-        for (3,) input. One C call = one _fk + shape cache for the batch
-        (per-ray origins → no cone cull, unlike the sensor path
-        _raycast_frame)."""
-        R0 = np.ascontiguousarray(origins, dtype=np.float64)
-        Rd = np.ascontiguousarray(dirs, dtype=np.float64)
-        single = R0.ndim == 1
-        R0, Rd = np.atleast_2d(R0), np.atleast_2d(Rd)
-        t = np.empty(len(R0))
-        q = np.ascontiguousarray(self.q, dtype=np.float64)
-        clib.tact_raycast_world(self.m._h, q.ctypes.data_as(_DBL),
-                          R0.ctypes.data_as(_DBL), Rd.ctypes.data_as(_DBL),
-                          ctypes.c_int(len(R0)), t.ctypes.data_as(_DBL))
-        return float(t[0]) if single else t
+    # NOTE: Env.raycast() (n arbitrary world rays) was inlined into height_scan
+    # 2026-06-06 (principle (5)): height_scan was its only consumer. Ad-hoc/
+    # debug access goes straight to the C primitive — origins/dirs (n, 3)
+    # contiguous float64, dirs unit-norm, t (n,) forward ranges, -1 = miss:
+    #     t = np.empty(len(R0s))
+    #     clib.tact_raycast_world(env.m._h,
+    #         np.ascontiguousarray(env.q).ctypes.data_as(_DBL),
+    #         R0s.ctypes.data_as(_DBL), Rds.ctypes.data_as(_DBL),
+    #         ctypes.c_int(len(R0s)), t.ctypes.data_as(_DBL))
 
     # NOTE: raymap()/raycloud() were inlined into lidar_frames 2026-06-06
     # (principle (5)): after the tact_raycast_frame refactor they were thin
