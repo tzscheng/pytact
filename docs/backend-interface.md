@@ -49,7 +49,7 @@ kida.run 등 runner / controller)가 backend 에 기대하는 표면**이다.
 | capability | 계약 (요지) | tact | mujoco | chrono | real | parity |
 |---|---|:-:|:-:|:-:|:-:|---|
 | `get_z(x, y) → z` | 지형 절대고도, miss → 0.0 | ✓ | ✓ (mjenv) | ✓ (chenv) | ✗ | **지향** |
-| `get_rgb_image` | named camera → JPEG bytes | ✓ `(frame, res, vfov)` | ✓ `(name)` | ✗ | ✗ | 지향 — **시그니처 불일치 알려짐**, 통일 TODO |
+| `get_rgb_image` | named camera → JPEG bytes | ✓ `(frame, res, vfov)` | ✗ — CEnv wrapper 는 2026-06-06 삭제 (원칙 (5): live 호출자 0, 옛 streaming 유물). C export 는 `mjenv.cpp` 에 존치 — 재도입 시 Env 시그니처로 통일 | ✗ | ✗ | 후보 |
 | `height_scan` | `MiniElevationMap.sample` 계약의 GT twin | ✓ | ✗ (`mj_ray` 로 구현 가능 — 후보) | ✗ | ✗ | 후보 |
 | `is_locked` / `unlock` | 시뮬 일시정지 질의/해제 | ✓ | (export 시) | (export 시) | ✗ | 비목표 |
 | `cameras` / `lidars` / `camera_frames()` / `lidar_frames()` | 센서 publish 명세 + (name, bytes) frame 공급 | ✓ | ✗ | ✗ | ✗ (실 드라이버가 동일 topic 직접 publish) | **비목표** — sim 전용 드라이버 대역 |

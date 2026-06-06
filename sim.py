@@ -2182,7 +2182,6 @@ class CEnv:
         self.backend = backend
         self.has_pd = has_pd
         self._y = (ctypes.c_double*n_y)()
-        self._imgbuf = None
         # Unified contract — every backend exports:
         #   int  step(double* u, double* q_ref, double* qd_ref, double* y)
         #   void reset(double* y)
@@ -2234,14 +2233,11 @@ class CEnv:
         if ret < 0: print('ESC pressed. exit...'); sys.exit()
         return np.frombuffer(self._y, dtype=np.float64).copy()
 
-    def get_rgb_image(self, name):
-        if self._imgbuf is None:
-            self.cdll.get_rgb_image.restype = ctypes.c_int
-            self.cdll.get_rgb_image.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_ubyte)]
-            self._imgbuf = (ctypes.c_ubyte * (1024*768*4))()
-        imglen = self.cdll.get_rgb_image(name.encode(), self._imgbuf)
-        if imglen <= 0: return None
-        return ctypes.string_at(self._imgbuf, imglen)
+    # NOTE: get_rgb_image wrapper removed 2026-06-06 (principle (5), zero live
+    # callers since the archived kida.ws/replay.py streaming era). mjenv.cpp still
+    # exports the C symbol; if mujoco camera parity is ever wanted, re-add a
+    # declared wrapper matching Env's signature (frame, res, vfov) — see the
+    # capability ledger (docs/backend-interface.md).
 
     def reset(self):
         """Reset backend state and return the initial observation y. C-side reset()
