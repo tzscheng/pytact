@@ -165,6 +165,12 @@ it the same pure way contact warm-start is threaded today (`lam_in`/`lam_out` /
 so `Model.step` stays referentially transparent (`docs/design-pure-step.md`). Reset
 to None on add/delete (DoF count change invalidates it), exactly like `lam_prev`.
 
+> **2026-06-06 update**: the per-type carries were unified into ONE λ vector —
+> `SolverState.lam = [contact | fric | limit]` with read-only block views, and
+> `tact_step_lcp` takes a single `lam_in`/`lam_out` pair (14→10 args). The per-DoF
+> semantics above are unchanged; only the packaging moved. See
+> `docs/design-pure-step.md` §SolverState.
+
 ## 6. Regression / bit-identical gate
 
 **Invariant: a scene with no frictionloss (all `floss=0`) must stay bit-identical.**

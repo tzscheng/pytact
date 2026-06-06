@@ -31,16 +31,27 @@ Model.step(q, qd, tau=None, q_ref=None, qd_ref=None, ctx=None)
 - `ctx` 는 **변형되지 않는다** — `ctx_next` 는 새 객체. 그래서 같은 `ctx` 로 두 번 step 하면
   두 독립 분기가 나온다 (fork-safe).
 - `Model.zero_state()` → 현재 토폴로지에 맞는 cold `SolverState` (외부 pure 호출자가 초기
-  carry 를 만들 때). 길이 `6 · MAX_PTS_PER_PAIR · n_pair`.
+  carry 를 만들 때). 길이 `6 · MAX_PTS_PER_PAIR · max(n_pair,1) + 2·nq`.
 
-### `SolverState`
+### `SolverState` (2026-06-06 unified-λ 형태)
 ```python
 class SolverState(NamedTuple):
-    lam: np.ndarray          # LCP warm-start λ
-    # 미래 hidden state(예: stick-slip anchor)는 여기 필드만 추가 → 시그니처 불변
+    lam: np.ndarray   # 모든 PGS warm-start λ를 한 벡터에, row-table 순:
+                      #   [contact(6·MAX_PTS_PER_PAIR·max(n_pair,1), slot-indexed)
+                      #    | joint-friction(nq) | joint-limit(nq)]
+    nq: int           # layout metadata — 아래 view 용
+    # lam_contact / lam_fric / lam_limit: read-only block view properties (디버그/검사용;
+    # tests/joint_{friction,limit}.py 가 그대로 소비). 미래 constraint-row 타입은
+    # 여기 layout 블록을 append (필드/시그니처 불변).
 ```
-- **NamedTuple** 인 이유: ① 필드 추가로 일반화 (미래 숨은 상태 대비 — 시그니처 churn 없음),
-  ② JAX-pytree 친화 (나중 vmap/scan/AD), ③ self-documenting (`ctx.lam`).
+- 처음(2026-05-25)에는 row 타입마다 필드를 추가하는 설계였다 (`lam`, `lam_fric`, `lam_limit`
+  3필드 + `tact_step_lcp` 인자 쌍 3개). 2026-06-06 **단일 벡터로 통합**: ① row 타입 증가가
+  O(1) (layout 블록 append; 시그니처/필드 churn 없음), ② 명명 비대칭(`lam` 만 무표) 해소,
+  ③ `tact_step_lcp` 14→10 인자 — Python 경계의 `data_as` 포인터 생성(~1.5 µs/회) 4회 감소로
+  **step 48.4→42.8 µs (−12%, dog+stairs)**. layout 은 C↔Python ABI — 양쪽이 같은 offset
+  산술로 슬라이스 (`tact.c` 의 `C = 6·MPP·max(n_pair,1)`, `sim.py` 의 view property).
+- **NamedTuple** 인 이유: ① JAX-pytree 친화 (나중 vmap/scan/AD), ② self-documenting
+  (`ctx.lam`, view 로 `ctx.lam_fric`).
 - **인자명 `ctx`**: `q/qd`(동역학 상태)와 혼동을 피하려 `state` 대신, Drake `Context` 선례를
   따라 `ctx` 채택. (`carry`(JAX scan) 도 후보였음.)
 
@@ -64,20 +75,25 @@ pure 가 된다.
 ### Python (`sim.py`)
 - `Model.step(..., ctx=None)`:
   - **C 경로** (`use_c`): `ctx.lam`(없으면 zeros)을 `lam_in`, fresh `lam_out` 을 받아
-    `tact_step_lcp` 에 전달 → `ctx_next = SolverState(lam=lam_out)`.
-  - **Python 경로** (`use_c=False`): `contact_lcp(lam_prev = ctx.lam or None)` → 
-    `ctx_next = SolverState(lam=lcp_info['lam_full'])`.
+    `tact_step_lcp` 에 전달 → `ctx_next = SolverState(lam=lam_out, nq=nq)`. 통합 벡터
+    1쌍이 전부 — per-type 버퍼/인자는 없다.
+  - **Python 경로** (`use_c=False`): `ctx.lam` 을 view 로 3분할해 `contact_lcp(lam_prev=,
+    lam_fric_prev=, lam_limit_prev=)` 에 전달 (rbd.py 인터페이스는 per-type 유지), 출력
+    3개를 `np.concatenate` 로 재포장. npair==0 일 때 rbd 의 contact 블록은 길이 0 —
+    layout 의 1-pair 슬롯(24)으로 패딩해 cross-path ctx 호환 유지.
   - **minimal 솔버**: warm-start 없음 → `ctx_next = ctx` (passthrough).
 - `self.lam_prev` (옛 Model 상태) **제거** — carry 로 일원화.
 - `Env`: `self._ctx` 보관, `step` 에서 thread, `__init__`/`add`/`delete`/`reset` 에서 `None`
   리셋 (토폴로지 변경 시 cpair 크기가 바뀌어 carry 무효).
 
 ### C (`tact.c`/`tact.h`/`_clib.py`)
-- `tact_step_lcp(..., double *lam_in, double *lam_out)`:
-  - `lam_in==NULL` → `h->lam_prev` fallback (legacy stateful). 비-NULL → 그 버퍼 사용.
-  - `contact_lcp` 가 이미 `lam_prev`(in)/`lam_full_out`(out) 을 분리 지원 — `lam_in != lam_out`
-    이면 out 을 in 으로 **seed-copy** 후 active slot 만 갱신 → **`lam_in` 불변**.
-- `h->lam_prev` 필드는 NULL-fallback 버퍼로 유지 (제거하지 않음).
+- `tact_step_lcp(..., double *lam_in, double *lam_out)`: **REQUIRED, non-NULL** (NULL
+  fallback 은 2026-06-06 제거 — 호출자는 Model.step 뿐이고 항상 버퍼를 공급).
+  - 진입부에서 offset 산술로 3블록 포인터 분해: contact 는 `contact_lcp` 가
+    `lam_prev`(in)/`lam_full_out`(out) 분리 지원으로 직접 seed, per-DoF 블록(fric+limit,
+    layout 상 인접)은 `memcpy(lam_out+C, lam_in+C, 2·nq)` 한 번으로 seed → **`lam_in` 불변**.
+- `h->lam_prev`/`lam_fric_prev`/`lam_limit_prev` arena 필드 **제거** (2026-06-06) —
+  handle 은 스텝 간 솔버 상태를 일절 보유하지 않는다.
 
 ## 5. 핵심 성질: bit-identical → baseline 재캡처 불필요
 

@@ -50,11 +50,14 @@ def check(name, ok, detail=''):
     CHECKS.append((name, bool(ok), detail))
 
 def main():
-    # 1. zero_state sizing
-    m = _model(); npair = len(m.cpair); zs = m.zero_state()
-    check('zero_state len = 6*MAX_PTS_PER_PAIR*n_pair',
-          len(zs.lam) == 6 * tact.MAX_PTS_PER_PAIR * max(npair, 1),
+    # 1. zero_state sizing — unified λ layout [contact | fric | limit]
+    m = _model(); npair = len(m.cpair); nq = len(m.floss); zs = m.zero_state()
+    check('zero_state len = 6*MAX_PTS_PER_PAIR*n_pair + 2*nq',
+          len(zs.lam) == 6 * tact.MAX_PTS_PER_PAIR * max(npair, 1) + 2 * nq,
           f'len={len(zs.lam)}')
+    check('block views partition lam',
+          len(zs.lam_contact) + len(zs.lam_fric) + len(zs.lam_limit) == len(zs.lam)
+          and len(zs.lam_fric) == nq and len(zs.lam_limit) == nq)
 
     # 2. cold-start determinism — referential transparency from inputs alone
     d = np.abs(run_cold() - run_cold()).max()

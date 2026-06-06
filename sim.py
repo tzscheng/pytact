@@ -15,13 +15,33 @@ class SolverState(NamedTuple):
     """Persistent solver state threaded across Model.step() calls (the `ctx` arg).
     Externalizing it makes Model.step referentially transparent: same
     (q, qd, tau, ..., ctx) → same (q_next, qd_next, y, ctx_next). Env keeps one
-    internally so Env users see no change. Today it holds only the LCP warm-start
-    λ; future hidden state (e.g. stick-slip anchors) is added as a field here with
-    no signature churn. NamedTuple → JAX-pytree friendly for later batched/diff use.
-    `ctx=None` = cold start (zero λ)."""
-    lam: np.ndarray          # LCP contact warm-start λ, length 6*MAX_PTS_PER_PAIR*n_pair
-    lam_fric: np.ndarray = None   # joint-friction warm-start λ, per-DoF (length nq); None = cold
-    lam_limit: np.ndarray = None  # joint-limit warm-start λ, per-DoF (length nq); None = cold
+    internally so Env users see no change. NamedTuple → JAX-pytree friendly for
+    later batched/diff use. `ctx=None` = cold start (zero λ).
+
+    `lam` is ONE vector holding every PGS warm-start λ, blocks in row-table
+    order (the layout is the C↔Python ABI; tact_step_lcp slices it by the same
+    arithmetic):
+
+        [contact (6·MAX_PTS_PER_PAIR·max(n_pair,1), slot-indexed)
+         | joint-friction (nq, per-DoF) | joint-limit (nq, per-DoF)]
+
+    A future constraint-row type appends a block here (and bumps zero_state)
+    instead of growing tact_step_lcp's signature / this tuple's fields. `nq` is
+    layout metadata for the read-only block views below — introspection/debug
+    only; step() consumes `lam` whole."""
+    lam: np.ndarray          # unified PGS warm-start λ: [contact | fric | limit]
+    nq: int                  # per-DoF block length (layout metadata)
+
+    @property
+    def lam_contact(self):   # contact-cone block, slot = cpair_idx*MAX_PTS_PER_PAIR + sub_id
+        return self.lam[:len(self.lam) - 2 * self.nq]
+    @property
+    def lam_fric(self):      # joint Coulomb friction block, per-DoF
+        c = len(self.lam) - 2 * self.nq
+        return self.lam[c:c + self.nq]
+    @property
+    def lam_limit(self):     # joint limit block, per-DoF
+        return self.lam[len(self.lam) - self.nq:]
 
 # NOTE: the free-joint locking mechanism (YAML `lock: true` → magic 6-DoF PD
 # wrench pinning the base at q0 until env.unlock()) was removed 2026-06-06,
@@ -1267,11 +1287,11 @@ class Model:
     def zero_state(self):
         """A cold-start SolverState sized for the current topology (all λ = 0).
         Use as the initial `ctx` for a pure Model.step rollout, or after a
-        topology change (add/delete) since λ length = 6*MAX_PTS_PER_PAIR*n_pair."""
-        npair = len(self.cpair)
-        return SolverState(lam=np.zeros(6 * MAX_PTS_PER_PAIR * max(npair, 1)),
-                           lam_fric=np.zeros(len(self.floss)),
-                           lam_limit=np.zeros(len(self.floss)))
+        topology change (add/delete) since the λ layout is sized by
+        (n_pair, nq): 6*MAX_PTS_PER_PAIR*max(n_pair,1) contact slots + 2*nq."""
+        npair, nq = len(self.cpair), len(self.floss)
+        return SolverState(lam=np.zeros(6 * MAX_PTS_PER_PAIR * max(npair, 1) + 2 * nq),
+                           nq=nq)
 
     def step(self, q, qd, tau=None, q_ref=None, qd_ref=None, ctx=None):
         # Referentially transparent: same (q, qd, tau, q_ref, qd_ref, ctx) → same
@@ -1306,27 +1326,21 @@ class Model:
             qdr_ptr = qd_ref.ctypes.data_as(_DBL)     if qd_ref      is not None else None
 
             # warm-start carry: ctx.lam in, fresh lam_out (= ctx_next) out. ctx=None →
-            # cold (zeros). Distinct in/out buffers keep ctx immutable (C seeds out from in).
-            lam_len = 6 * MAX_PTS_PER_PAIR * max(len(self.cpair), 1)
+            # cold (zeros). Distinct in/out buffers keep ctx immutable (C seeds out
+            # from in). ONE vector for all PGS row types — [contact | fric | limit],
+            # the SolverState layout; tact_step_lcp slices it by the same arithmetic.
+            nq_dof  = len(self.floss)
+            lam_len = 6 * MAX_PTS_PER_PAIR * max(len(self.cpair), 1) + 2 * nq_dof
             lam_in  = np.zeros(lam_len) if ctx is None else np.ascontiguousarray(ctx.lam, dtype=np.float64)
             lam_out = np.zeros(lam_len, dtype=np.float64)
-            # joint-friction warm-start carry (per-DoF), same immutable-in/out contract.
-            nq_dof  = len(self.floss)
-            lam_fric_in  = np.zeros(nq_dof) if (ctx is None or ctx.lam_fric is None) else np.ascontiguousarray(ctx.lam_fric, dtype=np.float64)
-            lam_fric_out = np.zeros(nq_dof, dtype=np.float64)
-            # joint-limit warm-start carry (per-DoF), same contract.
-            lam_limit_in  = np.zeros(nq_dof) if (ctx is None or ctx.lam_limit is None) else np.ascontiguousarray(ctx.lam_limit, dtype=np.float64)
-            lam_limit_out = np.zeros(nq_dof, dtype=np.float64)
             clib.tact_step_lcp(self._h, q_in.ctypes.data_as(_DBL), qd_in.ctypes.data_as(_DBL), tau_in.ctypes.data_as(_DBL), Kp_ptr, Kd_ptr, qr_ptr, qdr_ptr,
-                               lam_in.ctypes.data_as(_DBL), lam_out.ctypes.data_as(_DBL),
-                               lam_fric_in.ctypes.data_as(_DBL), lam_fric_out.ctypes.data_as(_DBL),
-                               lam_limit_in.ctypes.data_as(_DBL), lam_limit_out.ctypes.data_as(_DBL))
+                               lam_in.ctypes.data_as(_DBL), lam_out.ctypes.data_as(_DBL))
 
             #copy outputs out of arena (next step would overwrite views)
             q_next  = self._h_q_next.copy()
             qd_next = self._h_qd_next.copy()
             y       = self._h_y[:self._y_size].copy()
-            ctx_next = SolverState(lam=lam_out, lam_fric=lam_fric_out, lam_limit=lam_limit_out)
+            ctx_next = SolverState(lam=lam_out, nq=nq_dof)
 
         elif not self.use_c and self.solver == 'lcp':
             #LCP path: ABA-with-joint-PD(f_ext=0) → qd_free, CRB → M, contact_lcp solves for
@@ -1342,14 +1356,22 @@ class Model:
             qd_free = qd + qdd_free * self.dt
             M = crb_featherstone(self.X, self.I6, self.parent, self.jtype, q)
             M = M + np.diag(self.armature)   # armature (rotor inertia) on the M diagonal — matches the C path + ABA predictor above
-            lam_prev      = None if ctx is None else ctx.lam        # cold when ctx absent
-            lam_fric_prev = None if ctx is None else ctx.lam_fric   # joint-friction warm-start
-            lam_limit_prev = None if ctx is None else ctx.lam_limit # joint-limit warm-start
+            # slice the unified ctx.lam into contact_lcp's per-type warm-starts
+            # (views — contact_lcp reads them without mutating, so ctx stays
+            # immutable), then pack its per-type outputs back into one vector.
+            lam_prev       = None if ctx is None else ctx.lam_contact
+            lam_fric_prev  = None if ctx is None else ctx.lam_fric
+            lam_limit_prev = None if ctx is None else ctx.lam_limit
             dqd, lam, lcp_info, f_ext = contact_lcp(T, self.parent, self.jtype, self.cpair, self.ctype, self.cbody, self.ctran, self.cshape, self.cparam, qd_free, M, self.dt,
                                                     erp=self.erp, slop=self.slop, cfm_scale=self.cfm_scale, v_rest_thresh=self.v_rest_thresh, iters=self.iters, tol=self.tol,
                                                     lam_prev=lam_prev, floss=self.floss, lam_fric_prev=lam_fric_prev,
                                                     q=q, jnt_lo=self.jnt_lo, jnt_hi=self.jnt_hi, lam_limit_prev=lam_limit_prev)
-            ctx_next = SolverState(lam=lcp_info['lam_full'], lam_fric=lcp_info['lam_fric_full'], lam_limit=lcp_info['lam_limit_full'])   #carry for next step's warm-start
+            cblk = lcp_info['lam_full']
+            clen = 6 * MAX_PTS_PER_PAIR * max(len(self.cpair), 1)
+            if len(cblk) != clen:   # npair==0: rbd sizes by npair (0), layout keeps the 1-pair slot
+                cblk = np.zeros(clen)
+            ctx_next = SolverState(lam=np.concatenate([cblk, lcp_info['lam_fric_full'], lcp_info['lam_limit_full']]),
+                                   nq=len(self.floss))   #carry for next step's warm-start
             qd_next = qd_free + dqd
             q_base, _, _, _, _, _ = _build_qidx(self.jtype)
             q_next  = _q_step(q, qd_next, self.dt, self.jtype, q_base)

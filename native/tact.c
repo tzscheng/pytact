@@ -65,13 +65,10 @@ struct tact_t {
     double *tau_p;              /* nb — scratch: tau - ff*qd - sk*q for integrator (explicit damping/spring) */
     double *workspace;          /* 120*nb (shared by euler_step / rk4_step / tact_gravity_query / tact_inertia_query / tact_bias_query / crb_featherstone) */
 
-    /* LCP path (method=2) state — persistent across steps for warm-start */
-    double *lam_prev;           /* 6 * MAX_PTS_PER_PAIR * max(n_pair,1) — λ from previous step
-                                 * (indexed by slot = cpair_idx * MAX_PTS_PER_PAIR + sub_id) */
-    double *lam_fric_prev;      /* nq — joint-friction λ warm-start (per-DoF, in-place carry).
-                                 * Phase 3 keeps this internal/stateful; Phase 4 promotes it to
-                                 * the ctx/SolverState-threaded pure-step buffer (design-joint-friction.md). */
-    double *lam_limit_prev;     /* nq — joint-limit λ warm-start (per-DoF, in-place carry; ctx-threaded) */
+    /* LCP path (method=2) scratch. NOTE: the PGS warm-start λ is NOT here — it is
+     * caller-threaded through tact_step_lcp's lam_in/lam_out (the ctx/SolverState
+     * pure-step contract; the internal *_prev fallbacks were removed 2026-06-06 —
+     * the handle holds no solver state across steps). */
     double *qd_free_buf;        /* nb — predictor velocity (qd + qdd_free * dt) */
     double *M_buf;              /* nb*nb — joint-space mass matrix (CRB output) */
     double *lcp_ws;             /* contact_lcp workspace; sized in tact_create */
@@ -144,9 +141,6 @@ tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, doub
       + 6*nb + 6*nb + 6*nb + 6*nb          /* f_ext, f, a, v */
       + nq + nq + nq + nq                   /* qdd, q_next, qd_next, tau_p (per-DoF) */
       + aba_ws_size                         /* workspace (sized for aba/crb/rne incl. free) */
-      + 6*MAX_PTS_PER_PAIR*npair_max         /* lam_prev (LCP warm-start, slot-indexed) */
-      + nq                                  /* lam_fric_prev (joint-friction warm-start, per-DoF) */
-      + nq                                  /* lam_limit_prev (joint-limit warm-start, per-DoF) */
       + nq                                  /* qd_free_buf (LCP predictor, per-DoF) */
       + nq*nq                               /* M_buf (joint-space mass matrix) */
       + lcp_ws_doubles                      /* lcp_ws (contact_lcp workspace) */
@@ -189,9 +183,6 @@ tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, doub
     CARVE_DBL(qd_next,  nq);
     CARVE_DBL(tau_p,    nq);
     CARVE_DBL(workspace, aba_ws_size);
-    CARVE_DBL(lam_prev,    6*MAX_PTS_PER_PAIR*npair_max);
-    CARVE_DBL(lam_fric_prev, nq);
-    CARVE_DBL(lam_limit_prev, nq);
     CARVE_DBL(qd_free_buf, nq);
     CARVE_DBL(M_buf,       nq*nq);
     CARVE_DBL(lcp_ws,      lcp_ws_doubles);
@@ -246,9 +237,6 @@ tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, doub
     }
     if (n_pair > 0) memcpy(h->cpair, cpair, 2*n_pair*sizeof(int));
 
-    memset(h->lam_prev,     0, 6*MAX_PTS_PER_PAIR*npair_max*sizeof(double));
-    memset(h->lam_fric_prev, 0, nq*sizeof(double));
-    memset(h->lam_limit_prev, 0, nq*sizeof(double));
     return h;
 }
 
@@ -496,9 +484,19 @@ static void tact_feedback(tact_t *h, double *q, double *qd, double *tau)
 
 /* LCP path: _fk → ABA(no contact) → CRB → contact_lcp → semi-implicit Euler → feedback.
    Self-contained. Reads q, qd, tau. Writes h->{T, f_ext (contact wrench), f, a, v,
-   qdd, q_next, qd_next, M_buf, qd_free_buf, lcp_ws (transient), y_buf,
-   lam_prev (warm-start carry)}. */
-void tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref, double *lam_in, double *lam_out, double *lam_fric_in, double *lam_fric_out, double *lam_limit_in, double *lam_limit_out)
+   qdd, q_next, qd_next, M_buf, qd_free_buf, lcp_ws (transient), y_buf}.
+
+   lam_in / lam_out (REQUIRED, non-NULL): the caller-threaded PGS warm-start λ —
+   ONE vector per direction holding every row type, blocks in row-table order
+   (the SolverState layout, the C↔Python ABI):
+       [contact (6·MAX_PTS_PER_PAIR·max(n_pair,1), slot-indexed)
+        | joint-friction (nq) | joint-limit (nq)]
+   lam_in is read-only (seeds lam_out — contact block inside contact_lcp, the
+   per-DoF blocks via the memcpy below); pass distinct buffers for a pure,
+   immutable-input step. A future constraint-row type appends a block here
+   instead of growing this signature. (The 3-pair in/out args + the internal
+   h->*_prev NULL fallbacks were folded into this 2026-06-06.) */
+void tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref, double *lam_in, double *lam_out)
 {
     /* Stage 1: forward kinematics */
     _fk(h->T, h->nb, h->Ti, h->parent, h->jtype, q);
@@ -520,26 +518,20 @@ void tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, 
     for (int i = 0; i < h->nq; i++) h->M_buf[(size_t)i*h->nq + i] += h->armature[i];
 
     /* LCP solve: writes dqd into h->qdd (reused as scratch), fills h->f_ext with
-       contact wrench, and updates h->lam_prev in place (warm-start carry). */
+       contact wrench, and writes the next warm-start λ into lam_out. */
     int nc_out = 0, iters_out = 0;
     double residual_out = 0.0;
-    /* Explicit warm-start carry (referential transparency): caller supplies lam_in
-       and receives lam_out. NULL → fall back to the handle's internal h->lam_prev
-       (legacy stateful behavior). contact_lcp seeds lam_out from lam_in when they
-       differ, so lam_in is left untouched (caller's ctx stays immutable). */
-    double *lin  = lam_in  ? lam_in  : h->lam_prev;
-    double *lout = lam_out ? lam_out : h->lam_prev;
-    /* joint-friction warm-start, threaded for referential transparency just like the
-       contact λ: read from lam_fric_in, write to lam_fric_out (seeded from in so the
-       in-place contact_lcp update leaves lam_fric_in untouched). NULL → internal
-       h->lam_fric_prev (legacy stateful carry). */
-    double *lfin  = lam_fric_in  ? lam_fric_in  : h->lam_fric_prev;
-    double *lfout = lam_fric_out ? lam_fric_out : h->lam_fric_prev;
-    if (lfout != lfin) memcpy(lfout, lfin, h->nq * sizeof(double));
-    /* joint-limit warm-start, threaded the same immutable-in/out way. */
-    double *llin  = lam_limit_in  ? lam_limit_in  : h->lam_limit_prev;
-    double *llout = lam_limit_out ? lam_limit_out : h->lam_limit_prev;
-    if (llout != llin) memcpy(llout, llin, h->nq * sizeof(double));
+    /* Slice the unified λ vector into contact_lcp's per-type pointers (offset
+       arithmetic mirrors SolverState / Model.step). Contact block: contact_lcp
+       reads lin and seeds/writes lout itself. Per-DoF blocks (fric, limit —
+       adjacent in the layout): contact_lcp updates them in place, so seed lam_out
+       from lam_in here; lam_in stays untouched (caller's ctx immutable). */
+    int C = 6 * MAX_PTS_PER_PAIR * (h->n_pair > 0 ? h->n_pair : 1);
+    double *lin   = lam_in;
+    double *lout  = lam_out;
+    double *lfout = lam_out + C;            /* joint-friction block */
+    double *llout = lam_out + C + h->nq;    /* joint-limit block */
+    memcpy(lfout, lam_in + C, 2 * h->nq * sizeof(double));
     contact_lcp(h->nb, h->T, h->parent, h->jtype,
                 h->n_pair, h->cpair, h->ctype, h->cbody,
                 h->ctran, h->cshape, h->cparam,

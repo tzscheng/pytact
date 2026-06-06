@@ -290,17 +290,16 @@ void    tact_edit_model (tact_t *h, double *X, double *I6, double *Ti);
  * tact_step_lcp: Kp_j/Kd_j/q_ref/qd_ref are optional joint-space implicit PD inputs
  * (all length nb, NULL = inactive — bit-identical to pre-PD behavior). See
  * aba_featherstone's contract for semantics. */
-/* lam_in / lam_out: explicit LCP warm-start carry (NULL → internal h->lam_prev).
- * Caller-supplied buffers, length 6*MAX_PTS_PER_PAIR*n_pair. lam_in is read-only
- * (seeds lam_out); pass distinct buffers for a pure, immutable-input step.
- * lam_fric_in / lam_fric_out: joint-friction warm-start carry, same contract,
- * length nq (NULL → internal h->lam_fric_prev). lam_limit_in / lam_limit_out: joint-
- * limit warm-start carry, same contract, length nq (NULL → internal h->lam_limit_prev). */
+/* lam_in / lam_out (REQUIRED, non-NULL): caller-threaded PGS warm-start λ — ONE
+ * vector per direction, every row type, blocks in row-table order (= the Python
+ * SolverState layout, the C↔Python ABI):
+ *     [contact (6·MAX_PTS_PER_PAIR·max(n_pair,1)) | joint-friction (nq) | joint-limit (nq)]
+ * lam_in is read-only (seeds lam_out); pass distinct buffers for a pure,
+ * immutable-input step. A future constraint-row type appends a layout block
+ * instead of growing this signature. */
 void    tact_step_lcp    (tact_t *h, double *q, double *qd, double *tau,
                           double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref,
-                          double *lam_in, double *lam_out,
-                          double *lam_fric_in, double *lam_fric_out,
-                          double *lam_limit_in, double *lam_limit_out);
+                          double *lam_in, double *lam_out);
 
 /* multi-frame query API — caller resolves names→indices once; mode[k]: 0=3d, 1=6d */
 void    tact_fk_query     (tact_t *h, double *q, int n, int *frame_idx, int *mode, const char *eulerseq, double *out);

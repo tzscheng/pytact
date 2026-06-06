@@ -33,8 +33,10 @@ clib.tact_create.restype  = ctypes.c_void_p
 clib.tact_destroy.argtypes = [ctypes.c_void_p]
 clib.tact_destroy.restype = None
 
-#h, q, qd, tau (raw actuation -- C subtracts ff*qd + sk*q internally before the integrator)
-clib.tact_step_lcp.argtypes     = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL]  # ..., lam_in/out, lam_fric_in/out, lam_limit_in/out (NULL ok)
+#h, q, qd, tau (raw actuation -- C subtracts ff*qd + sk*q internally before the integrator),
+#Kp_j, Kd_j, q_ref, qd_ref (NULL ok), lam_in, lam_out (REQUIRED -- unified PGS warm-start
+#vector [contact | fric | limit], the SolverState layout)
+clib.tact_step_lcp.argtypes     = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL]
 clib.tact_step_lcp.restype      = None
 
 #h, n_feeds, kinds, offsets, idx, n_frames, fbody, ftran, ftran_inv, y_size
