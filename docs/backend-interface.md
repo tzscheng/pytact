@@ -27,7 +27,7 @@ kida.run 등 runner / controller)가 backend 에 기대하는 표면**이다.
 
 | 멤버 | 시그니처 / 타입 | 계약 |
 |---|---|---|
-| `step` | `step(tau=None, q_ref=None, qd_ref=None) → y` | 세 입력 채널은 동등 우선순위·독립 optional. `tau=None` → zero feedforward; `q_ref/qd_ref=None` → 내부 PD 비활성. PD 미지원 backend 는 조용히 무시 (판별은 `has_pd`). 반환 y = 고정 길이 proprio vector (float64 ndarray) |
+| `step` | `step(tau=None, q_ref=None, qd_ref=None, kp=None, kd=None) → y` | 입력 채널은 동등 우선순위·독립 optional — 5-tuple command (2026-06-07; 일반 affine joint feedback law). `tau=None` → zero feedforward; `q_ref/qd_ref=None` → 내부 PD 비활성; reference 만 있고 게인 없으면 ValueError (`q_ref`→`kp`, `qd_ref`→`kd`). PD 미지원 backend 는 게인 포함 조용히 무시 (판별은 `has_pd`). C-side step 은 6 인자 (`tau, q_ref, qd_ref, kp, kd, y`) — eio/chenv 는 다음 재컴파일 때 +2 인자. 반환 y = 고정 길이 proprio vector (float64 ndarray) |
 | `reset` | `reset() → y` | 초기 상태 복원 후, integrator 를 **한 step 도 전진시키지 않은** 진짜 post-reset 관측 반환 (zero-step 보장) |
 | `finish` | `finish() → None` | 정리. idempotent. tact 는 no-op |
 | `backend` | `str` | free-form 라벨 (`'tact'/'mujoco'/'chrono'/'real'/...`) — controller 가 게인·타이밍 분기에 사용 |
@@ -51,7 +51,7 @@ kida.run 등 runner / controller)가 backend 에 기대하는 표면**이다.
 | ~~`get_z(x, y)`~~ | **2026-06-06 제거** (sim-trick 최소화): 절대 world-z 는 실기에 존재하지 않는 양. 후속은 `height_scan` + "stance-foot FK z anchor + 상대 Δh" 레시피 (`StepGenerator2/4` 참조). mjenv 의 get_z C export 는 2026-06-07 배치형 `height_scan` export 로 대체·삭제 (chenv 쪽은 legacy 잔존); CEnv 는 이름 차단으로 포워딩 사고 방지 | ✗ | ✗ | ✗ | ✗ | — |
 | ~~`get_rgb_image`~~ (+ `get_depth_image`/`get_lidar_image`/`get_lidar_points`) | **2026-06-06 전부 제거** (원칙 (5)): CEnv wrapper 는 live 호출자 0 의 streaming 유물이었고, Env 쪽 4종은 `camera_frames`/`lidar_frames` 로 inline (소비자는 frames() generator 만 읽음; ad-hoc 접근: lidar 는 `_ray_grid`+`clib.tact_raycast_frame` 조합 (recipe 는 `sim.py`; `_raycast_frame` 도 2026-06-06 lidar_frames 로 inline), camera 는 due tick 의 `camera_frames()` (raymap/raycloud/_render_frame 도 2026-06-06 frames() 로 inline)). C export 는 `mjenv.cpp` 에 존치 | ✗ | ✗ | ✗ | ✗ | — |
 | `height_scan` | **유일한 terrain 쿼리** — base-relative (G,2) offsets → 상대고도 (G,), `MiniElevationMap.sample` 계약의 GT twin. 실 elevation map 이 주는 양과 동일 형태라 trick-free | ✓ | ✓ (mjenv 의 `height_scan(base_xy, yaw, offsets, G, z_top, default, h_out, valid, base_valid, ref)` C export 가 **full contract** 수행 — yaw 회전·group-1 수직 ray·base-relative 빼기·default 채움·validity 전부 C; CEnv._height_scan 은 alloc+`last` dict thin shim. init-probe 로 instance bind, 구 per-point get_z 는 2026-06-07 삭제. probe 실패 backend 는 `hasattr` False) | ✗ | ✗ (소비자는 blind fallback) | **달성 (tact+mujoco)** |
-| `cameras` / `lidars` / `camera_frames()` / `lidar_frames()` | 센서 publish 명세 + (name, bytes) frame 공급 | ✓ | ✗ | ✗ | ✗ (실 드라이버가 동일 topic 직접 publish) | **비목표** — sim 전용 드라이버 대역 |
+| `cameras` / `lidars` / `camera_frames()` / `lidar_frames()` | 센서 publish 명세 + (name, bytes) frame 공급 | ✓ | **lidar ✓** (2026-06-08, plan (a): 프로젝트 YAML `lidars:` 가 모든 backend 의 단일 spec 소스 — start 가 throwaway Model 로 파싱해 spec+`ftran` offset 을 CEnv 에 전달, mjenv `raycast_frame`/`body_id` export 가 mj_ray 로 동일 wire(raw f32 2d/3d)·동일 ray 기하(`_ray_grid_dirs` 공유)·동일 fps 게이팅으로 publish. 가시성: geom group 1..5 — robot 은 group 0, tact `raycast: false` 의 쌍. YAML body 명이 XML 에 없으면 경고+스킵. camera 는 미구현 (EGL offscreen + 인코더 필요 — 수요 시) | ✗ | ✗ (실 드라이버가 동일 topic 직접 publish) | **lidar 달성 (tact+mujoco)** / camera 는 tact 전용 |
 | `add` / `delete` / `groups` / `edit` | 동적 토폴로지 편집 | ✓ | ✗ | ✗ | ✗ | 비목표 — CEnv 에서 부재 (`hasattr` False) + `__getattr__` 차단 리스트로 dlsym 충돌 방어 (§4) |
 | `height_scan` / `env.m.*` (fk, jacob, …) | sim-native 도구상자 / oracle (`env.raycast` 는 2026-06-06 height_scan 으로 inline — 유일 소비자; ad-hoc ray 는 `clib.tact_raycast_world` 직접, recipe 는 `sim.py`) | ✓ | (height_scan 은 parity ✓ — 위 row) | ✗ | ✗ | 비목표 |
 | `step(kp=, kd=)` per-step PD gains | implicit joint-PD 게인의 유일 채널 (YAML `k:` 2026-06-07 제거 — 게인은 plant 가 아니라 control-policy 입력; `start` 가 controller 의 `kp`/`kd` attr 를 매 tick 읽어 전달; reference 만 있고 게인 없으면 Model.step/CEnv.step 양쪽에서 ValueError). **mujoco 도 동일 인터페이스** (2026-06-07): mjenv `step(tau, q_ref, qd_ref, kp, kd, y)` 가 매 step position actuator 의 gainprm/biasprm 을 stateless 하게 caller 게인으로 씀 — XML 의 kp/kv 는 구조 placeholder 로 격하, nominal save/restore toggle 제거. qd_ref 는 caller kd 로 motor 채널 folding. 단 **수치 동치는 아님** — tact 는 implicit(분모, 무조건 안정 + 유효감쇠 ≈kd+kp·dt), mujoco 는 적분기 의존 explicit. real 은 driver/firmware (kida eio: hardcode) 소관 — eio/chenv 의 step 시그니처는 다음 사용 시 +2 인자 재컴파일 | ✓ | ✓ | ✗ | ✗ (firmware) | **인터페이스 달성 (tact+mujoco)** — 게인 값의 1:1 이전은 비목표 (적분 처리 상이) |
@@ -74,7 +74,7 @@ parity 열: **지향** = 여러 backend 가 같은 계약으로 구현해야 하
   ① 포워딩으로 부르는 심볼의 시그니처 책임은 그 프로젝트(eio 작성자)에 있다 —
   ctypes 는 argtypes 미선언 `_FuncPtr` 를 그대로 내주므로 double↔int 조용한 marshal
   오답이 가능. ② **tact 전용 이름 (`add`/`delete`/`groups` + sensor publishing 4종)
-  은 포워딩에서 차단된다** (`CEnv._TACT_ONLY`) — mutation API 의 짧고 흔한 C 이름이
+  은 포워딩에서 차단된다** (`CEnv._NO_FORWARD`, 구 `_TACT_ONLY` — 인스턴스에 bind 된 capability 는 차단보다 우선) — mutation API 의 짧고 흔한 C 이름이
   미래 backend .so 의 무관한 심볼에 dlsym 으로 붙는 사고 방지.
 - 단일 backend 전용 capability (sensor publishing, add/delete) 는 hasattr probe 보다
   **`env.backend` 라벨 분기**가 명시적이다 — `start` 의 sensor socket guard 가 예.
@@ -85,6 +85,7 @@ parity 열: **지향** = 여러 backend 가 같은 계약으로 구현해야 하
 - 이 문서의 `<!-- CORE: ... -->` 마커와 테스트의 CORE 목록 일치
 - tact `Env` + fake-cdll `CEnv` 가 core 6 멤버를 올바른 종류(callable/속성·타입)로 제공
 - `step`/`reset` 반환 계약 (shape·dtype), `reset` zero-step 보장, `dt=None` 경로
-- ledger 분류 일치: tact 전용 7종 (`add`/`delete`/`groups` + sensor 4종) 이 CEnv 에서
-  부재 (`hasattr` False) 이면서 `__getattr__` 차단으로 fail-fast, 비차단 cdll 심볼은
-  여전히 포워딩 (eio 통로 보존)
+- ledger 분류 일치: `add`/`delete`/`groups` + sensor 4종이 **bare CEnv** (spec 미제공)
+  에서 부재 (`hasattr` False) 이면서 `__getattr__` 차단으로 fail-fast, 비차단 cdll 심볼은
+  여전히 포워딩 (eio 통로 보존). lidar spec 이 해결된 mujoco CEnv 는 `lidars`/
+  `lidar_frames` 를 인스턴스에 bind (2026-06-08)

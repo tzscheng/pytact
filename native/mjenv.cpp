@@ -417,6 +417,51 @@ extern "C" double raycast(double pos_x, double pos_y, double pos_z, double dir_x
 }
     
 
+// body id lookup for sensor attachment — CEnv resolves the YAML sensor spec's
+// `body` name against the loaded XML once at init (plan (a): one YAML drives
+// every backend's sensors). -1 = not in this model (CEnv warns and skips).
+extern "C" int body_id(const char* name){
+    return mj_name2id(m, mjOBJ_BODY, name);
+}
+
+// raycast_frame — the mjenv twin of tact_raycast_frame: n rays from a
+// body-attached sensor frame. T_off = the frame-in-body transform (row-major
+// 4x4 — tact Model.ftran of the YAML lidar frame, so the SAME spec positions
+// the sensor on both backends). dirs = unit ray directions in the frame's
+// REGISTERED coordinates (Python _ray_grid_dirs output verbatim — single
+// source; the -90° optical roll is already folded in). bid < 0 → frame is
+// world-attached (YAML body 'root'; T_off IS the world pose). Visibility:
+// geom groups 1..5 (robot geoms live in group 0, mirroring tact's
+// `raycast: false` robot shapes — height_scan stays terrain-only, group 1).
+// t_out[k] = forward range along dirs[k] (meters; dirs unit), -1 = no hit.
+extern "C" void raycast_frame(int bid, double* T_off, double* dirs, int n, double* t_out){
+    mjtByte group[6] = {0, 1, 1, 1, 1, 1};
+    int geomid;
+    double Rw[9], ow[3];
+    if(bid < 0){
+        for(int r = 0; r < 3; r++){
+            for(int c = 0; c < 3; c++) Rw[3*r+c] = T_off[4*r+c];
+            ow[r] = T_off[4*r+3];
+        }
+    } else {
+        double* xm = d->xmat + 9*bid;   // body world rotation (row-major)
+        double* xp = d->xpos + 3*bid;
+        for(int r = 0; r < 3; r++){     // Rw = xm @ R_off ; ow = xp + xm @ p_off
+            for(int c = 0; c < 3; c++)
+                Rw[3*r+c] = xm[3*r+0]*T_off[0+c] + xm[3*r+1]*T_off[4+c] + xm[3*r+2]*T_off[8+c];
+            ow[r] = xp[r] + xm[3*r+0]*T_off[3] + xm[3*r+1]*T_off[7] + xm[3*r+2]*T_off[11];
+        }
+    }
+    for(int k = 0; k < n; k++){
+        double dx = dirs[3*k], dy = dirs[3*k+1], dz = dirs[3*k+2];
+        double vec[3] = {Rw[0]*dx + Rw[1]*dy + Rw[2]*dz,
+                         Rw[3]*dx + Rw[4]*dy + Rw[5]*dz,
+                         Rw[6]*dx + Rw[7]*dy + Rw[8]*dz};
+        double dist = mj_ray(m, d, ow, vec, group, 1, -1, &geomid, NULL);
+        t_out[k] = (dist < 0) ? -1.0 : dist;
+    }
+}
+
 // height_scan — the FULL terrain-scan contract in C, mirroring tact's
 // Env.height_scan (the Python-side CEnv._height_scan is a thin alloc+dict
 // shim). offsets = G (x, y) pairs in the gravity-aligned base-yaw frame;
@@ -434,7 +479,9 @@ extern "C" void height_scan(double* base_xy, double yaw, double* offsets, int G,
                             double* h_out, int* valid_out,
                             int* base_valid_out, double* ref_out){
     double ray[3] = {0, 0, -1};
-    mjtByte group[2] = {0, 1};   // exclude group-0 (robot), include group-1 (terrain)
+    // terrain = group-1 only (robot group-0 excluded); full mjNGROUP-length
+    // mask — mj_ray reads 6 entries (the old 2-length array under-allocated)
+    mjtByte group[6] = {0, 1, 0, 0, 0, 0};
     int geomid;
     double cy = cos(yaw), sy = sin(yaw);
 

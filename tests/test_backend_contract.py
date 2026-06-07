@@ -67,7 +67,9 @@ print('\n[CEnv (fake cdll)]')
 N_Y, N_U = 5, 2
 calls = {'step': 0, 'reset': 0}
 
-def fake_step(tau, q_ref, qd_ref, ybuf):
+def fake_step(tau, q_ref, qd_ref, kp, kd, ybuf):
+    # 6-arg step contract (2026-06-07): per-step PD gains ride the call;
+    # backends without internal PD accept and ignore them (NULL ok).
     calls['step'] += 1
     for i in range(N_Y): ybuf[i] = 10.0 + i
     return 0
@@ -105,7 +107,7 @@ for n in TACT_ONLY:
 try:
     cenv.add; check(False, 'blocked names raise a pointered AttributeError')
 except AttributeError as e:
-    check('tact-only' in str(e), 'blocked names raise a pointered AttributeError', str(e)[:64])
+    check('capability ledger' in str(e), 'blocked names raise a pointered AttributeError', str(e)[:64])
 # get_z is blocked from forwarding (mjenv.so still exports the C symbol — a stale
 # caller must fail fast, not silently garbage-marshal through an argtypes-less ptr)
 try:

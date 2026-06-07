@@ -57,7 +57,19 @@ if arg.m != None:
     # mjenv.cpp::init second arg is `render`: 0 → no GLFW window (headless),
     # >0 → window + redraw every Nth step. Honors -l like the tact backend.
     cdll.init(xmlpath.encode(), 0 if arg.l else arg.t)
-    env = tact.CEnv(cdll, n_y=mod.Controller.n_y, n_u=mod.Controller.n_u, backend='mujoco', has_pd=True)
+    # plan (a): the project YAML is THE sensor-spec source for every backend —
+    # parse it once (throwaway Model) and hand the lidar specs + frame offsets
+    # (Model.ftran of each registered sensor frame) to CEnv, which publishes
+    # the same topics as the tact backend. Specs whose YAML body name is
+    # missing from the XML are warned + skipped inside CEnv.
+    lidars = None
+    try:
+        _sm = tact.Model(ymlname)
+        lidars = [dict(l, _Toff=_sm.ftran[_sm.fdict[l['name']]]) for l in _sm.lidars]
+        del _sm
+    except FileNotFoundError:
+        pass                            # xml-only project: no YAML sensor specs
+    env = tact.CEnv(cdll, n_y=mod.Controller.n_y, n_u=mod.Controller.n_u, backend='mujoco', has_pd=True, lidars=lidars)
 
 elif arg.c != None:
     cdll = ctypes.CDLL('./chenv.so')
@@ -99,19 +111,19 @@ rate = int(round(1.0/dt)) // arg.f if dt is not None else None
 
 proprio_update_cycle = 16 if arg.x else 33  # real HW ~120Hz vs sim ~30Hz
 
-# Sensor publishing is a tact-only capability (docs/backend-interface.md): caller
-# guards on env.backend per the ledger convention — C backends have no YAML sensor
-# registry (real HW: device drivers publish to the same topics from outside).
+# Sensor publishing: capability-based (docs/backend-interface.md) — tact always,
+# mujoco when its CEnv resolved lidar specs from the project YAML (2026-06-08;
+# plan (a): one YAML = one sensor source per project), chrono/real have empty
+# registries (real HW: device drivers publish to the same topics from outside).
 # One ZMQ PUB per declared sensor; rate-gating + type dispatch live in
 # env.camera_frames()/lidar_frames(), here we only own the sockets, keyed by
 # sensor name (names are unique across cameras and lidars).
 socks = {}
-if env.backend == 'tact':
-    for c in list(env.cameras) + list(env.lidars):
-        s = ctx.socket(zmq.PUB)
-        s.setsockopt(zmq.CONFLATE, 1)
-        s.bind('ipc:///dev/shm/%s' %c['name'])
-        socks[c['name']] = s
+for c in list(getattr(env, 'cameras', [])) + list(getattr(env, 'lidars', [])):
+    s = ctx.socket(zmq.PUB)
+    s.setsockopt(zmq.CONFLATE, 1)
+    s.bind('ipc:///dev/shm/%s' %c['name'])
+    socks[c['name']] = s
 
 if arg.d == None:
     fout = open('/dev/shm/out.txt', mode='w')
@@ -170,12 +182,16 @@ while True:
         proprio = y.astype(np.float32).tobytes() #proprioceptive data
         ppub.send(proprio) 
 
-    #update camera/lidar feedback — tact-only capability, guarded by the socket
-    #table (empty for C backends); rate-gating + dispatch in env.*_frames()
+    #update camera/lidar feedback — capability-based: the socket table is empty
+    #when the backend declared no sensors, and each frames() generator exists
+    #iff its registry is non-empty (mujoco CEnv: lidar_frames only, no cameras);
+    #rate-gating + type dispatch live in env.*_frames()
     if socks:
-        for name, buf in env.camera_frames():
-            socks[name].send(buf)
-        for name, buf in env.lidar_frames():
-            socks[name].send(buf)
+        if hasattr(env, 'camera_frames'):
+            for name, buf in env.camera_frames():
+                socks[name].send(buf)
+        if hasattr(env, 'lidar_frames'):
+            for name, buf in env.lidar_frames():
+                socks[name].send(buf)
 
     cnt += 1

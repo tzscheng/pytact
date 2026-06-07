@@ -76,6 +76,9 @@ def _register_sensors(config, specs, prefix, registry, *, kind, normalize):
         body_by_name[bname].setdefault('frames', []).append(frame)
         spec = {k: v for k, v in s.items()
                 if k not in ('body', 'pos', 'euler', 'eulerseq')}
+        spec['body'] = bname    # retained: CEnv (mujoco) resolves the same spec
+                                # against XML body names (plan (a): one YAML =
+                                # one sensor source for every backend)
         # build() prefixes frame names; mirror it so spec['name'] matches the fdict key.
         spec['name'] = (prefix + s['name']) if prefix else s['name']
         normalize(spec)
@@ -113,6 +116,35 @@ def _normalize_lidar(spec):
     spec.setdefault('pinhole', False)      # False = angular (LiDAR-like) projection
     spec.setdefault('perpendicular', False)  # False = range along ray (LiDAR convention)
     spec.setdefault('max_range', None)     # 3d only: drop hits beyond this (m)
+
+
+def _ray_grid_dirs(width, height, dth, pinhole):
+    """Pure per-pixel ray-direction grid — the computation behind Env._ray_grid
+    (which adds the per-Env cache) and CEnv._lidar_frames (own cache). ONE
+    implementation feeds every backend, so the lidar ray geometry is identical
+    across tact and mujoco by construction. See Env._ray_grid for the full
+    convention docstring (registered-frame coords, -90° optical roll folded in,
+    angular vs pinhole projection)."""
+    i = np.arange(height, dtype=np.float64)         # row    (0 = top)
+    j = np.arange(width, dtype=np.float64)          # column (0 = left)
+    if pinhole:
+        f = (width / 2.0) / np.tan(np.radians(width * dth) / 2.0)
+        u = (j + 0.5 - width / 2.0) / f
+        v = (height / 2.0 - i - 0.5) / f
+        uu, vv = np.meshgrid(u, v, indexing='xy')   # (H, W) row-major like D
+        n = 1.0 / np.sqrt(uu**2 + vv**2 + 1.0)
+        cam = np.stack([uu * n, vv * n, -n], axis=-1)
+    else:                                           # angular (LiDAR-like)
+        # tact.c's even/odd cases both reduce to ((N-1)/2 - idx)*dth in real
+        # arithmetic: even N/2 - idx - 0.5 == odd (N-1)/2 - idx.
+        pitch = np.radians(((height - 1) / 2.0 - i) * dth)
+        tilt = np.radians(((width - 1) / 2.0 - j) * dth)
+        tt, pp = np.meshgrid(tilt, pitch, indexing='xy')
+        cam = np.stack([-np.sin(tt) * np.cos(pp), np.sin(pp),
+                        -np.cos(tt) * np.cos(pp)], axis=-1)
+    cam = cam.reshape(-1, 3)
+    # optical -> registered frame: p_f = Rz(-90°) @ p_opt  (rows [0,1,0],[-1,0,0],[0,0,1])
+    return np.stack([cam[:, 1], -cam[:, 0], cam[:, 2]], axis=-1)
 
 
 class Model:
@@ -1898,15 +1930,16 @@ class Env:
     def _ray_grid(self, width, height, dth, pinhole):
         """Unit ray directions (H*W, 3) in SENSOR-FRAME coordinates, cached per
         (w, h, dth, pinhole). This is THE single source of per-pixel ray
-        generation — C is a pure intersector (tact_raycast_frame takes these
-        directions verbatim; the old in-C duplicate in tact_raymap_query was
-        removed 2026-06-06). Directions live in the frame as registered (YAML
-        pos/euler) — the -90° optical roll of the camera/render convention is
-        folded into the rays, so a camera and a lidar at the same frame
-        pos/euler produce the identically-oriented image, and world points =
-        Te[:3,:3] @ p + Te[:3,3] with the PLAIN m.fkh pose. The sensor looks
-        along the frame's -Z; an upright, forward-looking sensor pitched α°
-        down is a pure Y rotation: euler [0, α-90, 0] (xyz, deg).
+        generation — C is a pure intersector (tact_raycast_frame and mjenv's
+        raycast_frame take these directions verbatim; the old in-C duplicate in
+        tact_raymap_query was removed 2026-06-06). Directions live in the frame
+        as registered (YAML pos/euler) — the -90° optical roll of the
+        camera/render convention is folded into the rays, so a camera and a
+        lidar at the same frame pos/euler produce the identically-oriented
+        image, and world points = Te[:3,:3] @ p + Te[:3,3] with the PLAIN
+        m.fkh pose. The sensor looks along the frame's -Z; an upright,
+        forward-looking sensor pitched α° down is a pure Y rotation:
+        euler [0, α-90, 0] (xyz, deg).
 
         pinhole=False (default): angular projection (LiDAR-like) — pixels
         uniform in (pitch, tilt) angle, dth = degrees per pixel (horizontal
@@ -1920,27 +1953,7 @@ class Env:
             cache = self._ray_grid_cache = {}
         if key in cache:
             return cache[key]
-        i = np.arange(height, dtype=np.float64)         # row    (0 = top)
-        j = np.arange(width, dtype=np.float64)          # column (0 = left)
-        if pinhole:
-            f = (width / 2.0) / np.tan(np.radians(width * dth) / 2.0)
-            u = (j + 0.5 - width / 2.0) / f
-            v = (height / 2.0 - i - 0.5) / f
-            uu, vv = np.meshgrid(u, v, indexing='xy')   # (H, W) row-major like D
-            n = 1.0 / np.sqrt(uu**2 + vv**2 + 1.0)
-            cam = np.stack([uu * n, vv * n, -n], axis=-1)
-        else:                                           # angular (LiDAR-like)
-            # tact.c's even/odd cases both reduce to ((N-1)/2 - idx)*dth in real
-            # arithmetic: even N/2 - idx - 0.5 == odd (N-1)/2 - idx.
-            pitch = np.radians(((height - 1) / 2.0 - i) * dth)
-            tilt = np.radians(((width - 1) / 2.0 - j) * dth)
-            tt, pp = np.meshgrid(tilt, pitch, indexing='xy')
-            cam = np.stack([-np.sin(tt) * np.cos(pp), np.sin(pp),
-                            -np.cos(tt) * np.cos(pp)], axis=-1)
-        cam = cam.reshape(-1, 3)
-        # optical -> registered frame: p_f = Rz(-90°) @ p_opt  (rows [0,1,0],[-1,0,0],[0,0,1])
-        rays = np.stack([cam[:, 1], -cam[:, 0], cam[:, 2]], axis=-1)
-        cache[key] = rays
+        rays = cache[key] = _ray_grid_dirs(width, height, dth, pinhole)
         return rays
 
     def _push_light(self):
@@ -2127,21 +2140,23 @@ class CEnv:
     (caller picks: mujoco=True for dual-actuator XML, chrono=False, real depends
     on firmware). Controllers may override env.has_pd post-construction
     under their own responsibility."""
-    def __init__(self, cdll, n_y, n_u, backend, has_pd=False):
+    def __init__(self, cdll, n_y, n_u, backend, has_pd=False, lidars=None):
         self.cdll = cdll
         self.n_y = n_y
         self.n_u = n_u
         self.backend = backend
         self.has_pd = has_pd
+        self.cnt = 0    # step counter — sensor fps rate-gating (mirrors Env.cnt)
         self._y = (ctypes.c_double*n_y)()
         # Unified contract — every backend exports:
-        #   int  step(double* u, double* q_ref, double* qd_ref, double* y)
+        #   int  step(double* u, double* q_ref, double* qd_ref,
+        #             double* kp, double* kd, double* y)
         #   void reset(double* y)
         # Backends that don't implement implicit PD (eio, current chrono) accept
-        # q_ref/qd_ref and ignore them; the NULL pointer (Python None) is the
+        # q_ref/qd_ref/kp/kd and ignore them; the NULL pointer (Python None) is the
         # "PD inactive" signal. argtypes MUST be declared so ctypes converts None → NULL.
         self.cdll.step.restype  = ctypes.c_int
-        self.cdll.step.argtypes = [_DBL, _DBL, _DBL, _DBL]
+        self.cdll.step.argtypes = [_DBL, _DBL, _DBL, _DBL, _DBL, _DBL]
         self.cdll.reset.restype  = None
         self.cdll.reset.argtypes = [_DBL]
         # Terrain probe for the height_scan parity wrapper below — mjenv's
@@ -2180,6 +2195,47 @@ class CEnv:
             self.cdll.set_redraw.argtypes = [ctypes.c_int]
         except AttributeError:
             pass
+        # Lidar publishing — mujoco parity of Env.lidar_frames. Plan (a): the
+        # project YAML's `lidars:` block is THE sensor spec source for every
+        # backend; `start` parses it once (throwaway Model) and passes the
+        # specs here, each carrying `body` (YAML body name) and `_Toff` (the
+        # frame-in-body 4x4 from Model.ftran — identical sensor placement on
+        # both backends). A spec whose body name is absent from the loaded XML
+        # is WARNED and skipped (graceful degradation, like mjenv's PD-pair
+        # mismatch) — e.g. dog.yml says `base` while dog.xml names it `model`;
+        # align the XML to enable. `lidars`/`lidar_frames` are bound as INSTANCE
+        # attrs iff the backend has the exports AND at least one spec resolves —
+        # hasattr stays False otherwise (ledger absence semantics; the
+        # conformance test asserts absence on a bare CEnv).
+        if lidars:
+            resolved = []
+            try:
+                self.cdll.raycast_frame.restype  = None
+                self.cdll.raycast_frame.argtypes = [ctypes.c_int, _DBL, _DBL, ctypes.c_int, _DBL]
+                self.cdll.body_id.restype  = ctypes.c_int
+                self.cdll.body_id.argtypes = [ctypes.c_char_p]
+            except AttributeError:
+                pass
+            else:
+                for l in lidars:
+                    li = dict(l)
+                    bname = li.get('body', 'root')
+                    if bname == 'root':
+                        li['_bid'] = -1     # world-attached: _Toff IS the world pose
+                    else:
+                        bid = int(self.cdll.body_id(bname.encode()))
+                        if bid < 0:
+                            print(f"[CEnv] lidar {li['name']!r}: body {bname!r} not in the "
+                                  f"loaded mujoco model — skipped (align the XML body name "
+                                  f"with the YAML to enable)")
+                            continue
+                        li['_bid'] = bid
+                    li['_Toff'] = np.ascontiguousarray(li['_Toff'], dtype=np.float64)
+                    resolved.append(li)
+            if resolved:
+                self.lidars = resolved
+                self.lidar_frames = self._lidar_frames
+                self._grid_cache = {}
 
     def step(self, tau=None, q_ref=None, qd_ref=None, kp=None, kd=None):
         # All input channels are equal-priority and independently optional.
@@ -2206,6 +2262,7 @@ class CEnv:
         _kd  = (ctypes.c_double*len(kd))(*kd)          if kd     is not None else None
         ret = self.cdll.step(_tau, _qr, _qdr, _kp, _kd, self._y)
         if ret < 0: print('ESC pressed. exit...'); sys.exit()
+        self.cnt += 1
         return np.frombuffer(self._y, dtype=np.float64).copy()
 
     # NOTE: get_rgb_image wrapper removed 2026-06-06 (principle (5), zero live
@@ -2238,11 +2295,47 @@ class CEnv:
                          ref=float(ref.value), n_valid=int(valid.sum()))
         return h
 
+    def _lidar_frames(self):
+        """Yield (name, payload_bytes) for each lidar due at the current step —
+        the mujoco parity of Env.lidar_frames: SAME wire formats (raw <f4;
+        2d range-along-ray depth map with -1 no-hit / 3d sensor-frame points,
+        max_range drop), SAME fps-vs-cnt rate-gating, SAME _ray_grid_dirs ray
+        geometry. Ranges come from the backend's raycast_frame export (mjenv:
+        mj_ray over geom groups 1..5 — robot geoms live in group 0, the mujoco
+        twin of tact's `raycast: false` robot shapes). Bound to
+        self.lidar_frames in __init__ iff the exports + specs resolved."""
+        for l in self.lidars:
+            cyc = l.get('_cycle')
+            if cyc is None:
+                cyc = l['_cycle'] = max(1, round((1.0/self.dt)/l['fps'])) if (self.dt and l.get('fps')) else 1
+            if self.cnt % cyc: continue
+            key = (int(l['res'][0]), int(l['res'][1]), l['dth'], bool(l['pinhole']))
+            dirs = self._grid_cache.get(key)
+            if dirs is None:
+                dirs = self._grid_cache[key] = _ray_grid_dirs(*key)
+            t = np.empty(len(dirs))
+            self.cdll.raycast_frame(ctypes.c_int(l['_bid']),
+                                    l['_Toff'].ctypes.data_as(_DBL),
+                                    dirs.ctypes.data_as(_DBL),
+                                    ctypes.c_int(len(dirs)),
+                                    t.ctypes.data_as(_DBL))
+            if l['type'] == '2d':
+                if l['perpendicular']:
+                    t = np.where(t >= 0.0, t * -dirs[:, 2], t)
+                yield l['name'], t.astype('<f4').tobytes()
+            elif l['type'] == '3d':
+                hit = t >= 0.0
+                if l.get('max_range') is not None:
+                    hit &= t <= l['max_range']
+                pts = t[hit, None] * dirs[hit]
+                yield l['name'], pts.astype('<f4').tobytes()
+
     def reset(self):
         """Reset backend state and return the initial observation y. C-side reset()
         fills self._y directly (no extra step), so the returned y is the true
         post-reset reading rather than the result of one zero-input step."""
         self.cdll.reset(self._y)
+        self.cnt = 0
         return np.frombuffer(self._y, dtype=np.float64).copy()
     def finish(self): self.cdll.finish()
 
@@ -2252,23 +2345,25 @@ class CEnv:
         # property (not __getattr__) so `start` can sleep-pace + derive redraw uniformly.
         return self._dt
 
-    # tact-only capabilities (sensor publishing, dynamic topology) are deliberately
-    # ABSENT here — no stubs. Per the core contract + capability ledger
-    # (docs/backend-interface.md) absence is legitimate: hasattr() probes False and
-    # callers guard on env.backend. The __getattr__ forwarding below stays — it is
-    # the canonical channel for per-robot eio commands (set_abf, ...) — but
-    # the tact-only names are blocked from it: they are mutation APIs with short,
-    # generic C names, and dlsym finding a same-named unrelated symbol in some
-    # future backend .so would otherwise become a silent wrong call (ctypes hands
-    # out argtypes-less _FuncPtrs for whatever dlsym resolves).
-    _TACT_ONLY = ('add', 'delete', 'groups',
-                  'cameras', 'lidars', 'camera_frames', 'lidar_frames')
+    # Optional capabilities are deliberately ABSENT (no stubs) when a backend
+    # lacks them: hasattr() probes False per the capability ledger
+    # (docs/backend-interface.md). Instance binding takes precedence — e.g.
+    # lidar_frames exists on a mujoco CEnv whose specs resolved (2026-06-08),
+    # while this blocklist catches the unbound case. The __getattr__ forwarding
+    # below stays — it is the canonical channel for per-robot eio commands
+    # (set_abf, ...) — but these names are blocked from it: they are APIs with
+    # short, generic C names, and dlsym finding a same-named unrelated symbol
+    # in some future backend .so would otherwise become a silent wrong call
+    # (ctypes hands out argtypes-less _FuncPtrs for whatever dlsym resolves).
+    _NO_FORWARD = ('add', 'delete', 'groups',
+                   'cameras', 'lidars', 'camera_frames', 'lidar_frames')
 
     def __getattr__(self, name):
-        if name in CEnv._TACT_ONLY:
+        if name in CEnv._NO_FORWARD:
             raise AttributeError(
-                f"{name!r} is a tact-only capability (docs/backend-interface.md); "
-                f"backend={self.backend!r} does not provide it.")
+                f"{name!r} is not available on this backend instance "
+                f"(backend={self.backend!r} — capability ledger, "
+                f"docs/backend-interface.md).")
         if name == 'get_z':
             # Removed 2026-06-06 (sim-trick reduction): absolute world-z terrain
             # queries have no real-robot counterpart. mjenv.so still exports the
