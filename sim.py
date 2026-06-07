@@ -2170,11 +2170,15 @@ class CEnv:
         except AttributeError:
             pass
 
-    def step(self, tau=None, q_ref=None, qd_ref=None):
-        # All three input channels are equal-priority and independently optional.
+    def step(self, tau=None, q_ref=None, qd_ref=None, kp=None, kd=None):
+        # All input channels are equal-priority and independently optional.
         # tau=None → zero feedforward buffer (C backends currently dereference tau
         # unconditionally, so we always pass a real pointer of length n_u).
         # q_ref/qd_ref=None → NULL pointer = backend's internal PD inactive.
+        # kp/kd: accepted for start-loop uniformity but NOT forwarded — on these
+        # backends the PD gains live in the XML (mujoco dual-actuator) or the
+        # driver/firmware (real eio), not per-step (capability ledger,
+        # docs/backend-interface.md).
         if tau is None:
             _tau = (ctypes.c_double*self.n_u)()
         else:

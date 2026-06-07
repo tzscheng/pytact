@@ -139,16 +139,22 @@ while True:
         controller = mod.Controller(env, ymlname, rate=rate, verbose=arg.v)
         y = env.reset()
 
-    # unified interface: every backend's env.step accepts q_ref/qd_ref kwargs. Backends
-    # that don't support implicit PD (chrono, real, or mujoco with legacy XML) silently
-    # ignore them. Controller returning None for q_ref/qd_ref → PD inactive (bit-identical
-    # to legacy behavior).
+    # unified interface: every backend's env.step accepts q_ref/qd_ref/kp/kd kwargs.
+    # Backends that don't support implicit PD (chrono, real, or mujoco with legacy XML)
+    # silently ignore them. Controller returning None for q_ref/qd_ref → PD inactive
+    # (bit-identical to legacy behavior).
+    # PD gains: per-step control inputs, read from the controller's kp/kd attrs
+    # (active-only, like tau) — a mode switch updates the attrs and the new gains
+    # flow on the next tick. No attrs → None → YAML k: model default (migration
+    # window; k: is slated for removal). On mujoco/real the gains live in the
+    # XML/firmware — the kwargs are accepted and ignored (capability ledger).
     # Frameskip: controller.update() runs every arg.frameskip physics ticks; in
-    # between, the last (tau, q_ref, qd_ref) is re-applied (ZOH). With default
-    # frameskip=1 behavior is bit-identical to pre-frameskip start.
+    # between, the last (tau, q_ref, qd_ref) is re-applied (ZOH — gains attrs are
+    # naturally ZOH too since they're read every tick).
     if cnt % arg.f == 0:
         tau, q_ref, qd_ref = controller.update(y)
-    y = env.step(tau=tau, q_ref=q_ref, qd_ref=qd_ref)
+    y = env.step(tau=tau, q_ref=q_ref, qd_ref=qd_ref,
+                 kp=getattr(controller, 'kp', None), kd=getattr(controller, 'kd', None))
     
     #update priprio feedback
     if cnt % proprio_update_cycle == 0:
