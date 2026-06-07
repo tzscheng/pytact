@@ -392,6 +392,18 @@ extern "C" void finish(){
     mj_deleteModel(m);*/
 }
 
+// sim timestep (XML <option timestep>) -- model property, so only the backend
+// knows it after load. The runner derives controller rate ((1/dt)//frameskip),
+// sensor fps gating (cycle = (1/dt)/fps) and (newer start) -s/-f pacing/redraw
+// from it; CEnv probes this at init (dt stays None on backends without it).
+// NOTE: set_redraw, the other half of the newer pacing pair (docs/runtime.md),
+// is deliberately NOT implemented here -- it is one body with the -s/-f start
+// rework living on the other checkout; reimplementing it independently would
+// fork that design (this start still uses the legacy -t steps-per-redraw).
+extern "C" double get_dt(){
+    return m->opt.timestep;
+}
+
 
 // NOTE: unlock()/is_locked() (XML weld staging — the mujoco twin of tact's
 // removed `lock:` mechanism) were deleted 2026-06-06, sim-trick reduction.
