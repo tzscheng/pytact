@@ -120,7 +120,7 @@ class Controller:
         #    tau = self.pd4.update(q, d) + self.m.gravity(q)
             
         self.one_step_forward()
-        return tau, None, None
+        return tau, None, None, None, None
 
 
 class InverseKinematics:

@@ -76,7 +76,7 @@ class Controller:
             print(self.T, q)
             
         self.one_step_forward()
-        return tau, None, None
+        return tau, None, None, None, None
 
     
 '''

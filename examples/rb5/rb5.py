@@ -90,7 +90,7 @@ class Controller:
         #    tau = self.pd2.update(q, d) + self.m.gravity(q, self.EE[0], self.EE[1])
         
         self.one_step_forward()
-        return tau, None, None
+        return tau, None, None, None, None
 
     
 class InverseKinematics:
