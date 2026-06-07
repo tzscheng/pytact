@@ -38,7 +38,7 @@ gcc $CFLAGS -shared -fPIC -o bin/libtact.so $TACT_SRC $TACT_LIBS
 
 #---- bin/mjenv.so -------------------------------------------------------------
 # Built separately because of the C++ source + MuJoCo include path.
-g++ -shared -fPIC -o bin/mjenv.so native/mjenv.cpp -I/usr/local/include/mujoco -lmujoco -lGL -lglfw -lturbojpeg
+g++ -shared -fPIC -o bin/mjenv.so native/mjenv.cpp -I/usr/local/include/mujoco -lmujoco -lGL -lglfw
 # (likewise bin/mjenv.so is loaded from package dir, no system copy needed)
 
 echo "built: bin/libtact.so  bin/mjenv.so  ($([ "$1" = "debug" ] && echo debug || echo release))"
