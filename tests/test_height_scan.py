@@ -108,11 +108,11 @@ check(set(m.last) >= {'valid', 'base_valid', 'ref'} and
       set(env.last) >= {'valid', 'base_valid', 'ref'},
       'identical .last contract keys')
 
-# ----- 7) hfield terrain (terrain10) -----
-print('\n[7] hfield scan (terrain10 vs npy bilinear)')
-env_h = tact.Env(f'{tact.pkg_dir}/examples/terrain10', render=False)
+# ----- 7) hfield terrain (hf1) -----
+print('\n[7] hfield scan (hf1 vs grid bilinear)')
+env_h = tact.Env(f'{tact.pkg_dir}/examples/hf1', render=False)
 env_h.reset()
-H = np.load(f'{tact.pkg_dir}/examples/terrain10.npy')    # (101,101), 0.1 m, [-5,5]
+H = tact.load_hfield(f'{tact.pkg_dir}/hfields/hf1.bin')   # (101,101), 0.1 m, [-5,5]
 def npy_z(x, y):
     gx, gy = (np.asarray(x) + 5) / 0.1, (np.asarray(y) + 5) / 0.1
     i0, j0 = np.floor(gy).astype(int), np.floor(gx).astype(int)
@@ -125,7 +125,7 @@ wx = 1.5 + c * OFFSETS[:, 0] - s * OFFSETS[:, 1]
 wy = -0.8 + s * OFFSETS[:, 0] + c * OFFSETS[:, 1]
 gt = npy_z(wx, wy) - npy_z(1.5, -0.8)
 check(bool(env_h.last['valid'].all()), 'all points valid on hfield')
-check(np.allclose(h, gt, atol=0.03), 'matches npy bilinear (triangulation tol)',
+check(np.allclose(h, gt, atol=0.03), 'matches grid bilinear (triangulation tol)',
       f'max|e|={np.abs(h - gt).max():.4f}')
 
 print(f"\n{'ALL PASS' if fails == 0 else f'{fails} FAILURES'}")

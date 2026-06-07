@@ -147,6 +147,40 @@ def _ray_grid_dirs(width, height, dth, pinhole):
     return np.stack([cam[:, 1], -cam[:, 0], cam[:, 2]], axis=-1)
 
 
+# Feed-kind tables — the single source for the y-vector layout. Codes are what
+# the YAML feeds: parse assigns (Model.add) and feedback()/_create_c_handle
+# consume; widths are floats-per-entry (e.g. fcontact = 6 per site). Keep in
+# sync with feedback()'s per-kind emit loops.
+_FEED_KIND = {1: 'jointpos', 2: 'jointvel', 3: 'jointact', 4: 'framepos',
+              5: 'framequat', 6: 'framelinvel', 7: 'frameangvel',
+              8: 'framelinacc', 9: 'frameangacc', 10: 'velocimeter',
+              11: 'gyro', 12: 'accelerometer', 13: 'ftsensor', 14: 'fcontact'}
+_Y_PER = {1: 1, 2: 1, 3: 1, 4: 3, 5: 4, 6: 3, 7: 3, 8: 3, 9: 3, 10: 3,
+          11: 3, 12: 3, 13: 6, 14: 6}
+
+
+def load_hfield(path):
+    """Read a height-field grid file → 2-D float64 array (meters), row-major
+    data[i*ncol+j], row i along +Y, col j along +X.
+
+    Format = MuJoCo's custom hfield binary (int32 nrow, int32 ncol, float32
+    data[nrow*ncol]) so ONE data file under tact/hfields/ serves both scene
+    definitions: the tact YAML (`type: hfield, file: ...`) reads raw meters
+    via this function; the mjcf scene's `<hfield file=...>` reads the same
+    file but MuJoCo normalizes to [0,1] — its size[2]/geom-z must carry the
+    range/min constants (printed by the terrain generator). Used by the Model
+    loader and by external consumers needing the ground-truth grid
+    (tests/test_height_scan.py, dog/mapper.py)."""
+    with open(path, 'rb') as f:
+        nrow, ncol = np.fromfile(f, dtype=np.int32, count=2)
+        if nrow < 2 or ncol < 2:
+            raise ValueError(f"hfield {path}: bad header nrow={nrow} ncol={ncol}")
+        data = np.fromfile(f, dtype=np.float32, count=nrow * ncol)
+    if data.size != nrow * ncol:
+        raise ValueError(f"hfield {path}: expected {nrow * ncol} float32 values, got {data.size}")
+    return data.astype(np.float64).reshape(nrow, ncol)
+
+
 class Model:
     def __init__(self, modelname, prefix=None, base='root', offset=[0, 0, 0, 0, 0, 0], q0=None, fixed_base=False, name=None):
         self.dt = 0.001
@@ -411,23 +445,25 @@ class Model:
                         sh['param'] = [float(slot)]
 
                     # Resolve heightfield grid → C-side slot. The grid is loaded
-                    # here (numpy reads .npy directly, or an inline `data:` list)
-                    # and pushed to C via set_hfield_data; cshape[0]=slot mirrors
-                    # the mesh slot scheme. size: [sx, sy, sz] — sx,sy are XY
-                    # half-extents (m); sz multiplies grid values into meters
-                    # (use sz=1 for a grid already in meters, or sz=elevation for
-                    # a normalized 0..1 heightmap).
+                    # here (`file:` = MuJoCo custom hfield binary via
+                    # load_hfield — the shared tact/hfields/ format — or an
+                    # inline `data:` list) and pushed to C via set_hfield_data;
+                    # cshape[0]=slot mirrors the mesh slot scheme. size:
+                    # [sx, sy, sz] — sx,sy are XY half-extents (m); sz
+                    # multiplies grid values into meters (use sz=1 for a grid
+                    # already in meters, or sz=elevation for a normalized 0..1
+                    # heightmap).
                     elif sh['type'] == 'hfield':
                         if 'file' in sh:
                             rel = sh['file']
                             abs_path = rel if os.path.isabs(rel) else os.path.normpath(os.path.join(yml_dir, rel))
                             if not os.path.exists(abs_path):
                                 raise ValueError(f"body '{body['name']}' shape #{i}: hfield file not found: {abs_path}")
-                            grid = np.load(abs_path)
+                            grid = load_hfield(abs_path)
                         elif 'data' in sh:
                             grid = np.asarray(sh['data'])
                         else:
-                            raise ValueError(f"body '{body['name']}' shape #{i}: hfield requires `file:` (.npy) or inline `data:`")
+                            raise ValueError(f"body '{body['name']}' shape #{i}: hfield requires `file:` (.bin, MuJoCo custom hfield format) or inline `data:`")
                         grid = np.ascontiguousarray(grid, dtype=np.float64)
                         if grid.ndim != 2 or grid.shape[0] < 2 or grid.shape[1] < 2:
                             raise ValueError(f"body '{body['name']}' shape #{i}: hfield grid must be 2-D and >=2x2, got {grid.shape}")
@@ -1111,8 +1147,7 @@ class Model:
         self._h_qd_next = np.ctypeslib.as_array(clib.tact_get_qd_next(self._h), shape=(nq,))
 
         #---- Phase 2: marshal feedback descriptors → handle ----
-        # output size per feed kind (matches feedback() in this file)
-        _Y_PER = {1:1, 2:1, 3:1, 4:3, 5:4, 6:3, 7:3, 8:3, 9:3, 10:3, 11:3, 12:3, 13:6, 14:6}
+        # output size per feed kind: module-level _Y_PER (shared with feed_slices)
         kinds, offsets, idx = [], [0], []
         y_size = 0
         for feed in self.feeds:
@@ -1152,6 +1187,32 @@ class Model:
             try: clib.tact_destroy(h)
             except Exception: pass
             self._h = None
+
+    def feed_slices(self):
+        """y-vector layout from the YAML `feeds:` block → {kind: slice}.
+
+        Keys are feed-kind names ('jointpos', 'framequat', 'fcontact', ...);
+        each slice covers that block's full span in the y vector returned by
+        feedback() / Env.step (e.g. dog: {'framequat': slice(48, 52), ...};
+        zen's differs because its fcontact has 2 sites, not 4 — the reason
+        consumers should read this instead of hardcoding indices). Per-entry
+        sub-slicing within a block: width = total // n_entries, entries in
+        YAML order. A feeds block that repeats a kind raises (the dict key
+        would be ambiguous) — none of the project YAMLs do this.
+
+        Consumers should call once and cache the slices (prebuilt slice
+        objects also skip per-access BUILD_SLICE, so this is ≥ as fast as
+        literal y[a:b] indexing)."""
+        out, off = {}, 0
+        for feed in self.feeds:
+            kind = _FEED_KIND[feed[0]]
+            w = _Y_PER[feed[0]] * (len(feed) - 1)
+            if kind in out:
+                raise ValueError(f"feed kind '{kind}' appears more than once — "
+                                 f"feed_slices() needs unique kinds per model")
+            out[kind] = slice(off, off + w)
+            off += w
+        return out
 
     def feedback(self, q, qd, tau, T, f, a, v, f_ext):
         y = []
@@ -2200,10 +2261,13 @@ class CEnv:
         # backend; `start` parses it once (throwaway Model) and passes the
         # specs here, each carrying `body` (YAML body name) and `_Toff` (the
         # frame-in-body 4x4 from Model.ftran — identical sensor placement on
-        # both backends). A spec whose body name is absent from the loaded XML
-        # is WARNED and skipped (graceful degradation, like mjenv's PD-pair
-        # mismatch) — e.g. dog.yml says `base` while dog.xml names it `model`;
-        # align the XML to enable. `lidars`/`lidar_frames` are bound as INSTANCE
+        # both backends). The YAML body name resolves in the XML as a BODY
+        # first, then a SITE: when the XML's body-frame origin differs from
+        # the YAML's (zen: xml body origin at the feet, yml `base` at the
+        # hip), the XML carries a site at the YAML body frame instead — the
+        # same site that already anchors the proprio sensors. A spec matching
+        # neither is WARNED and skipped (graceful degradation, like mjenv's
+        # PD-pair mismatch). `lidars`/`lidar_frames` are bound as INSTANCE
         # attrs iff the backend has the exports AND at least one spec resolves —
         # hasattr stays False otherwise (ledger absence semantics; the
         # conformance test asserts absence on a bare CEnv).
@@ -2211,24 +2275,30 @@ class CEnv:
             resolved = []
             try:
                 self.cdll.raycast_frame.restype  = None
-                self.cdll.raycast_frame.argtypes = [ctypes.c_int, _DBL, _DBL, ctypes.c_int, _DBL]
+                self.cdll.raycast_frame.argtypes = [ctypes.c_int, ctypes.c_int, _DBL, _DBL, ctypes.c_int, _DBL]
                 self.cdll.body_id.restype  = ctypes.c_int
                 self.cdll.body_id.argtypes = [ctypes.c_char_p]
+                self.cdll.site_id.restype  = ctypes.c_int
+                self.cdll.site_id.argtypes = [ctypes.c_char_p]
             except AttributeError:
                 pass
             else:
                 for l in lidars:
                     li = dict(l)
                     bname = li.get('body', 'root')
+                    li['_is_site'] = 0
                     if bname == 'root':
                         li['_bid'] = -1     # world-attached: _Toff IS the world pose
                     else:
                         bid = int(self.cdll.body_id(bname.encode()))
                         if bid < 0:
-                            print(f"[CEnv] lidar {li['name']!r}: body {bname!r} not in the "
-                                  f"loaded mujoco model — skipped (align the XML body name "
-                                  f"with the YAML to enable)")
-                            continue
+                            sid = int(self.cdll.site_id(bname.encode()))
+                            if sid < 0:
+                                print(f"[CEnv] lidar {li['name']!r}: {bname!r} is neither a "
+                                      f"body nor a site in the loaded mujoco model — skipped "
+                                      f"(align the XML with the YAML to enable)")
+                                continue
+                            bid, li['_is_site'] = sid, 1
                         li['_bid'] = bid
                     li['_Toff'] = np.ascontiguousarray(li['_Toff'], dtype=np.float64)
                     resolved.append(li)
@@ -2315,6 +2385,7 @@ class CEnv:
                 dirs = self._grid_cache[key] = _ray_grid_dirs(*key)
             t = np.empty(len(dirs))
             self.cdll.raycast_frame(ctypes.c_int(l['_bid']),
+                                    ctypes.c_int(l['_is_site']),
                                     l['_Toff'].ctypes.data_as(_DBL),
                                     dirs.ctypes.data_as(_DBL),
                                     ctypes.c_int(len(dirs)),

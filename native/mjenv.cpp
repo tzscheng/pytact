@@ -193,14 +193,39 @@ void scroll(GLFWwindow* window, double xoffset, double yoffset) {
 }
 
 
-extern "C" void init(char* xml, int _render=0) {
+// init(robot_xml, env_xml, render) — env_xml NULL/"" loads the robot xml alone
+// (mj_loadXML, the legacy single-file path). Otherwise both files are parsed as
+// mjSpec and the environment's worldbody is attached into the robot's world as a
+// frame (mjs_attach, MuJoCo >= 3.3): one shared env file (tact/mjcf/*.xml) serves
+// every robot, replacing the per-robot combined `<include>` scenes. The robot is
+// the PARENT spec, so its <option>/<visual>/<compiler> win and its joint/actuator/
+// sensor names stay unprefixed; env files should carry assets + worldbody only.
+extern "C" void init(char* xml, char* env_xml, int _render=0) {
     mjcb_control = update_control_input;
     render = _render;
-    
+
     // load and compile model
     char error[1000] = "Could not load binary model";
-    m = mj_loadXML(xml, 0, error, 1000);
-    
+    if(env_xml && env_xml[0]){
+        mjSpec* rs = mj_parseXML(xml, NULL, error, 1000);
+        if(!rs){ mju_error_s("Load model error: %s", error); exit(0); }
+        mjSpec* es = mj_parseXML(env_xml, NULL, error, 1000);
+        if(!es){ mju_error_s("Load env error: %s", error); exit(0); }
+        // prefix "env_" namespaces the environment's elements (its worldbody
+        // arrives as a body still named "world" — unprefixed it collides with
+        // the parent's). The floor lands as geom "env_floor", group preserved.
+        mjsFrame* f = mjs_addFrame(mjs_findBody(rs, "world"), NULL);
+        if(!mjs_attach(f->element, mjs_findBody(es, "world")->element, "env_", "")){
+            mju_error_s("Attach env error: %s", mjs_getError(rs)); exit(0);
+        }
+        m = mj_compile(rs, NULL);
+        if(!m){ mju_error_s("Compile error: %s", mjs_getError(rs)); exit(0); }
+        mj_deleteSpec(rs);
+        mj_deleteSpec(es);
+    } else {
+        m = mj_loadXML(xml, 0, error, 1000);
+    }
+
     if(!m) {
 	mju_error_s("Load model error: %s", error);
 	exit(0); //return -1;
@@ -411,35 +436,44 @@ extern "C" double get_dt(){
 // XMLs at the same time.
 
 
-// body id lookup for sensor attachment — CEnv resolves the YAML sensor spec's
-// `body` name against the loaded XML once at init (plan (a): one YAML drives
-// every backend's sensors). -1 = not in this model (CEnv warns and skips).
+// body/site id lookup for sensor attachment — CEnv resolves the YAML sensor
+// spec's `body` name against the loaded XML once at init (plan (a): one YAML
+// drives every backend's sensors). -1 = not in this model. CEnv tries body
+// first, then site: when the XML's body-frame convention differs from the
+// YAML's (zen: xml body origin at the feet, yml base origin at the hip), the
+// XML carries a SITE at the YAML body frame instead — the same site that
+// already anchors the proprio sensors (zen site "base" = yml base origin).
 extern "C" int body_id(const char* name){
     return mj_name2id(m, mjOBJ_BODY, name);
 }
+extern "C" int site_id(const char* name){
+    return mj_name2id(m, mjOBJ_SITE, name);
+}
 
 // raycast_frame — the mjenv twin of tact_raycast_frame: n rays from a
-// body-attached sensor frame. T_off = the frame-in-body transform (row-major
-// 4x4 — tact Model.ftran of the YAML lidar frame, so the SAME spec positions
-// the sensor on both backends). dirs = unit ray directions in the frame's
-// REGISTERED coordinates (Python _ray_grid_dirs output verbatim — single
-// source; the -90° optical roll is already folded in). bid < 0 → frame is
-// world-attached (YAML body 'root'; T_off IS the world pose). Visibility:
-// geom groups 1..5 (robot geoms live in group 0, mirroring tact's
+// body/site-attached sensor frame. T_off = the frame-in-body transform
+// (row-major 4x4 — tact Model.ftran of the YAML lidar frame, so the SAME spec
+// positions the sensor on both backends). dirs = unit ray directions in the
+// frame's REGISTERED coordinates (Python _ray_grid_dirs output verbatim —
+// single source; the -90° optical roll is already folded in). id < 0 → frame
+// is world-attached (YAML body 'root'; T_off IS the world pose). is_site:
+// id names a site instead of a body — used when the XML's body origin differs
+// from the YAML's and a site marks the YAML body frame (see site_id above).
+// Visibility: geom groups 1..5 (robot geoms live in group 0, mirroring tact's
 // `raycast: false` robot shapes — height_scan stays terrain-only, group 1).
 // t_out[k] = forward range along dirs[k] (meters; dirs unit), -1 = no hit.
-extern "C" void raycast_frame(int bid, double* T_off, double* dirs, int n, double* t_out){
+extern "C" void raycast_frame(int id, int is_site, double* T_off, double* dirs, int n, double* t_out){
     mjtByte group[6] = {0, 1, 1, 1, 1, 1};
     int geomid;
     double Rw[9], ow[3];
-    if(bid < 0){
+    if(id < 0){
         for(int r = 0; r < 3; r++){
             for(int c = 0; c < 3; c++) Rw[3*r+c] = T_off[4*r+c];
             ow[r] = T_off[4*r+3];
         }
     } else {
-        double* xm = d->xmat + 9*bid;   // body world rotation (row-major)
-        double* xp = d->xpos + 3*bid;
+        double* xm = is_site ? d->site_xmat + 9*id : d->xmat + 9*id;   // world rotation (row-major)
+        double* xp = is_site ? d->site_xpos + 3*id : d->xpos + 3*id;
         for(int r = 0; r < 3; r++){     // Rw = xm @ R_off ; ow = xp + xm @ p_off
             for(int c = 0; c < 3; c++)
                 Rw[3*r+c] = xm[3*r+0]*T_off[0+c] + xm[3*r+1]*T_off[4+c] + xm[3*r+2]*T_off[8+c];

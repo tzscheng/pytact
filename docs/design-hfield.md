@@ -16,9 +16,15 @@ An hfield is a slot of grid data, mirroring the mesh slot table (`shape.c` / `sh
 local `[-sx,sx]×[-sy,sy]` in XY with height along +Z; `hf_data[i*ncol+j]` is the height at
 node (row i along +Y, col j along +X). Each cell is two triangles split on the p00→p11
 diagonal: A=(p00,p10,p11), B=(p00,p11,p01). Python loads/scales the grid and pushes it via
-`set_hfield_data` (no lazy C-side load, unlike meshes). YAML: `{type: hfield, file: x.npy
-| data: [[...]], size: [sx, sy, sz]}`; `cshape[0]=slot`. Worked example: `examples/terrain10.yml`
-(+ `terrain10.npy`, `terrain10_gen.py`).
+`set_hfield_data` (no lazy C-side load, unlike meshes). YAML: `{type: hfield, file: x.bin
+| data: [[...]], size: [sx, sy, sz]}`; `cshape[0]=slot`. `file:` is **MuJoCo's custom hfield
+binary** (int32 nrow, int32 ncol, float32 data; raw meters here) read by `tact.load_hfield`
+— ONE data file under `tact/hfields/` serves both backends (2026-06-08; .npy retired). tact
+uses raw values × `sz`; MuJoCo normalizes the same file to [0,1], so the mjcf twin scene
+carries `size[2]`=range + geom z=min (data-derived, printed by the generator; row order
+verified identical via mj_ray probes at asymmetric grid nodes, max err ~1e-8). Worked
+example: `examples/hf1.yml` ↔ `mjcf/hf1.xml` (+ `hfields/hf1.bin`,
+`hfields/hf1_gen.py`).
 
 Per-shape pose is the usual `ctran` (body-relative homogeneous transform), so an hfield can
 sit on any body at any orientation; all narrowphase/raycast works in hfield-local frame and
@@ -32,7 +38,7 @@ hfield 3D AABB (`[-sx,sx]×[-sy,sy]×[min_h,max_h]`), which folds in footprint r
 height-slab trimming. Plugged into `tact.c::raycast_cached` (case 105) + bounding sphere in
 `rc_build_cache`. So `get_z` / lidar / depth cameras see the terrain.
 
-- Perf (dog lidar 320×240 on terrain10 101×101, 2026-05-28): **8916 ms → 10.2 ms/frame (874×)**;
+- Perf (dog lidar 320×240 on hf1 (then terrain10) 101×101, 2026-05-28): **8916 ms → 10.2 ms/frame (874×)**;
   `get_z` 119 µs → 7.6 µs (15.7×). Bit-identical to brute force (lidar max|Δ|=0; get_z 3.6e-15).
 - **Vertical-ray gotcha (fixed):** `get_z` shoots straight down → XY projection is a point.
   At grid-aligned query coords, FP in `floor((x+sx)/dx)` vs the reconstructed vertex `-sx+j*dx`
@@ -97,7 +103,7 @@ and feet form contact pairs.
 - **>4 contact points:** a large box over wavy terrain capped at 4 (shared box-box limit).
 
 Quantitatively the interior-peak error ≈ how far the terrain's interior maximum (within the
-box footprint) rises above the corner-defined plane. For `terrain10` (gentle, 0.1 m cells,
+box footprint) rises above the corner-defined plane. For `hf1` (gentle, 0.1 m cells,
 shortest wavelength ~2.5 m) a footplate-sized box bows ~2–3 mm → negligible. It bites on
 sharp sub-foot features (rocks, stair nosings, ridges).
 

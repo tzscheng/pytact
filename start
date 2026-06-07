@@ -13,11 +13,10 @@ from collections import deque
 
 def parse_args():
     par = argparse.ArgumentParser()
-    par.add_argument('-m', default=None, help='mujoco sim')
-    par.add_argument('-c', default=None, help='chrono sim')
+    par.add_argument('-m', action='store_true', default=False, help='mujoco backend; robot model = <module>.xml, environment via -e')
     par.add_argument('-x', default=False, nargs='?', help='real')
     par.add_argument('-y', default=None, help='yml file name')
-    par.add_argument('-e', default=None, help='environments type')
+    par.add_argument('-e', default=None, help='environment scene: yml for the tact backend, xml for -m (searched in cwd then tact/mjcf/)')
     par.add_argument('-o', nargs=6, default=[0, 0, 0, 0, 0, 0], type=float, help='offset')
     par.add_argument('-d', default=None, help = 'dispatch')
     par.add_argument('-t', default=16, type=int, help = 'redraw step (16 => x1.0 speed')
@@ -49,19 +48,31 @@ mod = importlib.import_module(src[0])
 ymlname = src[0] if arg.y == None else arg.y
 if not os.path.exists(ymlname + '.yml'): ymlname = 'yml/' + ymlname
 
-if arg.m != None:
-    if   os.path.exists('%s.xml' %arg.m): xmlpath = '%s.xml' %arg.m
-    elif os.path.exists('xml/%s.xml' %arg.m): xmlpath = 'xml/%s.xml' %arg.m
+if arg.m:
+    # robot model xml is named after the controller module and lives next to it
+    # (e.g. dog/dog.xml); xml/ kept as a transitional fallback.
+    if   os.path.exists('%s.xml' %src[0]): xmlpath = '%s.xml' %src[0]
+    elif os.path.exists('xml/%s.xml' %src[0]): xmlpath = 'xml/%s.xml' %src[0]
     else: print('cannot find xml...'); sys.exit(0)
+    # -e names a robot-independent environment xml: project dir first, then the
+    # shared library tact/mjcf/ (e.g. 0.xml = infinite plane floor). mjenv
+    # attaches it into the robot spec (mjSpec) — same composition as tact's
+    # env.add, so one env file serves every robot.
+    envpath = None
+    if arg.e != None:
+        if   os.path.exists('%s.xml' %arg.e): envpath = '%s.xml' %arg.e
+        elif os.path.exists(f'{tact.pkg_dir}/mjcf/{arg.e}.xml'): envpath = f'{tact.pkg_dir}/mjcf/{arg.e}.xml'
+        else: print('cannot find env xml...'); sys.exit(0)
     cdll = ctypes.CDLL(f'{tact.pkg_dir}/bin/mjenv.so')
-    # mjenv.cpp::init second arg is `render`: 0 → no GLFW window (headless),
+    # mjenv.cpp::init third arg is `render`: 0 → no GLFW window (headless),
     # >0 → window + redraw every Nth step. Honors -l like the tact backend.
-    cdll.init(xmlpath.encode(), 0 if arg.l else arg.t)
+    cdll.init(xmlpath.encode(), envpath.encode() if envpath else None, 0 if arg.l else arg.t)
     # plan (a): the project YAML is THE sensor-spec source for every backend —
     # parse it once (throwaway Model) and hand the lidar specs + frame offsets
     # (Model.ftran of each registered sensor frame) to CEnv, which publishes
-    # the same topics as the tact backend. Specs whose YAML body name is
-    # missing from the XML are warned + skipped inside CEnv.
+    # the same topics as the tact backend. The YAML body name resolves in the
+    # XML as a body, else a site (zen: xml body origin differs from the yml's,
+    # so the site "base" marks the yml base frame); neither → warned + skipped.
     lidars = None
     try:
         _sm = tact.Model(ymlname)
@@ -70,11 +81,6 @@ if arg.m != None:
     except FileNotFoundError:
         pass                            # xml-only project: no YAML sensor specs
     env = tact.CEnv(cdll, n_y=mod.Controller.n_y, n_u=mod.Controller.n_u, backend='mujoco', has_pd=True, lidars=lidars)
-
-elif arg.c != None:
-    cdll = ctypes.CDLL('./chenv.so')
-    cdll.init(16, arg.c)
-    env = tact.CEnv(cdll, n_y=mod.Controller.n_y, n_u=mod.Controller.n_u, backend='chrono', has_pd=False)
 
 elif arg.x != False:
     if   os.path.exists('./eio.so'): eiopath = './eio.so'
