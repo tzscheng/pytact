@@ -2144,18 +2144,22 @@ class CEnv:
         self.cdll.step.argtypes = [_DBL, _DBL, _DBL, _DBL]
         self.cdll.reset.restype  = None
         self.cdll.reset.argtypes = [_DBL]
-        # Terrain primitive probe for the height_scan parity wrapper below. The
-        # raw absolute-z C export is NOT exposed to callers (`get_z` is blocked
-        # in __getattr__ — removed 2026-06-06, sim-trick reduction); only the
-        # base-relative height_scan contract crosses the interface. height_scan
-        # is bound as an INSTANCE attribute iff the backend has the export, so
-        # hasattr(env, 'height_scan') stays False on chrono/real and scan
-        # consumers (e.g. dog.py StairsPolicy) fall back to blind mode.
-        self._get_z = None
+        # Terrain probe for the height_scan parity wrapper below — mjenv's
+        # `height_scan` export carries the FULL contract (yaw rotation, group-1
+        # vertical rays, base-relative subtraction, default fill, validity);
+        # the Python wrapper is a thin alloc+dict shim. Absolute world-z is NOT
+        # exposed to callers (`get_z` stays blocked in __getattr__ — removed
+        # 2026-06-06, sim-trick reduction; its C export was replaced by this
+        # 2026-06-07). height_scan is bound as an INSTANCE attribute iff the
+        # backend has the export, so hasattr(env, 'height_scan') stays False on
+        # chrono/real and scan consumers (e.g. dog.py StairsPolicy) fall back
+        # to blind mode.
         try:
-            self.cdll.get_z.restype  = ctypes.c_double
-            self.cdll.get_z.argtypes = [ctypes.c_double, ctypes.c_double]
-            self._get_z = self.cdll.get_z
+            self.cdll.height_scan.restype  = None
+            self.cdll.height_scan.argtypes = [
+                _DBL, ctypes.c_double, _DBL, ctypes.c_int,        # base_xy, yaw, offsets, G
+                ctypes.c_double, ctypes.c_double,                  # z_top, default
+                _DBL, _INT, _INT, _DBL]                            # h_out, valid, base_valid, ref
             self.height_scan = self._height_scan
         except AttributeError:
             pass
@@ -2211,29 +2215,28 @@ class CEnv:
     # capability ledger (docs/backend-interface.md).
 
     def _height_scan(self, base_xy, yaw, offsets, z_top=None, default=0.0):
-        """Base-relative terrain scan — the parity implementation of
-        Env.height_scan with the SAME contract (yaw-frame (G, 2) offsets →
-        (G,) heights relative to the terrain under base_xy; miss → default;
-        validity/base_valid/ref in self.last). Built on the backend's get_z C
-        export, probed in __init__ (mjenv returns NaN on ray miss); bound to
-        self.height_scan there iff present. Only the RELATIVE quantity crosses
-        the interface, so sim2sim controllers stay trick-free. z_top is
-        accepted for signature parity but ignored (the C export casts its own
-        fixed-origin ray)."""
-        off = np.asarray(offsets, dtype=np.float64).reshape(-1, 2)
-        c, s = np.cos(yaw), np.sin(yaw)
-        wx = float(base_xy[0]) + c * off[:, 0] - s * off[:, 1]
-        wy = float(base_xy[1]) + s * off[:, 0] + c * off[:, 1]
-        h = np.array([self._get_z(x, y)
-                      for x, y in zip(np.append(wx, float(base_xy[0])),
-                                      np.append(wy, float(base_xy[1])))])
-        ok = ~np.isnan(h[:-1])
-        base_valid = not np.isnan(h[-1])
-        ref = float(h[-1]) if base_valid else 0.0
-        out = np.where(ok, h[:-1] - ref, default)
-        self.last = dict(valid=ok, base_valid=base_valid, ref=ref,
-                         n_valid=int(ok.sum()))
-        return out
+        """Base-relative terrain scan — thin shim over the backend's
+        full-contract `height_scan` C export (mjenv: yaw rotation, group-1
+        vertical rays, base-relative subtraction and default fill all in C).
+        SAME contract as Env.height_scan: yaw-frame (G, 2) offsets → (G,)
+        heights relative to the terrain under base_xy; miss → default;
+        validity/base_valid/ref in self.last. Only the RELATIVE quantity
+        crosses the interface, so sim2sim controllers stay trick-free.
+        z_top=None keeps the historical mjenv ray origin (z=10)."""
+        off = np.ascontiguousarray(np.asarray(offsets, dtype=np.float64).reshape(-1, 2))
+        bxy = np.ascontiguousarray([float(base_xy[0]), float(base_xy[1])])
+        G = len(off)
+        h = np.empty(G); valid = np.zeros(G, dtype=np.int32)
+        bv, ref = ctypes.c_int(0), ctypes.c_double(0.0)
+        self.cdll.height_scan(bxy.ctypes.data_as(_DBL), ctypes.c_double(float(yaw)),
+                              off.ctypes.data_as(_DBL), ctypes.c_int(G),
+                              ctypes.c_double(10.0 if z_top is None else float(z_top)),
+                              ctypes.c_double(float(default)),
+                              h.ctypes.data_as(_DBL), valid.ctypes.data_as(_INT),
+                              ctypes.byref(bv), ctypes.byref(ref))
+        self.last = dict(valid=valid.astype(bool), base_valid=bool(bv.value),
+                         ref=float(ref.value), n_valid=int(valid.sum()))
+        return h
 
     def reset(self):
         """Reset backend state and return the initial observation y. C-side reset()

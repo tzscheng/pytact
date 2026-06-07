@@ -417,28 +417,41 @@ extern "C" double raycast(double pos_x, double pos_y, double pos_z, double dir_x
 }
     
 
-extern "C" double get_z(double x, double y){
-    double pos[3]; //cartesian position
-    pos[0] = x;
-    pos[1] = y;
-    pos[2] = 10.0;
-    
+// height_scan — the FULL terrain-scan contract in C, mirroring tact's
+// Env.height_scan (the Python-side CEnv._height_scan is a thin alloc+dict
+// shim). offsets = G (x, y) pairs in the gravity-aligned base-yaw frame;
+// each scan point casts a vertical ray from z_top down against group-1 geoms
+// only (terrain/floor convention — robot geoms live in group 0, mirroring
+// tact's `raycast: false` robot shapes), plus one under-base reference ray.
+// h_out[i] = terrain top RELATIVE to the terrain under base_xy (dflt where
+// the ray misses); valid_out[i] ∈ {0,1}; *base_valid_out / *ref_out describe
+// the reference ray (ref 0 when the base ray misses). Absolute world-z never
+// crosses the interface — only the relative quantities leave this function.
+// (Replaced the per-point get_z export 2026-06-07; widened to the full
+// contract the same day.)
+extern "C" void height_scan(double* base_xy, double yaw, double* offsets, int G,
+                            double z_top, double dflt,
+                            double* h_out, int* valid_out,
+                            int* base_valid_out, double* ref_out){
     double ray[3] = {0, 0, -1};
+    mjtByte group[2] = {0, 1};   // exclude group-0 (robot), include group-1 (terrain)
     int geomid;
+    double cy = cos(yaw), sy = sin(yaw);
 
-    //exclude group-0 and include group-1
-    mjtByte group[2] = {0, 1};
-
+    // under-base reference ray
+    double pos[3] = {base_xy[0], base_xy[1], z_top};
     double dist = mj_ray(m, d, pos, ray, group, 1, -1, &geomid, NULL);
+    *base_valid_out = (dist >= 0);
+    *ref_out = (dist >= 0) ? z_top - dist : 0.0;
 
-    //printf("x:%lf  y:%lf  geomid: %d  dist: %lf\n", x, y, geomid, dist);
-
-    // miss → NaN so CEnv's height_scan parity wrapper can build a validity
-    // mask (was: 10-(-1)=11.0 garbage). Absolute world-z is no longer a
-    // controller-facing capability (removed 2026-06-06); this export only
-    // feeds the base-relative height_scan contract.
-    if(dist < 0) return NAN;
-    return pos[2] - dist;
+    for(int i = 0; i < G; i++){
+        double ox = offsets[2*i], oy = offsets[2*i+1];
+        double p[3] = {base_xy[0] + cy*ox - sy*oy,
+                       base_xy[1] + sy*ox + cy*oy, z_top};
+        dist = mj_ray(m, d, p, ray, group, 1, -1, &geomid, NULL);
+        valid_out[i] = (dist >= 0);
+        h_out[i] = (dist >= 0) ? (z_top - dist) - *ref_out : dflt;
+    }
 }
 
 extern "C" int get_rgb_image(const char* frame, unsigned char* out_buf){
