@@ -145,9 +145,10 @@ while True:
     # (bit-identical to legacy behavior).
     # PD gains: per-step control inputs, read from the controller's kp/kd attrs
     # (active-only, like tau) — a mode switch updates the attrs and the new gains
-    # flow on the next tick. No attrs → None → YAML k: model default (migration
-    # window; k: is slated for removal). On mujoco/real the gains live in the
-    # XML/firmware — the kwargs are accepted and ignored (capability ledger).
+    # flow on the next tick. This is the ONLY gain channel (YAML k: removed
+    # 2026-06-07); emitting q_ref without a kp attr raises in Model.step. On
+    # mujoco/real the gains live in the XML/firmware — the kwargs are accepted
+    # and ignored (capability ledger).
     # Frameskip: controller.update() runs every arg.frameskip physics ticks; in
     # between, the last (tau, q_ref, qd_ref) is re-applied (ZOH — gains attrs are
     # naturally ZOH too since they're read every tick).

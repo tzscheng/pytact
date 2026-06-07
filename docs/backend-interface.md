@@ -54,6 +54,7 @@ kida.run 등 runner / controller)가 backend 에 기대하는 표면**이다.
 | `cameras` / `lidars` / `camera_frames()` / `lidar_frames()` | 센서 publish 명세 + (name, bytes) frame 공급 | ✓ | ✗ | ✗ | ✗ (실 드라이버가 동일 topic 직접 publish) | **비목표** — sim 전용 드라이버 대역 |
 | `add` / `delete` / `groups` / `edit` | 동적 토폴로지 편집 | ✓ | ✗ | ✗ | ✗ | 비목표 — CEnv 에서 부재 (`hasattr` False) + `__getattr__` 차단 리스트로 dlsym 충돌 방어 (§4) |
 | `height_scan` / `env.m.*` (fk, jacob, …) | sim-native 도구상자 / oracle (`env.raycast` 는 2026-06-06 height_scan 으로 inline — 유일 소비자; ad-hoc ray 는 `clib.tact_raycast_world` 직접, recipe 는 `sim.py`) | ✓ | (height_scan 은 parity ✓ — 위 row) | ✗ | ✗ | 비목표 |
+| `step(kp=, kd=)` per-step PD gains | implicit joint-PD 게인의 유일 채널 (YAML `k:` 2026-06-07 제거 — 게인은 plant 가 아니라 control-policy 입력; `start` 가 controller 의 `kp`/`kd` attr 를 매 tick 읽어 전달). CEnv.step 은 루프 일관성 위해 kwargs 를 **받되 무시** — mujoco 는 XML dual-actuator 상수, real 은 driver/firmware (kida eio: hardcode) 소관. 게인 미스매치 책임은 controller (h9.py 의 backend 분기 패턴) | ✓ | ✗ (XML) | ✗ | ✗ (firmware) | 비목표 — 게인 write 채널이 backend 마다 다름 |
 | `get_dt` / `set_redraw` | runner 전용 plumbing — CEnv init 에서 probe, core `dt` 와 render cadence 의 구현 수단 | — | ✓ | ✗ | ✗ | (사용자 호출 대상 아님) |
 
 parity 열: **지향** = 여러 backend 가 같은 계약으로 구현해야 하는 항목 (이름이 같으면

@@ -47,7 +47,8 @@ class SolverState(NamedTuple):
 # wrench pinning the base at q0 until env.unlock()) was removed 2026-06-06,
 # sim-trick reduction. Its real-world twin is a gantry — if staging is ever
 # needed again, model it explicitly (a YAML gantry body) or start at a stable
-# q0 held by implicit joint-PD `k:` gains (the zen pattern). The private
+# q0 held by implicit joint-PD (the zen pattern; gains pass per step via
+# step(kp=, kd=) since YAML `k:` was removed 2026-06-07). The private
 # _PIDController that powered it went with it.
 
 # Sensor (camera/lidar) parse helpers. A sensor in YAML is "a frame plus publish
@@ -165,14 +166,15 @@ class Model:
         self.jnt_lo = np.array([], dtype=float)  # joint lower limit (rev: rad, lin: m); limited iff lo < hi
         self.jnt_hi = np.array([], dtype=float)  # joint upper limit; both solved as one-sided LCP constraint rows
 
-        # implicit joint-space PD gains, per-jtype length. Populated from YAML `joint.k: [kp, kd]`
-        # (default 0 when absent). Joint-PD only — task-PD was prototyped (Phase 3) but removed
-        # because it can't be implemented on MuJoCo / real-hardware backends, breaking tact's
-        # "swap backend, same agent" contract. Activation requires q_ref (or qd_ref) in step();
-        # without that, gains are inert. Controllers may overwrite these arrays directly.
-        self.Kp_j = np.array([], dtype=float)
-        self.Kd_j = np.array([], dtype=float)
-        
+        # NOTE: implicit joint-PD gains are NOT model state — `k:` was removed from
+        # the YAML schema 2026-06-07 (gains are control-policy inputs, not plant
+        # parameters; the YAML default had no claim to represent mode-dependent
+        # gains). They pass per step: Model.step(kp=, kd=) / Env.step(kp=, kd=),
+        # start reads controller.kp/.kd attrs. Joint-PD only — task-PD was
+        # prototyped (Phase 3) but removed because it can't be implemented on
+        # MuJoCo / real-hardware backends, breaking tact's "swap backend, same
+        # agent" contract. Activation requires q_ref (or qd_ref) in step().
+
         self.ctype = []  # contact convex info
         self.cbody = []  # attached body index
         self.cshape = [] #contact support function shape parameter
@@ -641,8 +643,6 @@ class Model:
                     self.armature = np.append(self.armature, 0)
                     self.jnt_lo   = np.append(self.jnt_lo, 0)   # free-joint DoFs: no limits (v1)
                     self.jnt_hi   = np.append(self.jnt_hi, 0)
-                    self.Kp_j     = np.append(self.Kp_j, 0)
-                    self.Kd_j     = np.append(self.Kd_j, 0)
                     self.active.append(0)
 
                 self.m.append(body['inertial']['mass'])
@@ -727,14 +727,16 @@ class Model:
                         self.jnt_lo = np.append(self.jnt_lo, 0)
                         self.jnt_hi = np.append(self.jnt_hi, 0)
 
-                    # implicit joint-space PD gains: `k: [kp, kd]`. Both default to 0 when absent
-                    # (no PD effect). Controllers can still overwrite model.Kp_j / model.Kd_j later.
+                    # `k:` (implicit joint-PD gains) was removed from the YAML schema
+                    # (2026-06-07): gains are control-policy inputs, not plant
+                    # parameters — they pass per step (env.step(kp=, kd=); start
+                    # reads controller.kp/.kd attrs). YAML keeps only plant params.
                     if 'k' in body['joint']:
-                        self.Kp_j = np.append(self.Kp_j, body['joint']['k'][0])
-                        self.Kd_j = np.append(self.Kd_j, body['joint']['k'][1])
-                    else:
-                        self.Kp_j = np.append(self.Kp_j, 0)
-                        self.Kd_j = np.append(self.Kd_j, 0)
+                        raise ValueError(
+                            f"joint `k:` was removed from the YAML schema (2026-06-07) — "
+                            f"gains are per-step control inputs now: delete `k:` from "
+                            f"body '{body['name']}' and pass kp/kd to step() (start "
+                            f"reads controller.kp/.kd attrs)")
 
                 if body['joint']['parent'] == 'root': self.parent.append(None)
                 elif prefix == None: self.parent.append(self.fbody[self.fdict[body['joint']['parent']]])
@@ -897,8 +899,6 @@ class Model:
         self.armature = np.concatenate([self.armature[:nq_lo], self.armature[nq_hi:]])
         self.jnt_lo = np.concatenate([self.jnt_lo[:nq_lo], self.jnt_lo[nq_hi:]])
         self.jnt_hi = np.concatenate([self.jnt_hi[:nq_lo], self.jnt_hi[nq_hi:]])
-        self.Kp_j  = np.concatenate([self.Kp_j[:nq_lo],  self.Kp_j[nq_hi:]])
-        self.Kd_j  = np.concatenate([self.Kd_j[:nq_lo],  self.Kd_j[nq_hi:]])
         self.active = self.active[:nq_lo] + self.active[nq_hi:]
 
         # 3. Splice per-shape arrays. crgba is flat (4 floats per shape: rgba).
@@ -1302,15 +1302,22 @@ class Model:
         # q_ref/qd_ref activate internal joint-space PD on the LCP path; when both None,
         # behavior is bit-identical to pre-PD step.
         # kp/kd: per-DoF implicit joint-PD gains for THIS step (length nq, like tau).
-        # Gains are control-policy inputs, not plant parameters — controllers switching
-        # modes pass per-mode gains here. None falls back to the YAML-parsed model
-        # default (self.Kp_j/Kd_j) during the `k:` migration window.
+        # Gains are control-policy inputs, not plant parameters (YAML `k:` removed
+        # 2026-06-07) — controllers switching modes pass per-mode gains here.
+        # A reference without its gain is an error (the old silent zero-gain
+        # fallback masked exactly the bugs this migration removes); gains without
+        # references are inert by design (controller keeps kp/kd set while a mode
+        # switch turns q_ref off). q_ref+kp without kd = P-only, legitimate.
         # ff damping and sk spring are applied implicitly inside aba_featherstone.
         # tau/q_ref/qd_ref/kp/kd are per-DoF (length nq), not per-body (length nb) —
         # these differ only when free6 (jtype=3) joints are present.
         if tau is None: tau = np.zeros(len(q))
-        Kp = self.Kp_j if kp is None else np.ascontiguousarray(kp, dtype=np.float64)
-        Kd = self.Kd_j if kd is None else np.ascontiguousarray(kd, dtype=np.float64)
+        if q_ref  is not None and kp is None:
+            raise ValueError("q_ref requires kp — gains are per-step inputs (YAML k: was removed)")
+        if qd_ref is not None and kd is None:
+            raise ValueError("qd_ref requires kd — gains are per-step inputs (YAML k: was removed)")
+        Kp = None if kp is None else np.ascontiguousarray(kp, dtype=np.float64)
+        Kd = None if kd is None else np.ascontiguousarray(kd, dtype=np.float64)
 
         if self.use_c and self.solver == 'lcp':
             #single ctypes round-trip into tact_step_lcp:
@@ -1748,8 +1755,8 @@ class Env:
         # internal PD inactive (caller is responsible for torque via tau).
         # kp/kd: per-step implicit joint-PD gains, ACTIVE-only (length dof, same
         # convention as tau/q_ref) — controllers switching control modes pass
-        # per-mode gains here. None → YAML `k:` model default (migration window;
-        # `k:` is slated for removal, after which gains come only through here).
+        # per-mode gains here. This is the ONLY gain channel (YAML `k:` removed
+        # 2026-06-07); a reference without its gain raises in Model.step.
         # Internal arrays are per-DoF (length nq), iterating self.m.active which is
         # the per-DoF active mask. For non-free6 models nq == nb so behavior is
         # unchanged; for free6 models the 6 DoFs per free6 body are all active=0.

@@ -14,12 +14,12 @@ bodies:
     shapes: [{type: capsule, param: [0.01, 2.0], euler: [90, 0, 0], contact: [0, mat1], rgba: [0.2, 0.2, 0.2, 1.0]}]
 
   - name: cart
-    joint: {type: lin, parent: root, euler: [90, 0, 0], damping: 0.1, k: [100, 1]}
+    joint: {type: lin, parent: root, euler: [90, 0, 0], damping: 0.1}
     inertial: {mass: 1.0, tensor: [diag, 0.01, 0.0833, 0.0833]}
     shapes: [{type: box, param: [0.05, 0.05, 0.5], contact: [0, mat1], rgba: [0.3, 0.3, 0.8, 1.0]}]
 
   - name: pole
-    joint: {type: rev, parent: cart, euler: [0, 90, 0], damping: 0.1, q0: 180, k: [100, 1]}
+    joint: {type: rev, parent: cart, euler: [0, 90, 0], damping: 0.1, q0: 180}
     inertial: {mass: 1.0, tensor: [diag, 0.01, 0.0833, 0.0833], pos: [0, 0.5, 0]}
     shapes:
       - {type: capsule, pos: [0, 0.5, 0], euler: [90, 0, 0], param: [0.02, 0.5], contact: [0, mat1], rgba: [0.4, 0.4, 0.4, 1.0]}
