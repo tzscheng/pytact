@@ -291,24 +291,39 @@ extern "C" void init(char* xml, int _render=0) {
 }
 
 
-// shared body for step(). tau: per-motor torque (length n_motor), q_ref: per-position
-// target (length n_position, may be NULL → PD disabled), kp/kd: per-step PD gains
-// (length n_position; PD active iff q_ref AND kp present — the caller-side wrapper
-// enforces "q_ref requires kp", mirroring tact's Model.step). When PD is not
-// supported by the loaded XML, tau is the legacy full-ctrl vector (m->nu) — still
-// a generalized force in tact's convention.
-static int step_internal(double* tau, double* q_ref, double* kp, double* kd, double* y){
+// Unified step — same control-input set as tact's Env.step. tau: per-motor
+// feedforward torque (length n_motor), q_ref/qd_ref: per-position targets
+// (NULL → that term off), kp/kd: per-step PD gains (length n_position; gains
+// are control inputs, not model constants — the XML kp/kv are placeholders).
+// PD active iff q_ref AND kp (the Python wrapper raises on q_ref-without-kp /
+// qd_ref-without-kd, mirroring tact's Model.step; here a missing gain just
+// leaves its term off). When PD is not supported by the loaded XML, tau is the
+// legacy full-ctrl vector (m->nu) — still a generalized force in tact's
+// convention. (The former step/step_internal split — a relic of the legacy
+// step(u, y) compat body — was merged 2026-06-07; single caller, and the
+// folding no longer needs a tau_eff side buffer.)
+extern "C" int step(double* tau, double* q_ref, double* qd_ref, double* kp, double* kd, double* y){
     if(pd_supported){
         // write this step's gains into the position actuators (stateless)
         apply_pd_gains(q_ref, kp, kd);
+        bool pd_on = (q_ref != NULL && kp != NULL);
 
-        // motor actuators always receive tau (feedforward torque)
-        for(int i = 0; i < n_motor; i++)    cmd[motor_idx[i]]    = tau[i];
+        // motor actuators receive tau (feedforward torque); when the servo runs
+        // with a velocity target, Kd·qd_ref is folded in so the position
+        // actuator's intrinsic -Kd·qvel term yields full PD with both targets:
+        //   τ_total = Kp·(q_ref-q) - Kd·qvel + (τ + Kd·qd_ref)
+        //           = Kp·(q_ref-q) + Kd·(qd_ref-qvel) + τ
+        for(int i = 0; i < n_motor; i++){
+            double ff = tau[i];
+            if(pd_on && qd_ref && kd) ff += kd[i] * qd_ref[i];
+            cmd[motor_idx[i]] = ff;
+        }
         // position actuators receive q_ref when active; harmless value otherwise
-        if(q_ref && kp) for(int i = 0; i < n_position; i++) cmd[position_idx[i]] = q_ref[i];
-        else            for(int i = 0; i < n_position; i++) cmd[position_idx[i]] = 0.0;
+        for(int i = 0; i < n_position; i++) cmd[position_idx[i]] = pd_on ? q_ref[i] : 0.0;
     } else {
-        // legacy XML: m->nu single-channel actuators, tau is the full ctrl vector
+        // legacy XML (no motor↔position pairs, e.g. torque-only rb5m/rb10/
+        // anymal_b_torque): m->nu single-channel actuators, tau is the full
+        // ctrl vector; q_ref/kp/kd are ignored.
         for(int i = 0; i < m->nu; i++) cmd[i] = tau[i];
     }
 
@@ -346,29 +361,10 @@ static int step_internal(double* tau, double* q_ref, double* kp, double* kd, dou
     return 0;
 }
 
-// Unified step — same control-input set as tact's Env.step (tau, q_ref, qd_ref,
-// kp, kd): gains are per-step control inputs, not model constants (the XML's
-// kp/kv are structural placeholders). q_ref/qd_ref/kp/kd optional; PD active iff
-// q_ref AND kp (the Python wrapper raises on q_ref-without-kp / qd_ref-without-kd,
-// mirroring Model.step — here a missing gain just leaves its term off). When
-// qd_ref and kd are supplied, Kd·qd_ref is folded into the motor channel so the
-// position actuator's intrinsic -Kd·qvel term yields full PD with both targets:
-//   τ_total = Kp·(q_ref - q) - Kd·qvel + (τ + Kd·qd_ref) = Kp·(q_ref - q) + Kd·(qd_ref - qvel) + τ
-extern "C" int step(double* tau, double* q_ref, double* qd_ref, double* kp, double* kd, double* y){
-    if(pd_supported && q_ref && qd_ref && kd){
-        static double tau_eff[256];
-        for(int k = 0; k < n_motor; k++)
-            tau_eff[k] = tau[k] + kd[k] * qd_ref[k];
-        return step_internal(tau_eff, q_ref, kp, kd, y);
-    }
-    return step_internal(tau, q_ref, kp, kd, y);
-}
-
-
 // Gym-style reset: restore initial state and write the post-reset observation into y
 // (without advancing physics by one mj_step). mj_forward + mj_sensor recomputes derived
 // quantities and the sensor data array based on qpos0/qvel0; the per-sensor copy mirrors
-// the loop inside step_internal so y has the same layout as a normal step output.
+// the loop inside step() so y has the same layout as a normal step output.
 extern "C" void reset(double* y){
     mj_resetData(m, d);
     mj_forward(m, d);   // mj_forward internally runs mj_sensorPos/Vel/Acc, filling d->sensordata
