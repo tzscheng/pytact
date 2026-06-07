@@ -2182,17 +2182,25 @@ class CEnv:
         # tau=None → zero feedforward buffer (C backends currently dereference tau
         # unconditionally, so we always pass a real pointer of length n_u).
         # q_ref/qd_ref=None → NULL pointer = backend's internal PD inactive.
-        # kp/kd: accepted for start-loop uniformity but NOT forwarded — on these
-        # backends the PD gains live in the XML (mujoco dual-actuator) or the
-        # driver/firmware (real eio), not per-step (capability ledger,
-        # docs/backend-interface.md).
+        # kp/kd: per-step PD gains, forwarded to the backend (mjenv writes them
+        # into the position actuators' gainprm each step — the XML kp/kv are
+        # structural placeholders). Same error semantics as Model.step: a
+        # reference without its gain raises. On real eio the gains live in the
+        # driver/firmware — the pointers are extra args its step() ignores until
+        # its signature picks them up (capability ledger).
+        if q_ref  is not None and kp is None:
+            raise ValueError("q_ref requires kp — gains are per-step inputs (YAML/XML model gains were retired)")
+        if qd_ref is not None and kd is None:
+            raise ValueError("qd_ref requires kd — gains are per-step inputs (YAML/XML model gains were retired)")
         if tau is None:
             _tau = (ctypes.c_double*self.n_u)()
         else:
             _tau = (ctypes.c_double*len(tau))(*tau)
         _qr  = (ctypes.c_double*len(q_ref))(*q_ref)    if q_ref  is not None else None
         _qdr = (ctypes.c_double*len(qd_ref))(*qd_ref)  if qd_ref is not None else None
-        ret = self.cdll.step(_tau, _qr, _qdr, self._y)
+        _kp  = (ctypes.c_double*len(kp))(*kp)          if kp     is not None else None
+        _kd  = (ctypes.c_double*len(kd))(*kd)          if kd     is not None else None
+        ret = self.cdll.step(_tau, _qr, _qdr, _kp, _kd, self._y)
         if ret < 0: print('ESC pressed. exit...'); sys.exit()
         return np.frombuffer(self._y, dtype=np.float64).copy()
 

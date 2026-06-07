@@ -16,11 +16,14 @@ double cmd[256];
 int render = 0;
 int eq_active0[16];
 
-// dual-actuator support (option 2: runtime gainprm toggle for PD enable/disable).
-// Convention: every actuated joint has one motor actuator (biastype=NONE) for feedforward
-// torque AND one position actuator (biastype=AFFINE) for implicit-style PD. The agent
-// publishes (u, q_ref); when q_ref is present, position actuators run at nominal gain;
-// when absent, they're zeroed (effectively disabled).
+// dual-actuator support — per-step PD gains (2026-06-07; mirrors the tact-side
+// YAML k: removal: gains are control-policy inputs, not model constants).
+// Convention: every actuated joint has one motor actuator (biastype=NONE) for
+// feedforward torque AND one position actuator (biastype=AFFINE) for PD. The
+// caller passes (tau, q_ref, qd_ref, kp, kd) per step; each step STATELESSLY
+// writes the position actuators' gainprm/biasprm from kp/kd (q_ref+kp present)
+// or zeros them (PD off). The XML's kp/kv values are structural placeholders —
+// the runtime never reads them (the former nominal save/restore toggle is gone).
 //
 // XML must satisfy: n_motor == n_position, and the i-th motor pairs with the i-th
 // position actuator (by transmission joint id). Mismatch is reported at init and PD
@@ -29,12 +32,6 @@ int   motor_idx[256];               // ctrl-space indices of motor actuators
 int   position_idx[256];            // ctrl-space indices of position actuators
 int   n_motor = 0;
 int   n_position = 0;
-double pos_gain_nominal[256 * mjNGAIN];   // saved nominal gainprm of position actuators
-double pos_bias_nominal[256 * mjNBIAS];   // saved nominal biasprm of position actuators
-// pd_active_now reflects the *current state* of gainprm. XML loads position actuators
-// at their nominal gains, so we start with true to keep state and gainprm consistent.
-// init() then calls set_pd_active(false) which forces zeroing for a safe start.
-bool  pd_active_now = true;
 bool  pd_supported = false;         // set true at init if XML has matched motor/position pairs
 
 mjvCamera cam;                      // abstract camera
@@ -57,8 +54,7 @@ void update_control_input(const mjModel *m, mjData *d) {
     for(int i = 0; i < m->nu; i++) d->ctrl[i] = cmd[i];
 }
 
-// classify actuators into motor (biastype=NONE) and position (biastype=AFFINE), save
-// nominal gain/bias of position actuators so we can later toggle to zero and back.
+// classify actuators into motor (biastype=NONE) and position (biastype=AFFINE).
 // pd_supported is set only when XML has exactly matching motor↔position pairs in joint id.
 static void classify_actuators(){
     n_motor = n_position = 0;
@@ -66,12 +62,7 @@ static void classify_actuators(){
         if(m->actuator_biastype[i] == mjBIAS_NONE){
             if(n_motor < 256) motor_idx[n_motor++] = i;
         } else if(m->actuator_biastype[i] == mjBIAS_AFFINE){
-            if(n_position < 256){
-                position_idx[n_position] = i;
-                memcpy(pos_gain_nominal + n_position*mjNGAIN, m->actuator_gainprm + i*mjNGAIN, sizeof(double)*mjNGAIN);
-                memcpy(pos_bias_nominal + n_position*mjNBIAS, m->actuator_biasprm + i*mjNBIAS, sizeof(double)*mjNBIAS);
-                n_position++;
-            }
+            if(n_position < 256) position_idx[n_position++] = i;
         }
     }
     // pairing validation: same count AND each motor[i]'s transmission joint matches position[i]'s
@@ -86,21 +77,24 @@ static void classify_actuators(){
            n_motor, n_position, pd_supported ? "YES" : "NO (q_ref will be ignored)");
 }
 
-// toggle position-actuator gains: active=true restores nominal, false zeros them out.
-// Idempotent (skips work if already in requested state). Only touches if pd_supported.
-static void set_pd_active(bool active){
-    if(!pd_supported || pd_active_now == active) return;
+// stateless per-step PD gain application: q_ref && kp present → write the caller's
+// gains (gainprm[0]=kp, biasprm=[0, -kp, -kd]; kd NULL → P-only), else zero (PD
+// off). Writes a few doubles per position actuator every step — negligible next to
+// mj_step, and removes the toggle state (pd_active_now / nominal save-restore):
+// the gainprm content is a pure function of this step's arguments.
+static void apply_pd_gains(double* q_ref, double* kp, double* kd){
+    if(!pd_supported) return;
+    bool on = (q_ref != NULL && kp != NULL);
     for(int k = 0; k < n_position; k++){
         int i = position_idx[k];
-        if(active){
-            memcpy(m->actuator_gainprm + i*mjNGAIN, pos_gain_nominal + k*mjNGAIN, sizeof(double)*mjNGAIN);
-            memcpy(m->actuator_biasprm + i*mjNBIAS, pos_bias_nominal + k*mjNBIAS, sizeof(double)*mjNBIAS);
-        } else {
-            memset(m->actuator_gainprm + i*mjNGAIN, 0, sizeof(double)*mjNGAIN);
-            memset(m->actuator_biasprm + i*mjNBIAS, 0, sizeof(double)*mjNBIAS);
+        memset(m->actuator_gainprm + i*mjNGAIN, 0, sizeof(double)*mjNGAIN);
+        memset(m->actuator_biasprm + i*mjNBIAS, 0, sizeof(double)*mjNBIAS);
+        if(on){
+            m->actuator_gainprm[i*mjNGAIN + 0] = kp[k];
+            m->actuator_biasprm[i*mjNBIAS + 1] = -kp[k];
+            if(kd) m->actuator_biasprm[i*mjNBIAS + 2] = -kd[k];
         }
     }
-    pd_active_now = active;
 }
 
 
@@ -221,10 +215,11 @@ extern "C" void init(char* xml, int _render=0) {
     //store initial state of eq_active
     for(int i=0; i < 16; i++) eq_active0[i] = d->eq_active[i];
 
-    //classify actuators (motor/position pairs); start in PD-disabled mode for backward
-    //compat with legacy step(u, y) callers — agent publishing q_ref will activate PD.
+    //classify actuators (motor/position pairs); zero the position-actuator gains for
+    //a safe start — they are runtime-written every step from the caller's kp/kd
+    //(the XML values are structural placeholders, never active).
     classify_actuators();
-    set_pd_active(false);
+    apply_pd_gains(NULL, NULL, NULL);
     
     //manipulating floating body's 6d pose: doesn't work
     /*int bodyid = mj_name2id(m, mjOBJ_BODY, "model");
@@ -297,19 +292,21 @@ extern "C" void init(char* xml, int _render=0) {
 
 
 // shared body for step(). tau: per-motor torque (length n_motor), q_ref: per-position
-// target (length n_position, may be NULL → PD disabled). When PD is not supported by
-// the loaded XML, tau is the legacy full-ctrl vector (m->nu) — still a generalized
-// force in tact's convention.
-static int step_internal(double* tau, double* q_ref, double* y){
+// target (length n_position, may be NULL → PD disabled), kp/kd: per-step PD gains
+// (length n_position; PD active iff q_ref AND kp present — the caller-side wrapper
+// enforces "q_ref requires kp", mirroring tact's Model.step). When PD is not
+// supported by the loaded XML, tau is the legacy full-ctrl vector (m->nu) — still
+// a generalized force in tact's convention.
+static int step_internal(double* tau, double* q_ref, double* kp, double* kd, double* y){
     if(pd_supported){
-        // toggle position actuator gains based on q_ref presence (option 2: runtime gainprm)
-        set_pd_active(q_ref != NULL);
+        // write this step's gains into the position actuators (stateless)
+        apply_pd_gains(q_ref, kp, kd);
 
         // motor actuators always receive tau (feedforward torque)
         for(int i = 0; i < n_motor; i++)    cmd[motor_idx[i]]    = tau[i];
         // position actuators receive q_ref when active; harmless value otherwise
-        if(q_ref) for(int i = 0; i < n_position; i++) cmd[position_idx[i]] = q_ref[i];
-        else      for(int i = 0; i < n_position; i++) cmd[position_idx[i]] = 0.0;
+        if(q_ref && kp) for(int i = 0; i < n_position; i++) cmd[position_idx[i]] = q_ref[i];
+        else            for(int i = 0; i < n_position; i++) cmd[position_idx[i]] = 0.0;
     } else {
         // legacy XML: m->nu single-channel actuators, tau is the full ctrl vector
         for(int i = 0; i < m->nu; i++) cmd[i] = tau[i];
@@ -349,24 +346,22 @@ static int step_internal(double* tau, double* q_ref, double* y){
     return 0;
 }
 
-// Unified step. tau: per-motor feed-forward torque (always generalized force in tact's
-// convention; the old ambiguous "u" name is gone now that implicit PD is its own input).
-// q_ref/qd_ref are optional (NULL → PD off, bit-identical to legacy behavior). When
-// both targets are supplied and pd_supported, Kd·qd_ref is folded into the motor channel
-// so the position actuator's intrinsic -Kd·qvel term yields full PD with both targets:
+// Unified step — same control-input set as tact's Env.step (tau, q_ref, qd_ref,
+// kp, kd): gains are per-step control inputs, not model constants (the XML's
+// kp/kv are structural placeholders). q_ref/qd_ref/kp/kd optional; PD active iff
+// q_ref AND kp (the Python wrapper raises on q_ref-without-kp / qd_ref-without-kd,
+// mirroring Model.step — here a missing gain just leaves its term off). When
+// qd_ref and kd are supplied, Kd·qd_ref is folded into the motor channel so the
+// position actuator's intrinsic -Kd·qvel term yields full PD with both targets:
 //   τ_total = Kp·(q_ref - q) - Kd·qvel + (τ + Kd·qd_ref) = Kp·(q_ref - q) + Kd·(qd_ref - qvel) + τ
-// Kd[i] comes from the paired position actuator's biasprm[2] (MuJoCo convention:
-// bias = -Kp·qpos - Kv·qvel, so Kv = -biasprm[2]).
-extern "C" int step(double* tau, double* q_ref, double* qd_ref, double* y){
-    if(pd_supported && q_ref && qd_ref){
+extern "C" int step(double* tau, double* q_ref, double* qd_ref, double* kp, double* kd, double* y){
+    if(pd_supported && q_ref && qd_ref && kd){
         static double tau_eff[256];
-        for(int k = 0; k < n_motor; k++){
-            double kv = -pos_bias_nominal[k*mjNBIAS + 2];
-            tau_eff[k] = tau[k] + kv * qd_ref[k];
-        }
-        return step_internal(tau_eff, q_ref, y);
+        for(int k = 0; k < n_motor; k++)
+            tau_eff[k] = tau[k] + kd[k] * qd_ref[k];
+        return step_internal(tau_eff, q_ref, kp, kd, y);
     }
-    return step_internal(tau, q_ref, y);
+    return step_internal(tau, q_ref, kp, kd, y);
 }
 
 

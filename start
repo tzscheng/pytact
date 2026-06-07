@@ -146,9 +146,11 @@ while True:
     # PD gains: per-step control inputs, read from the controller's kp/kd attrs
     # (active-only, like tau) — a mode switch updates the attrs and the new gains
     # flow on the next tick. This is the ONLY gain channel (YAML k: removed
-    # 2026-06-07); emitting q_ref without a kp attr raises in Model.step. On
-    # mujoco/real the gains live in the XML/firmware — the kwargs are accepted
-    # and ignored (capability ledger).
+    # 2026-06-07); emitting q_ref without a kp attr raises in Model.step/CEnv.step.
+    # mjenv consumes the same kwargs (writes position-actuator gainprm per step —
+    # XML kp/kv are placeholders); real eio gains live in driver/firmware
+    # (capability ledger). Gain VALUES don't transfer 1:1 across backends
+    # (tact implicit vs mujoco explicit PD) — controller's responsibility.
     # Frameskip: controller.update() runs every arg.frameskip physics ticks; in
     # between, the last (tau, q_ref, qd_ref) is re-applied (ZOH — gains attrs are
     # naturally ZOH too since they're read every tick).
