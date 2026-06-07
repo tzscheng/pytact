@@ -1293,18 +1293,24 @@ class Model:
         return SolverState(lam=np.zeros(6 * MAX_PTS_PER_PAIR * max(npair, 1) + 2 * nq),
                            nq=nq)
 
-    def step(self, q, qd, tau=None, q_ref=None, qd_ref=None, ctx=None):
-        # Referentially transparent: same (q, qd, tau, q_ref, qd_ref, ctx) → same
-        # (q_next, qd_next, y, ctx_next). `ctx` (SolverState) carries LCP warm-start λ;
+    def step(self, q, qd, tau=None, q_ref=None, qd_ref=None, kp=None, kd=None, ctx=None):
+        # Referentially transparent: same (q, qd, tau, q_ref, qd_ref, kp, kd, ctx) →
+        # same (q_next, qd_next, y, ctx_next). `ctx` (SolverState) carries LCP warm-start λ;
         # ctx=None → cold start (zero λ). ctx is not mutated — ctx_next is fresh.
         # All three input channels are equal-priority and independently optional.
         # tau=None → treated as zero feedforward (passive step under gravity/contact).
         # q_ref/qd_ref activate internal joint-space PD on the LCP path; when both None,
         # behavior is bit-identical to pre-PD step.
+        # kp/kd: per-DoF implicit joint-PD gains for THIS step (length nq, like tau).
+        # Gains are control-policy inputs, not plant parameters — controllers switching
+        # modes pass per-mode gains here. None falls back to the YAML-parsed model
+        # default (self.Kp_j/Kd_j) during the `k:` migration window.
         # ff damping and sk spring are applied implicitly inside aba_featherstone.
-        # tau/q_ref/qd_ref are per-DoF (length nq), not per-body (length nb) — these
-        # differ only when free6 (jtype=3) joints are present.
+        # tau/q_ref/qd_ref/kp/kd are per-DoF (length nq), not per-body (length nb) —
+        # these differ only when free6 (jtype=3) joints are present.
         if tau is None: tau = np.zeros(len(q))
+        Kp = self.Kp_j if kp is None else np.ascontiguousarray(kp, dtype=np.float64)
+        Kd = self.Kd_j if kd is None else np.ascontiguousarray(kd, dtype=np.float64)
 
         if self.use_c and self.solver == 'lcp':
             #single ctypes round-trip into tact_step_lcp:
@@ -1316,12 +1322,12 @@ class Model:
             qd_in  = np.ascontiguousarray(qd,  dtype=np.float64)
             tau_in = np.ascontiguousarray(tau, dtype=np.float64)
 
-            # implicit joint-PD pointers — NULL when activation missing (no q_ref/qd_ref) or
-            # capability explicitly cleared (controller set Kp_j/Kd_j = None). Default arrays
-            # are zero-initialized from YAML, so PD is inert until either YAML `k:` or
-            # controller-side assignment provides non-zero gains.
-            Kp_ptr  = self.Kp_j.ctypes.data_as(_DBL)  if (self.Kp_j  is not None and q_ref is not None) else None
-            Kd_ptr  = self.Kd_j.ctypes.data_as(_DBL)  if (self.Kd_j  is not None and (q_ref is not None or qd_ref is not None)) else None
+            # implicit joint-PD pointers — NULL when activation missing (no q_ref/qd_ref)
+            # or capability cleared (kp/kd resolved to None). Default arrays are
+            # zero-initialized from YAML, so PD is inert until YAML `k:`, a controller
+            # assignment, or the per-step kp/kd kwargs provide non-zero gains.
+            Kp_ptr  = Kp.ctypes.data_as(_DBL)  if (Kp is not None and q_ref is not None) else None
+            Kd_ptr  = Kd.ctypes.data_as(_DBL)  if (Kd is not None and (q_ref is not None or qd_ref is not None)) else None
             qr_ptr  = q_ref.ctypes.data_as(_DBL)      if q_ref       is not None else None
             qdr_ptr = qd_ref.ctypes.data_as(_DBL)     if qd_ref      is not None else None
 
@@ -1352,7 +1358,7 @@ class Model:
             #are all folded into ABA's articulated inertia.
             T = _fk(self.Ti, self.parent, self.jtype, q)
             f_ext_zero = np.zeros((len(self.X), 6))
-            qdd_free, f, a, v = aba_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, tau, f_ext_zero, self.g, full=True, ff=self.ff, sk=self.sk, armature=self.armature, dt=self.dt, Kp_j=self.Kp_j, Kd_j=self.Kd_j, q_ref=q_ref, qd_ref=qd_ref)
+            qdd_free, f, a, v = aba_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, tau, f_ext_zero, self.g, full=True, ff=self.ff, sk=self.sk, armature=self.armature, dt=self.dt, Kp_j=Kp, Kd_j=Kd, q_ref=q_ref, qd_ref=qd_ref)
             qd_free = qd + qdd_free * self.dt
             M = crb_featherstone(self.X, self.I6, self.parent, self.jtype, q)
             M = M + np.diag(self.armature)   # armature (rotor inertia) on the M diagonal — matches the C path + ABA predictor above
@@ -1389,7 +1395,7 @@ class Model:
             # Not for production — spheres only, no Coulomb cone, needs a small dt.
             T = _fk(self.Ti, self.parent, self.jtype, q)
             f_ext = contact_ground_sphere(T, self.parent, self.jtype, self.ctype, self.cbody, self.ctran, self.cshape, self.cparam, qd)
-            qdd, f, a, v = aba_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, tau, f_ext, self.g, full=True, ff=self.ff, sk=self.sk, armature=self.armature, dt=self.dt, Kp_j=self.Kp_j, Kd_j=self.Kd_j, q_ref=q_ref, qd_ref=qd_ref)
+            qdd, f, a, v = aba_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, tau, f_ext, self.g, full=True, ff=self.ff, sk=self.sk, armature=self.armature, dt=self.dt, Kp_j=Kp, Kd_j=Kd, q_ref=q_ref, qd_ref=qd_ref)
             qd_next = qd + qdd * self.dt
             q_base, _, _, _, _, _ = _build_qidx(self.jtype)
             q_next  = _q_step(q, qd_next, self.dt, self.jtype, q_base)
@@ -1736,10 +1742,14 @@ class Env:
         # responsible for handling that case.
         return self.m.dt
         
-    def step(self, tau=None, q_ref=None, qd_ref=None):
-        # All three input channels are equal-priority and independently optional.
+    def step(self, tau=None, q_ref=None, qd_ref=None, kp=None, kd=None):
+        # All input channels are equal-priority and independently optional.
         # tau=None → zero feedforward (passive step); q_ref/qd_ref=None → backend's
         # internal PD inactive (caller is responsible for torque via tau).
+        # kp/kd: per-step implicit joint-PD gains, ACTIVE-only (length dof, same
+        # convention as tau/q_ref) — controllers switching control modes pass
+        # per-mode gains here. None → YAML `k:` model default (migration window;
+        # `k:` is slated for removal, after which gains come only through here).
         # Internal arrays are per-DoF (length nq), iterating self.m.active which is
         # the per-DoF active mask. For non-free6 models nq == nb so behavior is
         # unchanged; for free6 models the 6 DoFs per free6 body are all active=0.
@@ -1747,15 +1757,19 @@ class Env:
         tau_full = np.zeros(nq)
         qr_full  = None if q_ref  is None else np.zeros(nq)
         qdr_full = None if qd_ref is None else np.zeros(nq)
+        kp_full  = None if kp     is None else np.zeros(nq)
+        kd_full  = None if kd     is None else np.zeros(nq)
         idx = 0
         for k in range(nq):
             if self.m.active[k] > 0:
                 if tau    is not None: tau_full[k] = tau[idx]
                 if qr_full  is not None: qr_full[k]  = q_ref[idx]
                 if qdr_full is not None: qdr_full[k] = qd_ref[idx]
+                if kp_full  is not None: kp_full[k]  = kp[idx]
+                if kd_full  is not None: kd_full[k]  = kd[idx]
                 idx += 1
 
-        self.q, self.qd, y, self._ctx = self.m.step(self.q, self.qd, tau=tau_full, q_ref=qr_full, qd_ref=qdr_full, ctx=self._ctx)
+        self.q, self.qd, y, self._ctx = self.m.step(self.q, self.qd, tau=tau_full, q_ref=qr_full, qd_ref=qdr_full, kp=kp_full, kd=kd_full, ctx=self._ctx)
         
         if self.render and self.cnt % self.redraw == 0:
             ret = self._win_render()
