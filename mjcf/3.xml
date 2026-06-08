@@ -1,0 +1,19 @@
+<mujoco>
+
+  <asset>
+    <texture name="texplane" type="2d" builtin="checker" rgb1="1 1 1" rgb2="1 1 1" width="512" height="512" mark="cross" markrgb="0 0 0"/>   
+    <material name="matplane" reflectance="0.0" texture="texplane" texrepeat="1 1" texuniform="true"/>
+  </asset>
+
+  
+  <worldbody>
+    <geom group="1" name="floor" pos="0 0 0" size="0 0 0.25" type="plane" material="matplane" condim="3"/>
+    <geom group="1" type="box" pos=" 1.0  0 0.03" size="0.15 2.00 0.03" rgba="0.8 0.8 0.8 1"/>
+    <geom group="1" type="box" pos=" 2.0  0 0.04" size="0.12 2.00 0.04" rgba="0.7 0.7 0.7 1"/>
+    <geom group="1" type="box" pos=" 3.0 -1 0.04" size="0.35 1.00 0.04" rgba="0.8 0.8 0.8 1"/>
+    <geom group="1" type="box" pos=" 4.0  0 0.05" size="0.16 2.00 0.05" rgba="0.7 0.7 0.7 1"/>
+    <geom group="1" type="box" pos=" 5.0  0 0.04" size="0.13 2.00 0.04" rgba="0.8 0.8 0.8 1"/>
+  </worldbody>
+
+  
+</mujoco>

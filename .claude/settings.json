@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed -n *)",
+      "Bash(nm *)",
+      "Bash(git show *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(./build.sh)",
+      "Bash(./start *)",
+      "Bash(timeout * ./start *)"
+    ]
+  }
+}

@@ -3,11 +3,25 @@ EGL image buffer + add()), CEnv (ctypes-CDLL adapter for mujoco/chrono/real
 backends). Pure math/dynamics primitives live in rbd.py and are re-exported
 here via `from .rbd import *` so internal references stay flat."""
 import sys, os, ctypes, math, copy
+from typing import NamedTuple
 import numpy as np
 import yaml
 from ._clib import clib, _DBL, _INT
 from .rbd import *
 from .rbd import _fk, _q_step, _build_qidx   # underscored names are not pulled in by `import *`
+
+
+class SolverState(NamedTuple):
+    """Persistent solver state threaded across Model.step() calls (the `ctx` arg).
+    Externalizing it makes Model.step referentially transparent: same
+    (q, qd, tau, ..., ctx) → same (q_next, qd_next, y, ctx_next). Env keeps one
+    internally so Env users see no change. Today it holds only the LCP warm-start
+    λ; future hidden state (e.g. stick-slip anchors) is added as a field here with
+    no signature churn. NamedTuple → JAX-pytree friendly for later batched/diff use.
+    `ctx=None` = cold start (zero λ)."""
+    lam: np.ndarray          # LCP contact warm-start λ, length 6*MAX_PTS_PER_PAIR*n_pair
+    lam_fric: np.ndarray = None   # joint-friction warm-start λ, per-DoF (length nq); None = cold
+    lam_limit: np.ndarray = None  # joint-limit warm-start λ, per-DoF (length nq); None = cold
 
 # Private PID used by Model to lock free joints at simulation start (e.g., to
 # keep a biped upright until the user's high-level controller takes over).
@@ -31,6 +45,69 @@ class _PIDController:
         return u
 
 
+# Sensor (camera/lidar) parse helpers. A sensor in YAML is "a frame plus publish
+# metadata": _register_sensors injects each spec into its target body's `frames:`
+# list (default body = root), so it flows through the normal frame machinery —
+# default-fill, root-offset, fdict/fbody/ftran registration, and add/delete group
+# handling — with no parallel code path. The publish metadata (everything but the
+# frame-only pose keys) goes into a per-kind registry (Model.cameras / Model.lidars),
+# normalized/validated by the `normalize` callback. Cameras and lidars share this so
+# the two stay in lockstep; only `normalize` differs.
+def _register_sensors(config, specs, prefix, registry, *, kind, normalize):
+    if not specs: return
+    body_by_name = {b['name']: b for b in config['bodies']}
+    for s in specs:
+        if 'name' not in s:
+            raise ValueError(f"{kind} entry missing required `name`")
+        bname = s.get('body', 'root')
+        if bname not in body_by_name:
+            raise ValueError(f"{kind} {s['name']!r} references unknown body {bname!r} "
+                             f"(have: {sorted(body_by_name)})")
+        # Frame-only keys position the sensor; everything else is publish metadata.
+        frame = {'name': s['name'], 'pos': s.get('pos', [0, 0, 0]),
+                 'euler': s.get('euler', [0, 0, 0])}
+        if 'eulerseq' in s: frame['eulerseq'] = s['eulerseq']
+        body_by_name[bname].setdefault('frames', []).append(frame)
+        spec = {k: v for k, v in s.items()
+                if k not in ('body', 'pos', 'euler', 'eulerseq')}
+        # build() prefixes frame names; mirror it so spec['name'] matches the fdict key.
+        spec['name'] = (prefix + s['name']) if prefix else s['name']
+        normalize(spec)
+        registry.append(spec)
+
+
+def _normalize_camera(spec):
+    # rgb → get_rgb_image (JPEG); depth → get_depth_image (zstd float32). res [w,h]
+    # sizes the EGL render (grow-only); vfov = vertical FOV (deg, MuJoCo fovy convention).
+    spec.setdefault('type', 'rgb')
+    if spec['type'] not in ('rgb', 'depth'):
+        raise ValueError(f"camera {spec['name']!r}: unsupported type {spec['type']!r} "
+                         f"(expected 'rgb' or 'depth')")
+    spec['res'] = list(spec.get('res', [640, 480]))
+    spec.setdefault('fps', 30)
+    spec.setdefault('vfov', 45)  # vertical FOV (deg), like MuJoCo fovy
+
+
+def _normalize_lidar(spec):
+    # 2d → get_lidar_image: env.raymap() depth map, zstd float32 (same wire format as a
+    # depth camera, but range-along-ray in meters with -1 for no-hit). dth = degrees per
+    # pixel (horizontal FoV = res[0]*dth). pinhole/perpendicular default to the LiDAR
+    # convention (angular projection, range along ray).
+    # 3d → get_lidar_points: env.raycloud() sensor-frame points, zstd float32
+    # (N, 3) — N varies per frame (no-hit rays dropped; `max_range` drops far hits).
+    # perpendicular doesn't apply (ranges are taken along the ray by construction).
+    spec.setdefault('type', '2d')
+    if spec['type'] not in ('2d', '3d'):
+        raise ValueError(f"lidar {spec['name']!r}: unsupported type {spec['type']!r} "
+                         f"(must be '2d' or '3d')")
+    spec['res'] = list(spec.get('res', [120, 80]))
+    spec.setdefault('fps', 30)
+    spec.setdefault('dth', 1.0)            # degrees per pixel (horizontal)
+    spec.setdefault('pinhole', False)      # False = angular (LiDAR-like) projection
+    spec.setdefault('perpendicular', False)  # False = range along ray (LiDAR convention)
+    spec.setdefault('max_range', None)     # 3d only: drop hits beyond this (m)
+
+
 class Model:
     def __init__(self, modelname, prefix=None, base='root', offset=[0, 0, 0, 0, 0, 0], q0=None, fixed_base=False, name=None):
         self.dt = 0.001
@@ -38,9 +115,19 @@ class Model:
         # 'penalty' (spring-damper + brush friction) solver was removed 2026-05-24
         # (its brush could not hold a planted foot — see git/_ archive). 'lcp' only.
         self.solver = 'lcp'
-        self.lam_prev = None    # LCP warm-start state (6 * MAX_PTS_PER_PAIR * npair vec,
-                                # indexed by slot = cpair_idx * MAX_PTS_PER_PAIR + sub_id)
+        # LCP warm-start λ is no longer Model state — it is threaded through
+        # Model.step(ctx) as a SolverState (Env holds one in self._ctx).
         self.g = [0, 0, 0] #[0, 0, -9.81]
+        # global LCP solver knobs (overridable flat under YAML sim:); defaults match
+        # the historical hardcoded values. erp/slop/cfm_scale = Baumgarte / penetration
+        # deadband / CFM regularization; v_rest_thresh = restitution velocity gate;
+        # iters/tol = PGS budget. lcp path only (ignored by solver: minimal).
+        self.erp = 0.2
+        self.slop = 1e-4
+        self.cfm_scale = 1e-6
+        self.v_rest_thresh = 3e-2
+        self.iters = 20
+        self.tol = 1e-6
         self.use_c = True
         self.view = [0, 0, 0, 3, 45, 20] #[target(3), distance(1), yaw(deg, 1), pitch(deg, 1)]
 
@@ -65,8 +152,12 @@ class Model:
 
         self.q0 = np.array([], dtype=float)
         self.qd0 = np.array([], dtype=float)
-        self.ff = np.array([], dtype=float)  # joint damping friction
+        self.ff = np.array([], dtype=float)  # joint viscous damping coefficient
         self.sk = np.array([], dtype=float)  # joint spring stiffness
+        self.floss = np.array([], dtype=float)  # joint Coulomb friction bound (frictionloss); solved as an LCP constraint row
+        self.armature = np.array([], dtype=float)  # joint rotor/reflected inertia (MuJoCo armature); added to M diagonal + ABA d
+        self.jnt_lo = np.array([], dtype=float)  # joint lower limit (rev: rad, lin: m); limited iff lo < hi
+        self.jnt_hi = np.array([], dtype=float)  # joint upper limit; both solved as one-sided LCP constraint rows
 
         # implicit joint-space PD gains, per-jtype length. Populated from YAML `joint.k: [kp, kd]`
         # (default 0 when absent). Joint-PD only — task-PD was prototyped (Phase 3) but removed
@@ -81,7 +172,7 @@ class Model:
         self.cshape = [] #contact support function shape parameter
         self.cparam = []  #contact parameters
         self.ctran = []  #transform
-        self.crgb = []
+        self.crgba = []
         self.craycast = []  # per-shape int flag: 1=visible to raycast, 0=skipped (still renders + collides)
         
         self.f_idx = 1
@@ -91,6 +182,14 @@ class Model:
         self.ftran_inv = [np.eye(4)]
 
         self.feeds = []
+        # Sensor publish registries, declared via the YAML top-level `cameras:` /
+        # `lidars:` blocks. Each entry is the publish metadata ({name, type, res, fps,
+        # ...}); the sensor's pose is registered as a frame (in fdict) attached to its
+        # `body`, so the resolver methods (get_rgb_image/get_depth_image for cameras,
+        # get_lidar_image for lidars) look it up by name. `start` iterates env.cameras /
+        # env.lidars to bind one ZMQ PUB per sensor and publish at each sensor's own rate.
+        self.cameras = []
+        self.lidars = []
         self.lock_idx = []
         #self.pid = _PIDController(np.array([5000, 5000, 5000, 50, 50, 50.]), np.array([50, 50, 50, 0.5, 0.5, 0.5]), 0, 0.001)
         self.pid = _PIDController(np.array([40000, 40000, 40000, 400, 400, 400.]), np.array([400, 400, 400, 4, 4, 4.]), 0, 0.001)
@@ -107,7 +206,9 @@ class Model:
         # budget; rare to exhaust in practice — see Q2 design note in
         # CLAUDE.md's "Dynamic add/delete" section).
         self.mesh_path_to_idx = {}    # abs_path → idx
-        self._mesh_max_slots = 64     # matches MAX_MESH in ccd.c
+        self._mesh_max_slots = 64     # matches MAX_MESH in shape.h
+        self.hf_next_slot = 0         # next free height-field slot (monotonic; slots not freed)
+        self._hf_max_slots = 16       # matches MAX_HFIELD in shape.h
         self.add(modelname, prefix, base, offset, q0, fixed_base, name=name)
 
     def _snapshot_sizes(self):
@@ -117,6 +218,8 @@ class Model:
             'nshape': len(self.ctype),
             'nframe': len(self.fbody),
             'nfeeds': len(self.feeds),
+            'ncameras': len(self.cameras),
+            'nlidars': len(self.lidars),
             'nlock':  len(self.lock_idx),
             'nfixed': len(self.fixed),
         }
@@ -150,16 +253,45 @@ class Model:
             #text = replace_rand(text)
             config = yaml.safe_load(text)
 
+        # Sensors (cameras + lidars): each is a frame plus publish metadata. The shared
+        # _register_sensors helper injects each spec into its target body's `frames:` list
+        # (default body = root) so it reuses the full frame machinery below — default-fill,
+        # root-offset application, fdict/fbody/ftran registration, and add/delete group
+        # handling — without a parallel code path. The resolver methods then look the
+        # sensor up by frame name (cameras: get_rgb_image/get_depth_image; lidars:
+        # get_lidar_image via raymap). Only the normalized publish metadata is kept, in
+        # self.cameras / self.lidars. Extra keys (e.g. a transport `port` for a runner that
+        # also binds a LAN socket) pass through untouched.
+        _register_sensors(config, config.get('cameras', []) or [], prefix,
+                           self.cameras, kind='camera', normalize=_normalize_camera)
+        _register_sensors(config, config.get('lidars', []) or [], prefix,
+                           self.lidars, kind='lidar', normalize=_normalize_lidar)
+
         offset0 = np.array(offset)
         T0 = xyzeuler_to_homogeneous(offset0, eulerseq='XYZ', deg=True)
         q0_idx = 0
 
-        #materials library: contact: [pair_id, mat_name] expanded into a 12-tuple
-        #  [pair_id, k_n, d_n, k_t, d_t, mu, k_spin, d_spin, mu_spin, k_roll, d_roll, mu_roll]
+        #materials library: contact: [pair_id, mat_name] expanded into a 13-tuple
+        #  [pair_id, k_n, d_n, k_t, d_t, mu, k_spin, d_spin, mu_spin, k_roll, d_roll, mu_roll, restitution]
         #material spec is grouped by physical concept:
         #  {normal: [k_n, d_n], tangent: [k_t, d_t, mu], spin: [k_spin, d_spin, mu_spin], roll: [k_roll, d_roll, mu_roll]}
+        #plus an optional scalar `restitution: e` (coefficient of restitution; default 0.0 =
+        #fully inelastic, matching the pre-2026-05-25 hardcoded behavior). When two materials
+        #meet, e is combined by min(e_i, e_j) — the more dissipative surface caps the rebound
+        #(a superball on clay does not bounce); min also reproduces e for identical materials.
         materials = config.get('materials', {}) or {}
         _MAT_GROUPS = (('normal', 2), ('tangent', 3), ('spin', 3), ('roll', 3))
+
+        #restitution is physically [0, 1]. We don't clamp (out-of-range can be useful
+        #for experiments) but warn once per material: e<0 is silently treated as 0
+        #(fully inelastic — max(b_baum, b_rest) discards the negative bias); e>1 injects
+        #energy each bounce and may diverge.
+        for _mn, _m in materials.items():
+            if 'restitution' in _m:
+                _e = float(_m['restitution'])
+                if not (0.0 <= _e <= 1.0):
+                    print(f"[tact] warning: material '{_mn}' restitution={_e} outside physical range [0, 1] — "
+                          + ("e<0 behaves as 0 (fully inelastic)" if _e < 0 else "e>1 injects energy and may diverge"))
 
         #fill mandatory items if empty
         for body in config['bodies']:
@@ -179,14 +311,27 @@ class Model:
                     if 'pos' not in sh: sh['pos'] = [0, 0, 0]
                     if 'euler' not in sh: sh['euler'] = [0, 0, 0]
                     if 'eulerseq' not in sh: sh['eulerseq'] = 'XYZ'
-                    if 'rgb' not in sh: sh['rgb'] = [-1, 0, 0]
+                    # Color: rgba [r,g,b,a]; a = opacity in [0,1] (a < 1 renders
+                    # translucent via back-to-front alpha blending). a is optional
+                    # and defaults to 1.0 (opaque). Shapes with no rgba get the
+                    # render-skip sentinel [-1,0,0,1.0] (rgba[0] < 0 = invisible +
+                    # non-raycast). The legacy `rgb` key is no longer read (silently
+                    # ignored — migrate to rgba).
+                    if 'rgba' in sh:
+                        c = list(sh['rgba'])
+                        if len(c) == 3: c = c + [1.0]
+                        if len(c) != 4:
+                            raise ValueError(f"body '{body['name']}' shape #{i}: rgba must have 3 or 4 values [r,g,b(,a)]")
+                        sh['rgba'] = c
+                    else:
+                        sh['rgba'] = [-1, 0, 0, 1.0]
                     if 'contact' not in sh:
-                        sh['contact'] = [-1] + [0.0]*11
+                        sh['contact'] = [-1] + [0.0]*12
                     else:
                         contact = sh['contact']
                         pair_id = int(contact[0])
                         if pair_id < 0:
-                            sh['contact'] = [pair_id] + [0.0]*11
+                            sh['contact'] = [pair_id] + [0.0]*12
                         else:
                             if len(contact) < 2:
                                 raise ValueError(f"body '{body['name']}' shape #{i}: contact: [{pair_id}] is missing material name")
@@ -200,6 +345,8 @@ class Model:
                                 vals = m[grp]
                                 if len(vals) != n: raise ValueError(f"material '{mat_name}' group '{grp}' needs {n} values, got {len(vals)}")
                                 flat.extend(float(x) for x in vals)
+                            #optional restitution (scalar); default 0.0 = fully inelastic
+                            flat.append(float(m.get('restitution', 0.0)))
                             sh['contact'] = [pair_id] + flat
 
                     # Resolve mesh `file:` → C-side slot index. Path is resolved
@@ -225,6 +372,40 @@ class Model:
                             clib.set_mesh_path(slot, abs_path.encode())
                         # Normalize the YAML so downstream build() sees the
                         # same shape struct it did before (cshape[0] = idx).
+                        sh['param'] = [float(slot)]
+
+                    # Resolve heightfield grid → C-side slot. The grid is loaded
+                    # here (numpy reads .npy directly, or an inline `data:` list)
+                    # and pushed to C via set_hfield_data; cshape[0]=slot mirrors
+                    # the mesh slot scheme. size: [sx, sy, sz] — sx,sy are XY
+                    # half-extents (m); sz multiplies grid values into meters
+                    # (use sz=1 for a grid already in meters, or sz=elevation for
+                    # a normalized 0..1 heightmap).
+                    elif sh['type'] == 'hfield':
+                        if 'file' in sh:
+                            rel = sh['file']
+                            abs_path = rel if os.path.isabs(rel) else os.path.normpath(os.path.join(yml_dir, rel))
+                            if not os.path.exists(abs_path):
+                                raise ValueError(f"body '{body['name']}' shape #{i}: hfield file not found: {abs_path}")
+                            grid = np.load(abs_path)
+                        elif 'data' in sh:
+                            grid = np.asarray(sh['data'])
+                        else:
+                            raise ValueError(f"body '{body['name']}' shape #{i}: hfield requires `file:` (.npy) or inline `data:`")
+                        grid = np.ascontiguousarray(grid, dtype=np.float64)
+                        if grid.ndim != 2 or grid.shape[0] < 2 or grid.shape[1] < 2:
+                            raise ValueError(f"body '{body['name']}' shape #{i}: hfield grid must be 2-D and >=2x2, got {grid.shape}")
+                        sz_spec = sh.get('size', None)
+                        if sz_spec is None or len(sz_spec) != 3:
+                            raise ValueError(f"body '{body['name']}' shape #{i}: hfield requires size: [sx, sy, sz]")
+                        nrow, ncol = int(grid.shape[0]), int(grid.shape[1])
+                        sx, sy, sz = float(sz_spec[0]), float(sz_spec[1]), float(sz_spec[2])
+                        heights = np.ascontiguousarray(grid * sz, dtype=np.float64).ravel()  # row-major data[i*ncol+j]
+                        if self.hf_next_slot >= self._hf_max_slots:
+                            raise ValueError(f"hfield slot table exhausted (MAX_HFIELD={self._hf_max_slots})")
+                        slot = self.hf_next_slot
+                        self.hf_next_slot += 1
+                        clib.set_hfield_data(slot, nrow, ncol, sx, sy, heights.ctypes.data_as(_DBL))
                         sh['param'] = [float(slot)]
 
             if 'frames' in body:
@@ -297,22 +478,32 @@ class Model:
 
         if fixed_base:
             i = 0
+            base_frames = []
             while True:
                 if config['bodies'][i]['name'] == 'root':
                     del config['bodies'][i]
                     continue
-                
+
                 if 'joint' in config['bodies'][i]:
                     if config['bodies'][i]['joint']['type'] == 'free':
                         head = config['bodies'][i]['name']
+                        # keep the free body's frames (incl. sensor frames injected
+                        # by _register_sensors): in a fixed-base model the world IS
+                        # the base origin, so re-anchoring them on root preserves
+                        # their pos/euler exactly. (The original root's frames are
+                        # still dropped — their anchor, the floating world, doesn't
+                        # exist in this model.)
+                        base_frames += config['bodies'][i].get('frames', [])
                         del config['bodies'][i]
                         continue
-                        
+
                     if config['bodies'][i]['joint']['parent'] == head:
                         config['bodies'][i]['joint']['parent'] = 'root'
 
                     i += 1
                 if i == len(config['bodies']): break;
+            if base_frames:
+                config['bodies'].insert(0, {'name': 'root', 'frames': base_frames})
 
         self.build(config, prefix, modelname)
 
@@ -324,6 +515,8 @@ class Model:
             'nshape':     (before['nshape'], after['nshape']),
             'nframe':     (before['nframe'], after['nframe']),
             'nfeeds':     (before['nfeeds'], after['nfeeds']),
+            'ncameras':   (before['ncameras'], after['ncameras']),
+            'nlidars':    (before['nlidars'], after['nlidars']),
             'nlock':      (before['nlock'],  after['nlock']),
             'nfixed':     (before['nfixed'], after['nfixed']),
             'fdict_keys': list(set(self.fdict.keys()) - fdict_before),
@@ -332,7 +525,6 @@ class Model:
     def reset(self):
         if len(self.lock_idx) > 0: self.is_locked = True
         else: self.is_locked = False
-        self.lam_prev = None
 
     def get_inertia_matrix(self, body):
         if   body['inertial']['tensor'][0] == 'zero': I = np.zeros((3, 3))
@@ -361,7 +553,7 @@ class Model:
     def build(self, config, prefix, modelname=None):
         # Globals (simulation/view) are applied only on the initial load.
         # Subsequent add() calls that carry these keys get a warning and ignore them
-        # — globals belong on the root model or go through env.set(...).
+        # — globals belong on the root model's YAML `sim:`/`view:` block.
         is_first = (len(self.parent) == 0)
 
         # YAML format:
@@ -387,6 +579,14 @@ class Model:
                     self.solver = s['solver']
                 if 'dt' in s: self.dt = s['dt']
                 if 'g'  in s: self.g  = np.array(s['g'])
+                # global LCP solver knobs, flat under sim: (lcp path only). Each falls
+                # back to the default set in __init__ when absent.
+                if 'erp'           in s: self.erp           = float(s['erp'])
+                if 'slop'          in s: self.slop          = float(s['slop'])
+                if 'cfm_scale'     in s: self.cfm_scale     = float(s['cfm_scale'])
+                if 'v_rest_thresh' in s: self.v_rest_thresh = float(s['v_rest_thresh'])
+                if 'iters'         in s: self.iters         = int(s['iters'])
+                if 'tol'           in s: self.tol           = float(s['tol'])
 
             if 'view' in config:
                 v = config['view']
@@ -413,7 +613,7 @@ class Model:
                 src = modelname or prefix or '?'
                 #print(f"[tact] warn: {src}.yml has top-level {present}; "
                 #      f"globals only apply on the initial Model load — "
-                #      f"ignored on add(). Use env.set(...) to change mid-session.")
+                #      f"ignored on add().")
         
         for body in config['bodies']:
             if prefix == None: name = body['name']
@@ -432,10 +632,14 @@ class Model:
 
                 # per-DoF arrays (6 entries) — match the q layout
                 for k in range(6):
-                    self.ff   = np.append(self.ff, 0)
-                    self.sk   = np.append(self.sk, 0)
-                    self.Kp_j = np.append(self.Kp_j, 0)
-                    self.Kd_j = np.append(self.Kd_j, 0)
+                    self.ff       = np.append(self.ff, 0)
+                    self.sk       = np.append(self.sk, 0)
+                    self.floss    = np.append(self.floss, 0)   # free-joint DoFs: no Coulomb friction (v1)
+                    self.armature = np.append(self.armature, 0)
+                    self.jnt_lo   = np.append(self.jnt_lo, 0)   # free-joint DoFs: no limits (v1)
+                    self.jnt_hi   = np.append(self.jnt_hi, 0)
+                    self.Kp_j     = np.append(self.Kp_j, 0)
+                    self.Kd_j     = np.append(self.Kd_j, 0)
                     self.active.append(0)
 
                 self.m.append(body['inertial']['mass'])
@@ -497,6 +701,32 @@ class Model:
                     if 'spring' in body['joint']: self.sk = np.append(self.sk, body['joint']['spring'])
                     else: self.sk = np.append(self.sk, 0)
 
+                    # joint Coulomb friction (MuJoCo frictionloss): per-DoF force/torque
+                    # bound, solved as an LCP constraint row (rev/lin only). 0 = off.
+                    if 'frictionloss' in body['joint']: self.floss = np.append(self.floss, body['joint']['frictionloss'])
+                    else: self.floss = np.append(self.floss, 0)
+
+                    # joint armature (MuJoCo): rotor/reflected inertia added to the M
+                    # diagonal + ABA d. kg·m² (rev) / kg (lin). 0 = off.
+                    if 'armature' in body['joint']: self.armature = np.append(self.armature, body['joint']['armature'])
+                    else: self.armature = np.append(self.armature, 0)
+
+                    # joint range limit: `limit: [lo, hi]` — DEGREES for rev / m for lin
+                    # (same convention as q0), stored internally in rad/m. Solved as
+                    # one-sided LCP constraint rows. Limited iff lo < hi; absent → [0,0]
+                    # = unlimited.
+                    if 'limit' in body['joint']:
+                        lim = body['joint']['limit']
+                        if body['joint']['type'] == 'rev':
+                            self.jnt_lo = np.append(self.jnt_lo, np.deg2rad(lim[0]))
+                            self.jnt_hi = np.append(self.jnt_hi, np.deg2rad(lim[1]))
+                        else:  # lin: meters
+                            self.jnt_lo = np.append(self.jnt_lo, lim[0])
+                            self.jnt_hi = np.append(self.jnt_hi, lim[1])
+                    else:
+                        self.jnt_lo = np.append(self.jnt_lo, 0)
+                        self.jnt_hi = np.append(self.jnt_hi, 0)
+
                     # implicit joint-space PD gains: `k: [kp, kd]`. Both default to 0 when absent
                     # (no PD effect). Controllers can still overwrite model.Kp_j / model.Kd_j later.
                     if 'k' in body['joint']:
@@ -544,6 +774,7 @@ class Model:
                     elif v['type'] == 'sphere':   num = 102
                     elif v['type'] == 'cylinder': num = 103
                     elif v['type'] == 'capsule':  num = 104
+                    elif v['type'] == 'hfield':   num = 105
 
                     if name == 'root': self.cbody.append(-1)
                     else: self.cbody.append(self.fbody[self.fdict[name]])
@@ -552,11 +783,11 @@ class Model:
                     self.ctran.append(xyzeuler_to_homogeneous(v['pos'] + v['euler'], eulerseq=v['eulerseq'], deg=True))
                     self.cshape.append(v['param'])
                     self.cparam.append(v['contact'])
-                    # raycast default = visible (rgb[0] >= 0). rgb[0]<0 is the render-skip sentinel,
+                    # raycast default = visible (rgba[0] >= 0). rgba[0]<0 is the render-skip sentinel,
                     # so an invisible shape is also invisible to ray sensors. Override with `raycast: true/false`.
-                    visible = (v['rgb'][0] >= 0)
+                    visible = (v['rgba'][0] >= 0)
                     self.craycast.append(1 if v.get('raycast', visible) else 0)
-                    self.crgb += v['rgb']
+                    self.crgba += v['rgba']
                     
         if 'feeds' in config:
             for v in config['feeds']:
@@ -666,18 +897,22 @@ class Model:
         self.qd0   = np.concatenate([self.qd0[:nq_lo],   self.qd0[nq_hi:]])
         self.ff    = np.concatenate([self.ff[:nq_lo],    self.ff[nq_hi:]])
         self.sk    = np.concatenate([self.sk[:nq_lo],    self.sk[nq_hi:]])
+        self.floss = np.concatenate([self.floss[:nq_lo], self.floss[nq_hi:]])
+        self.armature = np.concatenate([self.armature[:nq_lo], self.armature[nq_hi:]])
+        self.jnt_lo = np.concatenate([self.jnt_lo[:nq_lo], self.jnt_lo[nq_hi:]])
+        self.jnt_hi = np.concatenate([self.jnt_hi[:nq_lo], self.jnt_hi[nq_hi:]])
         self.Kp_j  = np.concatenate([self.Kp_j[:nq_lo],  self.Kp_j[nq_hi:]])
         self.Kd_j  = np.concatenate([self.Kd_j[:nq_lo],  self.Kd_j[nq_hi:]])
         self.active = self.active[:nq_lo] + self.active[nq_hi:]
 
-        # 3. Splice per-shape arrays. crgb is flat (3 floats per shape).
+        # 3. Splice per-shape arrays. crgba is flat (4 floats per shape: rgba).
         del self.ctype[nsh_lo:nsh_hi]
         del self.cbody[nsh_lo:nsh_hi]
         del self.cshape[nsh_lo:nsh_hi]
         del self.cparam[nsh_lo:nsh_hi]
         del self.ctran[nsh_lo:nsh_hi]
         del self.craycast[nsh_lo:nsh_hi]
-        del self.crgb[nsh_lo*3:nsh_hi*3]
+        del self.crgba[nsh_lo*4:nsh_hi*4]
 
         # 4. Splice per-frame arrays + drop fdict keys
         del self.fbody[nf_lo:nf_hi]
@@ -713,12 +948,22 @@ class Model:
             new_feeds.append(shifted)
         self.feeds = new_feeds
 
+        # 6b. Drop the deleted group's sensors (name-based — no frame index to shift;
+        #     each sensor's frame is already removed from fdict above, so any stale
+        #     reference would no-op, but we splice for a clean registry).
+        cam_lo, cam_hi = g['ncameras']
+        self.cameras = self.cameras[:cam_lo] + self.cameras[cam_hi:]
+        lid_lo, lid_hi = g['nlidars']
+        self.lidars = self.lidars[:lid_lo] + self.lidars[lid_hi:]
+
         # 7. Shift fdict values (frame indices) past the deleted frame range
         for k, v in list(self.fdict.items()):
             if v >= nf_hi: self.fdict[k] = v - df
 
         # 8. Shift group metadata for groups after this one
         nfeeds_d = feed_hi - feed_lo
+        ncam_d   = cam_hi - cam_lo
+        nlid_d   = lid_hi - lid_lo
         nlock_d  = g['nlock'][1]  - g['nlock'][0]
         nfixed_d = g['nfixed'][1] - g['nfixed'][0]
         for g2 in self.groups[gi+1:]:
@@ -727,13 +972,14 @@ class Model:
             g2['nshape'] = (g2['nshape'][0] - ds, g2['nshape'][1] - ds)
             g2['nframe'] = (g2['nframe'][0] - df, g2['nframe'][1] - df)
             g2['nfeeds'] = (g2['nfeeds'][0] - nfeeds_d, g2['nfeeds'][1] - nfeeds_d)
+            g2['ncameras'] = (g2['ncameras'][0] - ncam_d, g2['ncameras'][1] - ncam_d)
+            g2['nlidars'] = (g2['nlidars'][0] - nlid_d, g2['nlidars'][1] - nlid_d)
             g2['nlock']  = (g2['nlock'][0]  - nlock_d,  g2['nlock'][1]  - nlock_d)
             g2['nfixed'] = (g2['nfixed'][0] - nfixed_d, g2['nfixed'][1] - nfixed_d)
         self.groups.pop(gi)
 
-        # 9. Rebuild derived data + C handle. lam_prev (LCP warm-start) is invalid
-        #    because cpair size changes.
-        self.lam_prev = None
+        # 9. Rebuild derived data + C handle. Any warm-start λ carry (Env._ctx) is
+        #    invalid because cpair size changes — Env resets it on delete.
         self.X  = get_spatial_transform(self.Ti)
         self.I6 = get_spatial_inertia(self.m, self.c, self.I)
         self._rebuild_cpair()
@@ -766,23 +1012,6 @@ class Model:
             Ti = np.ascontiguousarray(np.asarray(self.Ti), dtype=np.float64)
             clib.tact_edit_model(self._h, X.ctypes.data_as(_DBL), I6.ctypes.data_as(_DBL), Ti.ctypes.data_as(_DBL))
 
-    def set(self, solver=None, dt=None, g=None, view=None):
-        # Single channel for changing globals (solver, dt, g, view) mid-session — names
-        # match the YAML `sim:` block. All args optional; only provided fields update.
-        # Solver other than 'lcp' is silently ignored so callers can forward stray
-        # kwargs without harm. Env.set is a thin passthrough; env.has_pd is a property
-        # derived from self.solver.
-        if solver in ('lcp', 'minimal'): self.solver = solver
-        if dt is not None: self.dt = float(dt)
-        if g is not None and len(g) > 0: self.g = np.array(g, dtype=np.float64)
-        if view is not None: self.view = view
-
-        #topology unchanged — push dt/g in place. The integrator arg is vestigial
-        #(the lcp path uses its own semi-implicit Euler); pass a fixed value.
-        if self.use_c and getattr(self, '_h', None):
-            g_arr = np.ascontiguousarray(np.asarray(self.g), dtype=np.float64)
-            clib.tact_set_sim(self._h, ctypes.c_double(self.dt), ctypes.c_int(2), g_arr.ctypes.data_as(_DBL))
-
     #Phase 1+2+3: build a C-side tact_t handle. step()/gravity()/fk() all route through it.
     #On rebuild (add()/edit()) the previous handle is destroyed first — any view
     #obtained before is invalidated (see docs/design-c-state.md §3.5).
@@ -803,6 +1032,10 @@ class Model:
         self._build_Ti     = np.ascontiguousarray(np.asarray(self.Ti), dtype=np.float64)
         self._build_ff     = np.ascontiguousarray(np.asarray(self.ff), dtype=np.float64)
         self._build_sk     = np.ascontiguousarray(np.asarray(self.sk), dtype=np.float64)
+        self._build_floss  = np.ascontiguousarray(np.asarray(self.floss), dtype=np.float64)
+        self._build_armature = np.ascontiguousarray(np.asarray(self.armature), dtype=np.float64)
+        self._build_jnt_lo = np.ascontiguousarray(np.asarray(self.jnt_lo), dtype=np.float64)
+        self._build_jnt_hi = np.ascontiguousarray(np.asarray(self.jnt_hi), dtype=np.float64)
         self._build_g      = np.ascontiguousarray(np.asarray(self.g),  dtype=np.float64)
         self._build_parent = np.array([p if p is not None else -1 for p in self.parent], dtype=np.int32)
         self._build_jtype  = np.array(self.jtype, dtype=np.int32)
@@ -816,7 +1049,7 @@ class Model:
             cshape_arr[i, :len(sh)] = sh
         self._build_cshape = cshape_arr
         self._build_ctran  = np.ascontiguousarray(np.asarray(self.ctran).reshape(nshape, 16) if nshape else np.zeros((0, 16)), dtype=np.float64)
-        self._build_cparam = np.ascontiguousarray(np.asarray(self.cparam).reshape(nshape, 12) if nshape else np.zeros((0, 12)), dtype=np.float64)
+        self._build_cparam = np.ascontiguousarray(np.asarray(self.cparam).reshape(nshape, 13) if nshape else np.zeros((0, 13)), dtype=np.float64)
 
         self._h = clib.tact_create(
             nb,
@@ -827,6 +1060,10 @@ class Model:
             self._build_Ti.ctypes.data_as(_DBL),
             self._build_ff.ctypes.data_as(_DBL),
             self._build_sk.ctypes.data_as(_DBL),
+            self._build_floss.ctypes.data_as(_DBL),
+            self._build_armature.ctypes.data_as(_DBL),
+            self._build_jnt_lo.ctypes.data_as(_DBL),
+            self._build_jnt_hi.ctypes.data_as(_DBL),
             self._build_g.ctypes.data_as(_DBL),
             ctypes.c_double(self.dt),
             ctypes.c_int(2),                    # integrator arg is vestigial (lcp uses its own semi-implicit Euler)
@@ -838,6 +1075,9 @@ class Model:
             self._build_cparam.ctypes.data_as(_DBL),
             self._build_craycast.ctypes.data_as(_INT),
             self._build_cpair.ctypes.data_as(_INT),
+            # global LCP solver knobs (from YAML sim:, else __init__ defaults)
+            ctypes.c_double(self.erp), ctypes.c_double(self.slop), ctypes.c_double(self.cfm_scale),
+            ctypes.c_double(self.v_rest_thresh), ctypes.c_int(self.iters), ctypes.c_double(self.tol),
         )
 
         #wrap arena's dynamic buffers as numpy views — re-acquired on every recreate.
@@ -1053,7 +1293,19 @@ class Model:
                     
         return np.array(y)
 
-    def step(self, q, qd, tau=None, q_ref=None, qd_ref=None):
+    def zero_state(self):
+        """A cold-start SolverState sized for the current topology (all λ = 0).
+        Use as the initial `ctx` for a pure Model.step rollout, or after a
+        topology change (add/delete) since λ length = 6*MAX_PTS_PER_PAIR*n_pair."""
+        npair = len(self.cpair)
+        return SolverState(lam=np.zeros(6 * MAX_PTS_PER_PAIR * max(npair, 1)),
+                           lam_fric=np.zeros(len(self.floss)),
+                           lam_limit=np.zeros(len(self.floss)))
+
+    def step(self, q, qd, tau=None, q_ref=None, qd_ref=None, ctx=None):
+        # Referentially transparent: same (q, qd, tau, q_ref, qd_ref, ctx) → same
+        # (q_next, qd_next, y, ctx_next). `ctx` (SolverState) carries LCP warm-start λ;
+        # ctx=None → cold start (zero λ). ctx is not mutated — ctx_next is fresh.
         # All three input channels are equal-priority and independently optional.
         # tau=None → treated as zero feedforward (passive step under gravity/contact).
         # q_ref/qd_ref activate internal joint-space PD on the LCP path; when both None,
@@ -1077,25 +1329,8 @@ class Model:
                 e_w = logmap_so3(R.T @ R0)
                 e   = np.concatenate([e_p, e_w])
                 tau[vb:vb+6] += self.pid.update_from_error(e, qd[vb:vb+6])
-
-        if self.solver == 'minimal':
-            # Test-only solver (rbd.contact_ground_sphere): explicit spring-damper
-            # ground (z=0) contact for SPHERE shapes, fed as f_ext into ABA forward
-            # dynamics + semi-implicit Euler. Runs on the Python path regardless of
-            # use_c; the C handle (if created) stays valid for fk/jacob/raycast.
-            # Not for production — spheres only, no Coulomb cone, needs a small dt.
-            T = _fk(self.Ti, self.parent, self.jtype, q)
-            f_ext = contact_ground_sphere(T, self.parent, self.jtype, self.ctype,
-                                          self.cbody, self.ctran, self.cshape, self.cparam, qd)
-            qdd, f, a, v = aba_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, tau,
-                                            f_ext, self.g, full=True, ff=self.ff, sk=self.sk,
-                                            dt=self.dt, Kp_j=self.Kp_j, Kd_j=self.Kd_j,
-                                            q_ref=q_ref, qd_ref=qd_ref)
-            qd_next = qd + qdd * self.dt
-            q_base, _, _, _, _, _ = _build_qidx(self.jtype)
-            q_next  = _q_step(q, qd_next, self.dt, self.jtype, q_base)
-            y = self.feedback(q, qd, tau, T, f, a, v, f_ext)
-        elif self.use_c and self.solver == 'lcp':
+            
+        if self.use_c and self.solver == 'lcp':
             #single ctypes round-trip into tact_step_lcp:
             #   _fk → aba(no-contact) → crb → contact_lcp → semi-implicit → feedback
             #C side reads raw tau; ff/sk damping + implicit joint-PD are applied internally.
@@ -1113,43 +1348,79 @@ class Model:
             Kd_ptr  = self.Kd_j.ctypes.data_as(_DBL)  if (self.Kd_j  is not None and (q_ref is not None or qd_ref is not None)) else None
             qr_ptr  = q_ref.ctypes.data_as(_DBL)      if q_ref       is not None else None
             qdr_ptr = qd_ref.ctypes.data_as(_DBL)     if qd_ref      is not None else None
-            clib.tact_step_lcp(self._h, q_in.ctypes.data_as(_DBL), qd_in.ctypes.data_as(_DBL), tau_in.ctypes.data_as(_DBL), Kp_ptr, Kd_ptr, qr_ptr, qdr_ptr)
+
+            # warm-start carry: ctx.lam in, fresh lam_out (= ctx_next) out. ctx=None →
+            # cold (zeros). Distinct in/out buffers keep ctx immutable (C seeds out from in).
+            lam_len = 6 * MAX_PTS_PER_PAIR * max(len(self.cpair), 1)
+            lam_in  = np.zeros(lam_len) if ctx is None else np.ascontiguousarray(ctx.lam, dtype=np.float64)
+            lam_out = np.zeros(lam_len, dtype=np.float64)
+            # joint-friction warm-start carry (per-DoF), same immutable-in/out contract.
+            nq_dof  = len(self.floss)
+            lam_fric_in  = np.zeros(nq_dof) if (ctx is None or ctx.lam_fric is None) else np.ascontiguousarray(ctx.lam_fric, dtype=np.float64)
+            lam_fric_out = np.zeros(nq_dof, dtype=np.float64)
+            # joint-limit warm-start carry (per-DoF), same contract.
+            lam_limit_in  = np.zeros(nq_dof) if (ctx is None or ctx.lam_limit is None) else np.ascontiguousarray(ctx.lam_limit, dtype=np.float64)
+            lam_limit_out = np.zeros(nq_dof, dtype=np.float64)
+            clib.tact_step_lcp(self._h, q_in.ctypes.data_as(_DBL), qd_in.ctypes.data_as(_DBL), tau_in.ctypes.data_as(_DBL), Kp_ptr, Kd_ptr, qr_ptr, qdr_ptr,
+                               lam_in.ctypes.data_as(_DBL), lam_out.ctypes.data_as(_DBL),
+                               lam_fric_in.ctypes.data_as(_DBL), lam_fric_out.ctypes.data_as(_DBL),
+                               lam_limit_in.ctypes.data_as(_DBL), lam_limit_out.ctypes.data_as(_DBL))
 
             #copy outputs out of arena (next step would overwrite views)
             q_next  = self._h_q_next.copy()
             qd_next = self._h_qd_next.copy()
             y       = self._h_y[:self._y_size].copy()
+            ctx_next = SolverState(lam=lam_out, lam_fric=lam_fric_out, lam_limit=lam_limit_out)
 
-        else:
+        elif not self.use_c and self.solver == 'lcp':
+            #LCP path: ABA-with-joint-PD(f_ext=0) → qd_free, CRB → M, contact_lcp solves for
+            #impulse λ → semi-implicit Euler. A second ABA call with the contact wrench feeds
+            #the feedback layer's f/a/v so accelerometer-like outputs reflect post-contact
+            #dynamics. Without that second call, IMU feed shows a bias of order g·support_frac
+            #whenever joint torques cancel out contact (e.g. quadruped stance).
+            #Joint damping `ff`, spring `sk`, and joint-space implicit PD (Kp_j/Kd_j/q_ref/qd_ref)
+            #are all folded into ABA's articulated inertia.
             T = _fk(self.Ti, self.parent, self.jtype, q)
-            if self.solver == 'lcp':
-                #LCP path: ABA-with-joint-PD(f_ext=0) → qd_free, CRB → M, contact_lcp solves for
-                #impulse λ → semi-implicit Euler. A second ABA call with the contact wrench feeds
-                #the feedback layer's f/a/v so accelerometer-like outputs reflect post-contact
-                #dynamics. Without that second call, IMU feed shows a bias of order g·support_frac
-                #whenever joint torques cancel out contact (e.g. quadruped stance).
-                #Joint damping `ff`, spring `sk`, and joint-space implicit PD (Kp_j/Kd_j/q_ref/qd_ref)
-                #are all folded into ABA's articulated inertia.
-                f_ext_zero = np.zeros((len(self.X), 6))
-                qdd_free, f, a, v = aba_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, tau, f_ext_zero, self.g, full=True, ff=self.ff, sk=self.sk, dt=self.dt, Kp_j=self.Kp_j, Kd_j=self.Kd_j, q_ref=q_ref, qd_ref=qd_ref)
-                qd_free = qd + qdd_free * self.dt
-                M = crb_featherstone(self.X, self.I6, self.parent, self.jtype, q)
-                dqd, lam, lcp_info, f_ext = contact_lcp(T, self.parent, self.jtype, self.cpair, self.ctype, self.cbody, self.ctran, self.cshape, self.cparam, qd_free, M, self.dt, lam_prev=self.lam_prev)
-                self.lam_prev = lcp_info['lam_full']   #persist for next step's warm-start
-                qd_next = qd_free + dqd
-                q_base, _, _, _, _, _ = _build_qidx(self.jtype)
-                q_next  = _q_step(q, qd_next, self.dt, self.jtype, q_base)
-                qdd = (qd_next - qd) / self.dt
-                # Kinematic forward pass (RNE): given realized qdd, propagate spatial accels
-                # so feedback (a, v, f) reflects post-contact body dynamics.
-                _, f, a, v = rne_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, qdd, f_ext, self.g, full=True)
-
-            else: raise ValueError(f'unknown solver: {self.solver}')
+            f_ext_zero = np.zeros((len(self.X), 6))
+            qdd_free, f, a, v = aba_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, tau, f_ext_zero, self.g, full=True, ff=self.ff, sk=self.sk, armature=self.armature, dt=self.dt, Kp_j=self.Kp_j, Kd_j=self.Kd_j, q_ref=q_ref, qd_ref=qd_ref)
+            qd_free = qd + qdd_free * self.dt
+            M = crb_featherstone(self.X, self.I6, self.parent, self.jtype, q)
+            M = M + np.diag(self.armature)   # armature (rotor inertia) on the M diagonal — matches the C path + ABA predictor above
+            lam_prev      = None if ctx is None else ctx.lam        # cold when ctx absent
+            lam_fric_prev = None if ctx is None else ctx.lam_fric   # joint-friction warm-start
+            lam_limit_prev = None if ctx is None else ctx.lam_limit # joint-limit warm-start
+            dqd, lam, lcp_info, f_ext = contact_lcp(T, self.parent, self.jtype, self.cpair, self.ctype, self.cbody, self.ctran, self.cshape, self.cparam, qd_free, M, self.dt,
+                                                    erp=self.erp, slop=self.slop, cfm_scale=self.cfm_scale, v_rest_thresh=self.v_rest_thresh, iters=self.iters, tol=self.tol,
+                                                    lam_prev=lam_prev, floss=self.floss, lam_fric_prev=lam_fric_prev,
+                                                    q=q, jnt_lo=self.jnt_lo, jnt_hi=self.jnt_hi, lam_limit_prev=lam_limit_prev)
+            ctx_next = SolverState(lam=lcp_info['lam_full'], lam_fric=lcp_info['lam_fric_full'], lam_limit=lcp_info['lam_limit_full'])   #carry for next step's warm-start
+            qd_next = qd_free + dqd
+            q_base, _, _, _, _, _ = _build_qidx(self.jtype)
+            q_next  = _q_step(q, qd_next, self.dt, self.jtype, q_base)
+            qdd = (qd_next - qd) / self.dt
+            # Kinematic forward pass (RNE): given realized qdd, propagate spatial accels
+            # so feedback (a, v, f) reflects post-contact body dynamics.
+            _, f, a, v = rne_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, qdd, f_ext, self.g, full=True)
             y = self.feedback(q, qd, tau, T, f, a, v, f_ext)
 
-        #if cff: return q_next, qd_next, y, cfs
-        #else: return q_next, qd_next, y, f, a, v
-        return q_next, qd_next, y #, f, a, v
+        elif self.solver == 'minimal':
+            # Test-only solver (rbd.contact_ground_sphere): explicit spring-damper
+            # ground (z=0) contact for SPHERE shapes, fed as f_ext into ABA forward
+            # dynamics + semi-implicit Euler. Runs on the Python path regardless of
+            # use_c; the C handle (if created) stays valid for fk/jacob/raycast.
+            # Not for production — spheres only, no Coulomb cone, needs a small dt.
+            T = _fk(self.Ti, self.parent, self.jtype, q)
+            f_ext = contact_ground_sphere(T, self.parent, self.jtype, self.ctype, self.cbody, self.ctran, self.cshape, self.cparam, qd)
+            qdd, f, a, v = aba_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, tau, f_ext, self.g, full=True, ff=self.ff, sk=self.sk, armature=self.armature, dt=self.dt, Kp_j=self.Kp_j, Kd_j=self.Kd_j, q_ref=q_ref, qd_ref=qd_ref)
+            qd_next = qd + qdd * self.dt
+            q_base, _, _, _, _, _ = _build_qidx(self.jtype)
+            q_next  = _q_step(q, qd_next, self.dt, self.jtype, q_base)
+            y = self.feedback(q, qd, tau, T, f, a, v, f_ext)
+            ctx_next = ctx   # minimal solver has no LCP warm-start state — passthrough
+
+        else: raise ValueError(f'unknown solver: {self.solver}')
+
+        return q_next, qd_next, y, ctx_next
 
     def fk(self, frames, q, eulerseq='xyz'):
         if self.use_c:
@@ -1339,7 +1610,66 @@ class Model:
         qdd = np.zeros(len(q))
         b = rne_lwp(self.Ti, self.m, self.c, self.I, self.parent, self.jtype, q, qd, qdd, f_ext, self.g)
         return b
-    
+
+    def com(self, q):
+        if self.use_c:
+            q_in = np.ascontiguousarray(q, dtype=np.float64)
+            if not hasattr(self, '_m_arr_c'):
+                self._m_arr_c = np.ascontiguousarray(self.m, dtype=np.float64)
+                self._c_arr_c = np.ascontiguousarray(np.asarray(self.c).reshape(-1), dtype=np.float64)
+            r = np.empty(3, dtype=np.float64)
+            clib.tact_com_query(self._h, q_in.ctypes.data_as(_DBL),
+                                self._m_arr_c.ctypes.data_as(_DBL),
+                                self._c_arr_c.ctypes.data_as(_DBL),
+                                r.ctypes.data_as(_DBL))
+            return r
+        T = _fk(self.Ti, self.parent, self.jtype, q)
+        return com_lagrange(T, self.m, self.c)
+
+    def com_jacob(self, q):
+        if self.use_c:
+            nq   = len(q)
+            q_in = np.ascontiguousarray(q, dtype=np.float64)
+            # m, c arrays: prepared once on first call, cached. m is per-body (nb,);
+            # c is row-major (nb, 3) flattened to (3*nb,). Both are written by
+            # Model.add at build time and edited only by Model.edit, so caching is safe.
+            if not hasattr(self, '_m_arr_c'):
+                self._m_arr_c = np.ascontiguousarray(self.m, dtype=np.float64)
+                self._c_arr_c = np.ascontiguousarray(np.asarray(self.c).reshape(-1), dtype=np.float64)
+            J = np.empty((3, nq), dtype=np.float64)
+            clib.tact_com_jacob_query(self._h, q_in.ctypes.data_as(_DBL),
+                                      self._m_arr_c.ctypes.data_as(_DBL),
+                                      self._c_arr_c.ctypes.data_as(_DBL),
+                                      J.ctypes.data_as(_DBL))
+            return J
+        T = _fk(self.Ti, self.parent, self.jtype, q)
+        return com_jacob_lagrange(T, self.m, self.c, self.parent, self.jtype)
+
+    def com_inertia(self, q):
+        T = _fk(self.Ti, self.parent, self.jtype, q)
+        return com_inertia(T, self.m, self.c, self.I)
+
+    def jacob_dot_qd(self, frames, q, qd, dt=1e-4):
+        """Time-derivative of jacob times qd: (dJ/dt) · qd. Finite-diff over dt.
+        Caveat: for jtype=3 (free), q+dt·qd treats axis-angle q[3:6] as a vector
+        update — fine at dt~1e-4 since the SO(3) drift is O(dt²)."""
+        J1 = self.jacob(frames, q)
+        J2 = self.jacob(frames, q + dt * qd)
+        return ((J2 - J1) / dt) @ qd
+
+    def pack_q_fb(self, q_joint, R, p):
+        """(q_joint, R, p) → q_fb. Layout: [p(3), axis-angle(3), q_joint(n_act)].
+        Requires this Model to be floating-base (jtype[0]==3)."""
+        assert self.jtype[0] == 3, 'pack_q_fb requires floating-base Model (jtype[0]==3)'
+        return np.concatenate([p, logmap_so3(R), q_joint])
+
+    def pack_qd_fb(self, qd_joint, R, w_body, v_world):
+        """(qd_joint, R, w_body, v_world) → qd_fb. Layout: [v_body(3), w_body(3), qd_joint(n_act)].
+        v_body = Rᵀ · v_world (per jtype=3 jacob_whitney convention).
+        Requires this Model to be floating-base (jtype[0]==3)."""
+        assert self.jtype[0] == 3, 'pack_qd_fb requires floating-base Model (jtype[0]==3)'
+        return np.concatenate([R.T @ v_world, w_body, qd_joint])
+
 
 
 class Env:
@@ -1351,6 +1681,7 @@ class Env:
         self.dof = sum(self.m.active)
         self.q = self.m.q0.copy()
         self.qd = self.m.qd0.copy()
+        self._ctx = None    # LCP warm-start carry (SolverState); None = cold next step
 
         self.cnt = 0
         self.render = render
@@ -1370,6 +1701,7 @@ class Env:
             self.q  = np.concatenate([self.q,  self.m.q0[nq_old:]])
             self.qd = np.concatenate([self.qd, self.m.qd0[nq_old:]])
         self.dof = sum(self.m.active)
+        self._ctx = None    # cpair size changed → warm-start carry invalid (cold restart)
 
     def delete(self, name):
         """Remove a previously add()-ed group and preserve current state of the
@@ -1384,17 +1716,28 @@ class Env:
         self.q  = np.concatenate([self.q[:nq_lo],  self.q[nq_hi:]])
         self.qd = np.concatenate([self.qd[:nq_lo], self.qd[nq_hi:]])
         self.dof = sum(self.m.active)
+        self._ctx = None    # cpair size changed → warm-start carry invalid (cold restart)
 
     @property
     def groups(self):
         """List of currently-active group names, in insertion order."""
         return [g['name'] for g in self.m.groups]
 
-    def set(self, **kw):
-        # Thin passthrough to Model.set — single channel for globals
-        # (solver, dt, g, view). env.has_pd is a @property derived from m.solver,
-        # so nothing else to sync here.
-        self.m.set(**kw)
+    @property
+    def cameras(self):
+        """Camera publish specs from the YAML `cameras:` block, in declaration
+        order. Each is a dict {name, type, res, fps}; `name` is the
+        registered frame name (get_rgb_image/raymap key) and the ZMQ endpoint.
+        `start` iterates this to set up per-camera PUB sockets."""
+        return self.m.cameras
+
+    @property
+    def lidars(self):
+        """LiDAR publish specs from the YAML `lidars:` block, in declaration order.
+        Each is a dict {name, type, res, dth, fps, ...}; `name` is the registered
+        frame name (get_lidar_image / raymap key) and the ZMQ endpoint. `start`
+        iterates this to set up per-lidar PUB sockets, mirroring cameras."""
+        return self.m.lidars
 
     def edit(self, index, **kw):
         # Thin passthrough to Model.edit — body-property editor (m, c, I, Ti).
@@ -1434,18 +1777,18 @@ class Env:
                 if qdr_full is not None: qdr_full[k] = qd_ref[idx]
                 idx += 1
 
-        self.q, self.qd, y = self.m.step(self.q, self.qd, tau=tau_full, q_ref=qr_full, qd_ref=qdr_full)
+        self.q, self.qd, y, self._ctx = self.m.step(self.q, self.qd, tau=tau_full, q_ref=qr_full, qd_ref=qdr_full, ctx=self._ctx)
         
         if self.render and self.cnt % self.redraw == 0:
             ret = self._win_render()
             if ret < 0: print('ESC pressed. exit...'); sys.exit()
-            
+
         self.cnt += 1
         return y
-    
+
     def finish(self):
         pass
-        
+
     def reset(self):
         """Reset state to initial pose and return the initial observation y. Gym-style
         bootstrap — caller can do `y = env.reset()` then enter the update→step loop.
@@ -1454,6 +1797,7 @@ class Env:
         self.m.reset()
         self.q = self.m.q0
         self.qd = self.m.qd0
+        self._ctx = None    # cold restart on reset
         self.cnt = 0
 
         nj = len(self.m.jtype)
@@ -1474,8 +1818,51 @@ class Env:
         self.m.is_locked = False
 
     def get_z(self, x, y, h=10.0):
+        # Legacy single-point terrain query (absolute z, silent 0.0 on miss),
+        # kept for existing callers — prefer height_scan() for terrain scanning.
         t = self.raycast(x, y, h, 0.0, 0.0, -1.0)
         return h - t if t >= 0 else 0.0
+
+    def height_scan(self, base_xy, yaw, offsets, z_top=100.0, default=0.0):
+        """Ground-truth terrain height scan — the sim-only twin of
+        tact.MiniElevationMap.sample(), with the SAME contract so the two are
+        drop-in providers for one consumer: `offsets` is a (G, 2) grid in the
+        gravity-aligned base-yaw frame; returns (G,) terrain-top heights
+        relative to the terrain under base_xy; points with no terrain hit
+        return `default`; per-point validity / base_valid / ref land in
+        self.last (dict, same keys as MiniElevationMap.sample).
+
+        One vertical raycast per point from z_top down, so it reads the true
+        scene with no sensor, map, latency, or drift. Use it where a terrain
+        scan must live in a single thread (tact-native RL, sim2sim, quick
+        prototyping) or as the GT baseline; it has no real-hardware
+        counterpart, so anything trained on it must be re-validated against
+        the perception path (lidar type 3d + mapper), which adds the holes/
+        staleness/odometry error this oracle doesn't have.
+
+        Assumes the robot's own shapes opt out of rays (`raycast: false`, the
+        convention for robot YAMLs) — otherwise the scan reads the robot's
+        back instead of the ground. Overhangs: the FIRST surface from z_top
+        down wins (terrain-top convention, like raymap)."""
+        off = np.asarray(offsets, dtype=np.float64).reshape(-1, 2)
+        c, s = np.cos(yaw), np.sin(yaw)
+        wx = float(base_xy[0]) + c * off[:, 0] - s * off[:, 1]
+        wy = float(base_xy[1]) + s * off[:, 0] + c * off[:, 1]
+        # G+1 single-ray queries (last = under-base reference). Each re-runs
+        # FK + shape-cache build; fine for scan-sized G — batch in C
+        # (tact_raycast_query with a ray list) if this ever turns hot.
+        h = np.empty(len(off) + 1)
+        for i, (x, y) in enumerate(zip(np.append(wx, base_xy[0]),
+                                       np.append(wy, base_xy[1]))):
+            t = self.raycast(x, y, z_top, 0.0, 0.0, -1.0)
+            h[i] = z_top - t if t >= 0.0 else np.nan
+        ok = ~np.isnan(h[:-1])
+        base_valid = not np.isnan(h[-1])
+        ref = float(h[-1]) if base_valid else 0.0
+        out = np.where(ok, h[:-1] - ref, default)
+        self.last = dict(valid=ok, base_valid=base_valid, ref=ref,
+                         n_valid=int(ok.sum()))
+        return out
 
     #def get_camera_name(self):
     #    return [k for k in self.m.fdict.keys() if k.endswith('cam')]
@@ -1493,8 +1880,14 @@ class Env:
 
     def raymap(self, frame, width, height, dth, pinhole=False, perpendicular=False):
         """Depth image (height, width) from a camera frame. `frame` is a frame
-        name registered in the model; the camera looks along the frame's -Z.
+        name registered in the model; the sensor looks along the frame's -Z.
         `dth` = degrees per pixel (horizontal); horizontal FoV = width × dth.
+
+        Frame convention is unified with the camera path: tact_raymap_query applies
+        the same -90° roll about -Z that `_render_frame` applies for get_rgb_image/
+        get_depth_image, so a camera and a lidar at the same frame pos/euler produce
+        the identically-oriented image. An upright, forward-looking sensor pitched α°
+        down is a pure Y rotation: euler [0, α-90, 0] (xyz, deg).
 
         pinhole:
           False (default) — angular projection (LiDAR-like). Pixels are uniform
@@ -1521,65 +1914,246 @@ class Env:
                                D.ctypes.data_as(_DBL))
         return D.reshape(height, width)
 
+    def _raycloud_rays(self, width, height, dth, pinhole):
+        """Unit ray directions (H*W, 3) in SENSOR-FRAME coordinates, cached per
+        (w, h, dth, pinhole). Mirrors tact_raymap_query's per-pixel ray generation
+        (tact.c), including the -90° roll about the optical (-Z) axis that the C
+        side bakes into the frame pose — applied here to the rays instead, so the
+        returned directions live in the frame as registered (YAML pos/euler), and
+        world points = Te[:3,:3] @ p + Te[:3,3] with the PLAIN m.fkh pose."""
+        key = (width, height, dth, bool(pinhole))
+        cache = getattr(self, '_raycloud_cache', None)
+        if cache is None:
+            cache = self._raycloud_cache = {}
+        if key in cache:
+            return cache[key]
+        i = np.arange(height, dtype=np.float64)         # row    (0 = top)
+        j = np.arange(width, dtype=np.float64)          # column (0 = left)
+        if pinhole:
+            f = (width / 2.0) / np.tan(np.radians(width * dth) / 2.0)
+            u = (j + 0.5 - width / 2.0) / f
+            v = (height / 2.0 - i - 0.5) / f
+            uu, vv = np.meshgrid(u, v, indexing='xy')   # (H, W) row-major like D
+            n = 1.0 / np.sqrt(uu**2 + vv**2 + 1.0)
+            cam = np.stack([uu * n, vv * n, -n], axis=-1)
+        else:                                           # angular (LiDAR-like)
+            # tact.c's even/odd cases both reduce to ((N-1)/2 - idx)*dth in real
+            # arithmetic: even N/2 - idx - 0.5 == odd (N-1)/2 - idx.
+            pitch = np.radians(((height - 1) / 2.0 - i) * dth)
+            tilt = np.radians(((width - 1) / 2.0 - j) * dth)
+            tt, pp = np.meshgrid(tilt, pitch, indexing='xy')
+            cam = np.stack([-np.sin(tt) * np.cos(pp), np.sin(pp),
+                            -np.cos(tt) * np.cos(pp)], axis=-1)
+        cam = cam.reshape(-1, 3)
+        # optical -> registered frame: p_f = Rz(-90°) @ p_opt  (rows [0,1,0],[-1,0,0],[0,0,1])
+        rays = np.stack([cam[:, 1], -cam[:, 0], cam[:, 2]], axis=-1)
+        cache[key] = rays
+        return rays
+
+    def raycloud(self, frame, width, height, dth, pinhole=False, max_range=None):
+        """3D twin of raymap(): point cloud (N, 3) float64 in SENSOR-FRAME
+        coordinates — the frame as registered in the YAML (pos/euler), not the
+        internal rolled optical frame, so world points are simply
+            Te = env.m.fkh([frame], env.q)[0];  pts_w = pts @ Te[:3,:3].T + Te[:3,3]
+        No-hit rays are dropped (raymap's -1 pixels), and hits beyond `max_range`
+        (meters) are optionally dropped too, so N varies per call.
+
+        Same args/projections as raymap; ranges are taken along the ray
+        (perpendicular=False internally), so each point is range * unit_ray.
+        Intended consumers: the lidar `type: 3d` wire encoder, and
+        map builders (tact.MiniElevationMap.insert) after pose composition — over
+        the wire the cloud stays sensor-frame; the consumer applies extrinsic +
+        its own pose estimate. NOTE: rays hit the robot's own shapes as well;
+        self-filtering is the consumer's job."""
+        D = self.raymap(frame, width, height, dth, pinhole=pinhole)
+        d = D.reshape(-1)
+        hit = d >= 0.0
+        if max_range is not None:
+            hit &= d <= max_range
+        return d[hit, None] * self._raycloud_rays(width, height, dth, pinhole)[hit]
+
     def _push_light(self):
         # Push lights[0] into render.c module statics. Cheap (no GL); called every
         # render so YAML-driven changes via env.m.lights[0][...] = ... apply immediately.
         L = self.m.lights[0]
         pos = (ctypes.c_float * 3)(*L['pos'])
         tgt = (ctypes.c_float * 3)(*L['target'])
-        clib.render_set_light(pos, tgt, ctypes.c_float(L['ortho']),
-                              ctypes.c_int(1 if L['shadow'] else 0))
+        clib.render_set_light(pos, tgt, ctypes.c_float(L['ortho']), ctypes.c_int(1 if L['shadow'] else 0))
+
+    def _geom_arrays(self):
+        # Camera-invariant inputs to win_render/egl_render (object poses/shapes/types/
+        # colors). These depend only on q + the model, not the camera, so when several
+        # renders happen at the same tick (window redraw + per-camera get_rgb_image, or
+        # kida.run's 3 cameras per cycle) they share one FK + pose-assembly pass.
+        # Rebuilt only when q changes (next sim step) or the object count changes
+        # (env.add/delete); for a runtime env.edit() while paused (q frozen), set
+        # self._imgcache = None to force a rebuild.
+        q = self.q
+        n_obj = len(self.m.ctype)
+        c = getattr(self, '_imgcache', None)
+        if c is None or c[0] != n_obj or not np.array_equal(c[1], q):
+            n_padding = 8
+            shape = [x for row in self.m.cshape for x in (row + [0]*n_padding)[:n_padding]]
+            _shape = (ctypes.c_float*len(shape))(*shape)
+            _type = (ctypes.c_int*n_obj)(*self.m.ctype)
+            _objcolor = (ctypes.c_float*len(self.m.crgba))(*self.m.crgba)
+            T = _fk(self.m.Ti, self.m.parent, self.m.jtype, q)
+            objpose = np.array([])
+            for i in range(n_obj):
+                if self.m.cbody[i] < 0: tmp = self.m.ctran[i]
+                else: tmp = T[self.m.cbody[i]] @ self.m.ctran[i]
+                objpose = np.concatenate((objpose, tmp.T.flatten()))
+            _objpose = (ctypes.c_float*len(objpose))(*objpose)
+            c = self._imgcache = (n_obj, q.copy(), _type, _shape, _objcolor, _objpose)
+        return c[2], c[3], c[4], c[5]
 
     def _win_render(self):
-        n_padding = 8
-        shape = [x for row in self.m.cshape for x in (row + [0]*n_padding)[:n_padding]]
-        _shape = (ctypes.c_float*len(shape))(*shape)
-        _type = (ctypes.c_int*len(self.m.ctype))(*self.m.ctype)
-        _objcolor = (ctypes.c_float*len(self.m.crgb))(*self.m.crgb)
-
+        _type, _shape, _objcolor, _objpose = self._geom_arrays()
         campose = self.m.view
         _campose = (ctypes.c_float*len(campose))(*campose)
-
-        T = _fk(self.m.Ti, self.m.parent, self.m.jtype, self.q)
-        objpose = np.array([])
-        for i in range(len(self.m.ctype)):
-            if self.m.cbody[i] < 0: tmp = self.m.ctran[i]
-            else: tmp = T[self.m.cbody[i]] @ self.m.ctran[i]
-            objpose = np.concatenate((objpose, tmp.T.flatten()))
-        _objpose = (ctypes.c_float*len(objpose))(*objpose)
-
         self._push_light()
         ret = clib.win_render(len(_type), _type, _shape, _objcolor,_objpose, _campose)
         return ret
     
-    def get_rgb_image(self, frame):
+    def _render_frame(self, frame, opt, res, vfov):
+        # Shared EGL render for a camera frame. opt=1 -> RGB JPEG bytes;
+        # opt=2 -> depth (linear eye-space meters, float32, zstd-compressed).
+        # Output size = the YAML camera `res`, vertical FOV = the camera `vfov` (deg);
+        # both forwarded to the renderer (`res` sizes its pbuffer/FBO, `vfov` drives
+        # the projection). If unset, look them up by camera name; frames that aren't
+        # declared cameras fall back to the legacy 640x480 / 45° vfov.
         if frame not in self.m.fdict: return None
-        n_padding = 8
-        
-        shape = [x for row in self.m.cshape for x in (row + [0]*n_padding)[:n_padding]]
-        _shape = (ctypes.c_float*len(shape))(*shape)        
-        _type = (ctypes.c_int*len(self.m.ctype))(*self.m.ctype)
-        _objcolor = (ctypes.c_float*len(self.m.crgb))(*self.m.crgb)
+        if res is None:
+            res = next((c['res'] for c in self.m.cameras if c['name'] == frame), [640, 480])
+        if vfov is None:
+            vfov = next((c['vfov'] for c in self.m.cameras if c['name'] == frame), 45)
+        width, height = int(res[0]), int(res[1])
+        # Grow the receive buffer to the worst-case payload. JPEG (opt=1) is bounded
+        # well under width*height*4. zstd of a width*height float32 depth map (opt=2)
+        # can slightly exceed its width*height*4 raw size (ZSTD_compressBound), so add
+        # slack (> raw/255) on the depth path.
+        need = width * height * 4
+        if opt == 2: need += width * height // 16 + 4096
+        if ctypes.sizeof(self._imgbuf) < need:
+            self._imgbuf = (ctypes.c_ubyte * need)()
+
+        _type, _shape, _objcolor, _objpose = self._geom_arrays()
 
         tmp = self.m.fkh([frame], self.q)[0]
         tmp = tmp @ xyzeuler_to_homogeneous([0, 0, 0, 0, 0, -np.pi/2])
-        campose = np.linalg.inv(tmp).T.flatten()            
+        campose = np.linalg.inv(tmp).T.flatten()
         _campose = (ctypes.c_float*len(campose))(*campose)
-        
-        T = _fk(self.m.Ti, self.m.parent, self.m.jtype, self.q)
-        objpose = np.array([])
-        for i in range(len(self.m.ctype)):
-            if self.m.cbody[i] < 0: tmp = self.m.ctran[i]
-            else: tmp = T[self.m.cbody[i]] @ self.m.ctran[i]
-            objpose = np.concatenate((objpose, tmp.T.flatten()))
-        _objpose = (ctypes.c_float*len(objpose))(*objpose)
 
         self._push_light()
-        imglen = clib.egl_render(len(_type), _type, _shape, _objcolor, _objpose, _campose, self._imgbuf, 1)
-        out = ctypes.string_at(self._imgbuf, imglen)
-        return out
+        # vfov passed as c_float: egl_render has no declared argtypes, so a bare
+        # Python float would be marshalled as c_double and misread by the C `float`.
+        imglen = clib.egl_render(len(_type), _type, _shape, _objcolor, _objpose, _campose,
+                                 self._imgbuf, opt, width, height, ctypes.c_float(vfov))
+        return ctypes.string_at(self._imgbuf, imglen)
 
-    
+    def get_rgb_image(self, frame, res=None, vfov=None):
+        """RGB frame as JPEG bytes (decode with PIL/cv2/turbojpeg)."""
+        return self._render_frame(frame, 1, res, vfov)
+
+    def get_depth_image(self, frame, res=None, vfov=None):
+        """Depth frame: zstd-compressed little-endian float32, row-major top-to-bottom,
+        linear eye-space distance in meters (no-geometry pixels read the far plane,
+        200 m). Decode: `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(h, w)`
+        where (w, h) = the camera `res`."""
+        return self._render_frame(frame, 2, res, vfov)
+
+    def camera_frames(self):
+        """Yield (name, payload_bytes) for each camera due to publish at the current
+        step. Rate-gating (camera `fps` vs the internal step counter self.cnt, the
+        same one that drives window redraw) and type→getter dispatch (rgb →
+        get_rgb_image JPEG, depth → get_depth_image zstd float32; lidar via raymap is
+        a TODO) both live here; the per-camera
+        publish cycle is computed from the sim dt and cached. Sockets/transport stay
+        with the caller — this only renders + gates, so the sim core has no IPC
+        dependency. self.cnt is the post-step value (the caller runs this after step()),
+        so the publish phase trails window redraw by one tick — cadence is identical."""
+        for c in self.m.cameras:
+            cyc = c.get('_cycle')
+            if cyc is None:
+                cyc = c['_cycle'] = max(1, round((1.0/self.m.dt)/c['fps'])) if c.get('fps') else 1
+            if self.cnt % cyc: continue
+            if c['type'] == 'rgb':
+                buf = self.get_rgb_image(c['name'], c.get('res'), c.get('vfov'))
+                if buf is not None: yield c['name'], buf
+            elif c['type'] == 'depth':
+                buf = self.get_depth_image(c['name'], c.get('res'), c.get('vfov'))
+                if buf is not None: yield c['name'], buf
+
+    def _zstd(self):
+        # Cached zstd compressor for the lidar payload (depth cameras compress C-side
+        # in egl_render; the raymap path returns raw doubles, so we compress in Python).
+        # Lazy import keeps zstandard out of the sim-core import path for camera-only use.
+        z = getattr(self, '_zstd_c', None)
+        if z is None:
+            import zstandard
+            z = self._zstd_c = zstandard.ZstdCompressor()
+        return z
+
+    def get_lidar_image(self, frame, res=None, dth=None, pinhole=None, perpendicular=None):
+        """2D LiDAR scan as zstd-compressed little-endian float32, row-major top-to-bottom
+        — the same wire format as get_depth_image, so decode is identical:
+        `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(h, w)` with (w, h) = the
+        lidar `res`. Values are range-along-ray in meters (LiDAR convention), with -1 for
+        pixels that hit nothing (vs. a depth camera's 200 m far plane). res/dth/pinhole/
+        perpendicular default to the named lidar's spec; if `frame` isn't a declared lidar
+        they fall back to [120,80] / 1.0 deg-per-pixel / angular range."""
+        if frame not in self.m.fdict: return None
+        spec = next((l for l in self.m.lidars if l['name'] == frame), None)
+        if res is None:           res = spec['res'] if spec else [120, 80]
+        if dth is None:           dth = spec['dth'] if spec else 1.0
+        if pinhole is None:       pinhole = spec['pinhole'] if spec else False
+        if perpendicular is None: perpendicular = spec['perpendicular'] if spec else False
+        width, height = int(res[0]), int(res[1])
+        D = self.raymap(frame, width, height, dth, pinhole=pinhole, perpendicular=perpendicular)
+        return self._zstd().compress(D.astype('<f4').tobytes())
+
+    def get_lidar_points(self, frame, res=None, dth=None, pinhole=None, max_range=None):
+        """Point-cloud LiDAR scan as zstd-compressed little-endian float32 (N, 3) in
+        SENSOR-FRAME coordinates (see raycloud — world points need the consumer to
+        compose the frame extrinsic with its own pose estimate). Decode:
+        `np.frombuffer(zstandard.decompress(buf), '<f4').reshape(-1, 3)`.
+        Unlike the fixed-size 2d image, N varies per frame: no-hit rays are dropped,
+        and hits beyond `max_range` (here or on the lidar spec) are dropped too.
+        res/dth/pinhole/max_range default to the named lidar's spec; if `frame` isn't
+        a declared lidar they fall back to [120,80] / 1.0 deg-per-pixel / angular /
+        unlimited. A real-hardware lidar driver publishing this same wire format is
+        indistinguishable to the consumer."""
+        if frame not in self.m.fdict: return None
+        spec = next((l for l in self.m.lidars if l['name'] == frame), None)
+        if res is None:       res = spec['res'] if spec else [120, 80]
+        if dth is None:       dth = spec['dth'] if spec else 1.0
+        if pinhole is None:   pinhole = spec['pinhole'] if spec else False
+        if max_range is None: max_range = spec.get('max_range') if spec else None
+        pts = self.raycloud(frame, int(res[0]), int(res[1]), dth,
+                            pinhole=pinhole, max_range=max_range)
+        return self._zstd().compress(pts.astype('<f4').tobytes())
+
+    def lidar_frames(self):
+        """Yield (name, payload_bytes) for each lidar due to publish at the current step.
+        Mirrors camera_frames: fps rate-gating against self.cnt (the same step counter that
+        drives window redraw) and type→encoder dispatch ('2d' → get_lidar_image zstd
+        float32 image; '3d' → get_lidar_points zstd float32 (N,3) sensor-frame
+        points) both live here, so the sim core stays
+        IPC-free — the caller owns sockets/transport. Cadence matches cameras (publish
+        trails window redraw by one tick)."""
+        for l in self.m.lidars:
+            cyc = l.get('_cycle')
+            if cyc is None:
+                cyc = l['_cycle'] = max(1, round((1.0/self.m.dt)/l['fps'])) if l.get('fps') else 1
+            if self.cnt % cyc: continue
+            if l['type'] == '2d':
+                buf = self.get_lidar_image(l['name'])
+                if buf is not None: yield l['name'], buf
+            elif l['type'] == '3d':
+                buf = self.get_lidar_points(l['name'])
+                if buf is not None: yield l['name'], buf
+
+
 class CEnv:
     """Thin adapter that gives a ctypes.CDLL (bin/mjenv.so / chenv.so / eio.so)
     the same .step/.reset/.finish interface as tact.Env, so callers (the start
@@ -1621,6 +2195,23 @@ class CEnv:
         try:
             self.cdll.get_z.restype  = ctypes.c_double
             self.cdll.get_z.argtypes = [ctypes.c_double, ctypes.c_double]
+        except AttributeError:
+            pass
+        # Optional sim-timestep query — exported by mjenv (mujoco). Cached here (constant)
+        # so `start` can derive the render cadence + real-time pacing for the mujoco backend
+        # the same way as the tact backend. None for backends without it (chrono/real) →
+        # those stay un-paced (env.dt is None). Model is already loaded (init ran before us).
+        self._dt = None
+        try:
+            self.cdll.get_dt.restype = ctypes.c_double
+            self.cdll.get_dt.argtypes = []
+            self._dt = float(self.cdll.get_dt())
+        except AttributeError:
+            pass
+        # Optional render-cadence setter (mjenv): start drives it from -s/-f like tact.
+        try:
+            self.cdll.set_redraw.restype  = None
+            self.cdll.set_redraw.argtypes = [ctypes.c_int]
         except AttributeError:
             pass
 
@@ -1673,5 +2264,34 @@ class CEnv:
         raise NotImplementedError(
             f"groups is tact-backend only; current backend={self.backend!r} "
             f"has no group ledger.")
+    @property
+    def dt(self):
+        # Sim timestep if the backend exports get_dt (mujoco), else None. Explicit
+        # property (not __getattr__) so `start` can sleep-pace + derive redraw uniformly.
+        return self._dt
+
+    @property
+    def cameras(self):
+        # No YAML-driven camera registry on C backends, so `start` publishes no
+        # cameras for them. Explicit stub (returns []) so getattr(env,'cameras')
+        # doesn't forward to self.cdll via __getattr__ and accidentally hit a C symbol.
+        return []
+
+    @property
+    def lidars(self):
+        # No YAML lidar registry on C backends (same rationale as cameras above).
+        return []
+
+    def camera_frames(self):
+        # No YAML camera registry on C backends → nothing to publish. Empty generator
+        # (mirrors Env.camera_frames so runners can call it backend-agnostically).
+        return
+        yield  # pragma: no cover — makes this a generator
+
+    def lidar_frames(self):
+        # No YAML lidar registry on C backends → nothing to publish (mirrors
+        # Env.lidar_frames so runners can call it backend-agnostically).
+        return
+        yield  # pragma: no cover — makes this a generator
 
     def __getattr__(self, name): return getattr(self.cdll, name)
