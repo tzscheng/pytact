@@ -98,7 +98,8 @@ else:
     if arg.e != None:
         if os.path.exists('%s.yml' %arg.e): env.add('%s' %arg.e)
         elif os.path.exists('yml/%s.yml' %arg.e): env.add('yml/%s' %arg.e)
-        elif os.path.exists(f'{tact.pkg_dir}/examples/{arg.e}.yml'): env.add(f'{tact.pkg_dir}/examples/{arg.e}')
+        elif os.path.exists(f'{tact.pkg_dir}/envs/{arg.e}.yml'): env.add(f'{tact.pkg_dir}/envs/{arg.e}')
+        elif os.path.exists(f'{tact.pkg_dir}/demos/{arg.e}.yml'): env.add(f'{tact.pkg_dir}/demos/{arg.e}')
         else: print('cannot find yml...'); sys.exit()
 
 ctx = zmq.Context()

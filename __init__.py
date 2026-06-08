@@ -12,12 +12,16 @@ For domain-explicit access:
 Package layout (sibling assets):
     tact.pkg_dir                         → '/.../fg/tact'  (the package itself)
     tact.pkg_dir/bin/libtact.so, bin/mjenv.so → native libraries (output of build.sh)
-    tact.pkg_dir/examples/               → scene YAMLs (1.yml–5.yml, box1, desk1),
-                                            sample model YAMLs (arm2, arm3, arm4, fv,
-                                            obj1, obj2, sphere_test), example projects
-                                            (cartpole/, rb5/, rb10/), and mesh assets
-                                            (objs/). Loaded by start's -e flag and by
-                                            per-project RL envs via `tact.pkg_dir`.
+    tact.pkg_dir/envs/                    → background-environment scene YAMLs
+                                            (1.yml–5.yml, d3, hf1, stairs, box1, desk1).
+                                            Loaded by start's -e flag (probes envs/ then
+                                            demos/) and by per-project RL envs.
+    tact.pkg_dir/demos/                   → tact feature/physics demos: sample model
+                                            YAMLs (arm2, arm3, arm4, fv, obj1, obj2,
+                                            sphere_test, box_wall, ...), demo scripts
+                                            (ball_throw.py, raymap_demo.py, demo_delete.py),
+                                            example projects (cartpole/, rb5/, rb10/), and
+                                            mesh assets (objs/).
 """
 import os as _os
 pkg_dir = _os.path.dirname(_os.path.abspath(__file__))

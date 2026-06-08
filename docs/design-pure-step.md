@@ -15,7 +15,7 @@
 - **재현성 / golden-value 테스트** — 같은 입력 → 같은 출력. `tests/regression/test_traj.py`
   가 의존하는 결정성.
 - **state checkpoint / branch** — `ctx` 를 fork 해 여러 미래를 안전하게 탐색 (MPC 롤아웃,
-  MPPI, time-travel 디버그). `examples/cartpole/cartpole.py` 의 MPC 가 실제 사례.
+  MPPI, time-travel 디버그). `demos/cartpole/cartpole.py` 의 MPC 가 실제 사례.
 - **미래의 differentiable physics / batched RL rollout** — side effect 없는 step 이 전제.
   지금 단계가 그 stepping stone (전체 비교는 메모리 `tact-pure-function-design` 참고).
 
@@ -144,5 +144,5 @@ PGS 가 `iters`(기본 20)에서 잘리기 때문:
 zero_state 크기, cold 결정성, **Model(ctx thread)==Env 비트동일**, ctx 불변/fork 독립,
 warm/cold 동일 해(@high iters), py↔C thread tracking. 7/7 pass.
 
-테스트 입력은 `tests/scenes/` 의 frozen fixture 사용 (`examples/` 변동과 분리,
+테스트 입력은 `tests/scenes/` 의 frozen fixture 사용 (`demos/`·`envs/` 변동과 분리,
 `tests/scenes/README.md`).

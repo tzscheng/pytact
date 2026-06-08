@@ -15,7 +15,7 @@ energy and per-brick pose drift on a coarse schedule. Reports:
     Phase 1 or Phase 2 contact solver paths)
 
 Run from anywhere — script chdirs into fg/tact so the relative YAML path
-resolves and the C-side mesh loader sees `examples/...`:
+resolves and the C-side mesh loader sees `demos/...`:
     uv run python /home/ubuntu/uv/fg/tact/tests/box_wall_stability.py
 """
 import os, sys, time

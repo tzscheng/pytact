@@ -1,0 +1,23 @@
+#abstract: graded box staircase for dog stairs sim2sim (mirrors rl/dog_stairs_env.py
+#          terrain: 10 steps 2->6 cm rising, 0.30 m treads, flat run-up at x<3.0, big
+#          top landing; shared far edge so every step k is a box [x0_k .. x_end]).
+#date: 2026-06-05
+# Use:  ./start dog -e stairs   then 'r' (stand), '3' (policy rollout).
+
+materials:
+    mat1: {normal: [20000, 200], tangent: [20000, 200, 1.0], spin: [200, 2, 0.05], roll: [200, 2, 0.02], restitution: 0.0}
+
+bodies:
+  - name: root
+    shapes:
+      - {type: box, pos: [3.0, 0, -0.05], param: [9.0, 6.0, 0.05], contact: [1, mat1], rgba: [1.0, 1.0, 1.0, 1.0]}
+      - {type: box, pos: [7.500, 0, 0.010], param: [4.500, 2.0, 0.010], contact: [1, mat1], rgba: [0.74, 0.74, 0.78, 1.0]}
+      - {type: box, pos: [7.650, 0, 0.020], param: [4.350, 2.0, 0.020], contact: [1, mat1], rgba: [0.73, 0.73, 0.78, 1.0]}
+      - {type: box, pos: [7.800, 0, 0.035], param: [4.200, 2.0, 0.035], contact: [1, mat1], rgba: [0.72, 0.72, 0.78, 1.0]}
+      - {type: box, pos: [7.950, 0, 0.050], param: [4.050, 2.0, 0.050], contact: [1, mat1], rgba: [0.71, 0.71, 0.78, 1.0]}
+      - {type: box, pos: [8.100, 0, 0.070], param: [3.900, 2.0, 0.070], contact: [1, mat1], rgba: [0.70, 0.70, 0.78, 1.0]}
+      - {type: box, pos: [8.250, 0, 0.090], param: [3.750, 2.0, 0.090], contact: [1, mat1], rgba: [0.69, 0.69, 0.78, 1.0]}
+      - {type: box, pos: [8.400, 0, 0.115], param: [3.600, 2.0, 0.115], contact: [1, mat1], rgba: [0.68, 0.68, 0.78, 1.0]}
+      - {type: box, pos: [8.550, 0, 0.140], param: [3.450, 2.0, 0.140], contact: [1, mat1], rgba: [0.67, 0.67, 0.78, 1.0]}
+      - {type: box, pos: [8.700, 0, 0.170], param: [3.300, 2.0, 0.170], contact: [1, mat1], rgba: [0.66, 0.66, 0.78, 1.0]}
+      - {type: box, pos: [8.850, 0, 0.200], param: [3.150, 2.0, 0.200], contact: [1, mat1], rgba: [0.65, 0.65, 0.78, 1.0]}

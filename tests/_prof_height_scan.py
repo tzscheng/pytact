@@ -22,7 +22,7 @@ import numpy as np, tact
 from tact._clib import clib, _DBL
 
 env = tact.Env('dog', render=False)
-env.add('yml/stairs')
+env.add(f'{tact.pkg_dir}/envs/stairs')
 
 # StairsPolicy grid (dog_stairs_policy.npz scan_x/scan_y)
 gx, gy = np.meshgrid([-0.4, -0.2, 0., 0.2, 0.4, 0.6, 0.8],

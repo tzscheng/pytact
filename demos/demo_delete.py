@@ -8,14 +8,14 @@ one while newer objects are still present. Each remaining object's
 physical state (pose + velocity) is preserved across the delete — only
 the deleted body's DoF slots get spliced out of q/qd.
 
-Run from anywhere — the script chdir's into examples/ so the C-side
+Run from anywhere — the script chdir's into demos/ so the C-side
 mesh loader (which probes CWD-relative `objs/<idx>.obj`) finds the
 bundled mesh assets:
-    uv run python /home/ubuntu/uv/fg/tact/examples/demo_delete.py
+    uv run python /home/ubuntu/uv/fg/tact/demos/demo_delete.py
 """
 import os, sys, tempfile
 
-# Make `tact` importable without installing — script lives at fg/tact/examples/
+# Make `tact` importable without installing — script lives at fg/tact/demos/
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))   # → .../fg
 # Set CWD so the C-side mesh probe finds `objs/<idx>.obj`.
@@ -67,7 +67,7 @@ def write_yml(name, content):
 floor_path = write_yml('floor', FLOOR_YML)
 
 # Object pool: each entry → unique YAML. (shape, param, rgb, drop_xy)
-# `mesh_teal` references examples/objs/6.obj — see obj2.yml for the pattern.
+# `mesh_teal` references demos/objs/6.obj — see obj2.yml for the pattern.
 POOL = {
     'sphere_red':    ('sphere',   '[0.07]',             '[0.9, 0.3, 0.3]',  ( 0.25,  0.00)),
     'box_blue':      ('box',      '[0.07, 0.07, 0.07]', '[0.3, 0.4, 0.9]',  (-0.25,  0.00)),

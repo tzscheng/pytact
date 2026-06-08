@@ -110,7 +110,7 @@ check(set(m.last) >= {'valid', 'base_valid', 'ref'} and
 
 # ----- 7) hfield terrain (hf1) -----
 print('\n[7] hfield scan (hf1 vs grid bilinear)')
-env_h = tact.Env(f'{tact.pkg_dir}/examples/hf1', render=False)
+env_h = tact.Env(f'{tact.pkg_dir}/envs/hf1', render=False)
 env_h.reset()
 H = tact.load_hfield(f'{tact.pkg_dir}/hfields/hf1.bin')   # (101,101), 0.1 m, [-5,5]
 def npy_z(x, y):

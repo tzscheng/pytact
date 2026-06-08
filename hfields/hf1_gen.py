@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run python
 """Generate hfields/hf1.bin — a 10x10 m walkable height field for legged robots.
 
-One data file, two scene definitions: examples/hf1.yml (tact) and
+One data file, two scene definitions: envs/hf1.yml (tact) and
 mjcf/hf1.xml (mujoco) both reference ../hfields/hf1.bin.
 Heights are in METERS (the YAML uses size: [5, 5, 1], i.e. sz=1, so no extra scaling).
 Grid is 101x101 (0.1 m spacing). Gentle rolling hills (typical slope <12 deg, peaks

@@ -35,7 +35,7 @@ Height-field shape/raycast/contact + the contact-fidelity roadmap (Tier 2 → 2.
 
 **Canonical sub_id ordering:** when n_points ≥ 2, the narrowphase sorts contact points by polar angle around their centroid in the tangent plane (CCW). Stable across frames as long as the contact polygon topology doesn't change → warm-start λ keeps its meaning. Topology changes (polygon vertex count shift) cost one frame of cold-start PGS convergence.
 
-**Drift observed on `examples/box_wall.yml`** (4-row 18-brick running-bond wall, 30 s sim):
+**Drift observed on `demos/box_wall.yml`** (4-row 18-brick running-bond wall, 30 s sim):
 
 | approach | edge drift @ 30 s | wall time |
 |---|---|---|

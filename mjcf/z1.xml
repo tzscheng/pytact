@@ -1,7 +1,5 @@
 <mujoco>
 
-  <include file="zen.xml"/>
-  
   <asset>
     <texture name="texplane" type="2d" builtin="checker" rgb1="1 1 1" rgb2="1 1 1" width="512" height="512" mark="cross" markrgb="0 0 0"/>   
     <material name="matplane" reflectance="0.0" texture="texplane" texrepeat="1 1" texuniform="true"/>
