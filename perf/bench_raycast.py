@@ -22,7 +22,7 @@ import os, sys, time, argparse, tempfile
 sys.path.insert(0, os.getcwd())
 import numpy as np
 
-MESH_OBJ = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'demos/objs/10.obj')
+MESH_OBJ = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'objs/10.obj')
 
 def gen_syn_yml(n, seed, path, kind='mix'):
     """N raycast shapes on a shell around the sensor. Shell radius [1,6] m, random sizes —
