@@ -85,6 +85,8 @@ if arg.m:
 elif arg.x != False:
     if   os.path.exists('./eio.so'): eiopath = './eio.so'
     elif os.path.exists('./eio-%s.so' %src[0]): eiopath = './eio-%s.so' %src[0]
+    elif os.path.exists('./eio/eio.so'): eiopath = './eio/eio.so'
+    elif os.path.exists('./eio/eio-%s.so' %src[0]): eiopath = './eio/eio-%s.so' %src[0]
     else: print('cannot find eio...'); sys.exit(0)
     cdll = ctypes.CDLL(eiopath)
     if arg.x == None: cdll.init()
