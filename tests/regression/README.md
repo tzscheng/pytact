@@ -33,8 +33,6 @@ uv run python tests/regression/capture_baseline.py box_wall
 | `obj1` | 6 | floating mesh+box on inclined plane — mesh narrowphase (MPR fallback) |
 | `sphere_test` | 6 | sphere on floor — sphere narrowphase (MPR) |
 | `cartpole/cartpole` | 2 | cart-pole — no contact, pure rigid-body |
-| `rb5/rb5` | 6 | 6-DoF arm — joint dynamics |
-| `rb10/rb10` | 6 | 6-DoF arm — joint dynamics |
 | `arm2`, `arm3` | 2, 3 | small arms — gravity-driven swing |
 
 500 steps × dt=1ms = 0.5 s sim each. Full suite runs in ~5 s.

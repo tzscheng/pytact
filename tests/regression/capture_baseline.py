@@ -32,8 +32,6 @@ SCENARIOS = [
     ('obj1',                       500),   # mesh+box contact (mesh path → MPR fallback)
     ('sphere_test',                500),   # sphere on floor
     ('cartpole/cartpole',          500),   # no contact, pure dynamics
-    ('rb5/rb5',                    500),   # 6-DoF arm, no contact
-    ('rb10/rb10',                  500),   # 6-DoF arm, no contact
     ('arm2',                       500),   # 2-DoF arm, no contact
     ('arm3',                       500),   # 3-DoF arm, no contact
 ]

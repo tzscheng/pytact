@@ -164,7 +164,7 @@ def load_hfield(path):
     data[i*ncol+j], row i along +Y, col j along +X.
 
     Format = MuJoCo's custom hfield binary (int32 nrow, int32 ncol, float32
-    data[nrow*ncol]) so ONE data file under tact/hfields/ serves both scene
+    data[nrow*ncol]) so ONE data file under tact/envs/ serves both scene
     definitions: the tact YAML (`type: hfield, file: ...`) reads raw meters
     via this function; the mjcf scene's `<hfield file=...>` reads the same
     file but MuJoCo normalizes to [0,1] — its size[2]/geom-z must carry the
@@ -315,7 +315,7 @@ class Model:
         filename = modelname + '.yml'
         if not os.path.exists(filename): filename = modelname + '.yaml'
         # Directory the YAML lives in — relative `file:` paths for mesh shapes
-        # resolve against this so a model can ship its own objs/ alongside.
+        # resolve against this so a model can ship its own meshes/ alongside.
         yml_dir = os.path.dirname(os.path.abspath(filename))
 
         with open(filename, 'r') as f:
@@ -446,7 +446,7 @@ class Model:
 
                     # Resolve heightfield grid → C-side slot. The grid is loaded
                     # here (`file:` = MuJoCo custom hfield binary via
-                    # load_hfield — the shared tact/hfields/ format — or an
+                    # load_hfield — the shared tact/envs/ format — or an
                     # inline `data:` list) and pushed to C via set_hfield_data;
                     # cshape[0]=slot mirrors the mesh slot scheme. size:
                     # [sx, sy, sz] — sx,sy are XY half-extents (m); sz

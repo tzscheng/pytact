@@ -112,7 +112,7 @@ check(set(m.last) >= {'valid', 'base_valid', 'ref'} and
 print('\n[7] hfield scan (hf1 vs grid bilinear)')
 env_h = tact.Env(f'{tact.pkg_dir}/envs/hf1', render=False)
 env_h.reset()
-H = tact.load_hfield(f'{tact.pkg_dir}/hfields/hf1.bin')   # (101,101), 0.1 m, [-5,5]
+H = tact.load_hfield(f'{tact.pkg_dir}/envs/hf1.bin')   # (101,101), 0.1 m, [-5,5]
 def npy_z(x, y):
     gx, gy = (np.asarray(x) + 5) / 0.1, (np.asarray(y) + 5) / 0.1
     i0, j0 = np.floor(gy).astype(int), np.floor(gx).astype(int)

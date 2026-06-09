@@ -21,8 +21,8 @@ Package layout (sibling assets):
                                             sphere_test, box_wall, ...), demo scripts
                                             (ball_throw.py, raymap_demo.py, demo_delete.py),
                                             and example project (cartpole/).
-    tact.pkg_dir/objs/                    → shared mesh assets (*.obj); mesh-shape YAMLs
-                                            in demos/ reference them as ../objs/<name>.obj.
+    tact.pkg_dir/demos/meshes/            → shared mesh assets (*.obj); mesh-shape YAMLs
+                                            in demos/ reference them as meshes/<name>.obj.
 """
 import os as _os
 pkg_dir = _os.path.dirname(_os.path.abspath(__file__))

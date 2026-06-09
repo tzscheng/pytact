@@ -1,6 +1,15 @@
 # C-side state object 도입 설계 (`tact_t`)
 
-> **Status**: 이 문서는 도입 시점의 설계 기록이다. 이후 `use_c` 옵션은 `sim`/`model` 외부 API에서 제거되었고, C 경로가 항상 활성화된다. 본문에 남아 있는 `use_c=True`/`use_c=False` 분기는 당시 설계 의도이며, 현재 코드에서는 `model.use_c = True`가 하드코딩되어 있다 (테스트 목적의 수동 토글용으로만 내부 속성으로 유지).
+> **Status**: 이 문서는 `tact_t` 핸들 **도입 당시(2026-05 이전)의 planning 기록**이다. C 경로는 이제 항상 활성이고 `use_c` 외부 옵션은 제거됐다(`model.use_c = True` 하드코딩, parity용 내부 토글로만 유지). **살아있는 계약은 §3.5 Lifecycle invariants** — 코드(`_clib.py`, `native/tact.{c,h}`, `sim.py`)가 `§3`/`§3.5`를 직접 인용한다. 나머지 본문은 historical이라 아래 옛 식별자를 쓴다 — 현행 매핑:
+>
+> | 본문 (planning 당시) | 현행 |
+> |---|---|
+> | `ccd.c`, `common.h` | `native/tact.{c,h}` (+ collision 측은 `narrow.c`/`mpr.c`/`ray.c`/`shape.c`로 split) |
+> | `contact_ccd` | `collision_check` (narrow-phase dispatch) |
+> | `tact_step` (thin wrapper) | `tact_step_lcp` (LCP 1-step, λ caller-threaded) |
+> | `_cache_c_pointers` | `_create_c_handle` |
+> | `step(q, qd, _tau, cff=...)` + `use_c` 분기 | `step(q, qd, tau, q_ref, qd_ref, kp, kd, ctx)` — 순수 함수, `design-pure-step.md` 참조 |
+> | `mu` 0.8 hardcoded | per-material YAML `materials:` (`design-lcp-perf.md`) |
 
 ## 1. Motivation
 
@@ -168,7 +177,7 @@ ctypes 왕복: 4회 → 1회. feedback 루프: Python 14-case → C 14-case (작
 
 2. **외부 view는 매 변형 후 재취득**. 렌더러/컨트롤러가 model에서 raw view를 받아 캐시했다면, `add()`/`edit()` 직후 다시 받아야 한다. 호출자 책임. 현 코드베이스 기준 영향 받는 곳은 `sim` 클래스의 렌더 경로 1~2곳 — convention으로 충분하고 자동 invalidation 콜백은 도입하지 않는다.
 
-3. **호출자 API는 그대로**. `m.add(...)` / `m.edit(...)` 자체는 Python에서 보면 변화 없음. 핸들 destroy/recreate는 그 메서드 끝에서 자동 처리. `if self.use_c: self._cache_c_pointers()` 자리가 정확히 그 자리.
+3. **호출자 API는 그대로**. `m.add(...)` / `m.edit(...)` 자체는 Python에서 보면 변화 없음. 핸들 destroy/recreate는 그 메서드 끝에서 자동 처리 (`_create_c_handle()` 호출 — 옛 `_cache_c_pointers()` 자리).
 
 4. **edit()가 hot loop에 들어오는 경우**는 별도. 현재 호출자(grep 결과)는 setup-time 사용이 대부분이라 destroy/recreate 비용을 감수할 만함. 만약 미래에 동적 페이로드 변경처럼 매 step `edit()`를 부르는 시나리오가 생기면 `tact_update_inertia(h, body_idx, ...)` 같은 핀포인트 setter를 별도 추가 — 그때 가서 측정 후 결정.
 

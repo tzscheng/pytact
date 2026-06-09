@@ -19,12 +19,12 @@ diagonal: A=(p00,p10,p11), B=(p00,p11,p01). Python loads/scales the grid and pus
 `set_hfield_data` (no lazy C-side load, unlike meshes). YAML: `{type: hfield, file: x.bin
 | data: [[...]], size: [sx, sy, sz]}`; `cshape[0]=slot`. `file:` is **MuJoCo's custom hfield
 binary** (int32 nrow, int32 ncol, float32 data; raw meters here) read by `tact.load_hfield`
-— ONE data file under `tact/hfields/` serves both backends (2026-06-08; .npy retired). tact
+— ONE data file under `tact/envs/` serves both backends (2026-06-08; .npy retired). tact
 uses raw values × `sz`; MuJoCo normalizes the same file to [0,1], so the mjcf twin scene
 carries `size[2]`=range + geom z=min (data-derived, printed by the generator; row order
 verified identical via mj_ray probes at asymmetric grid nodes, max err ~1e-8). Worked
-example: `envs/hf1.yml` ↔ `mjcf/hf1.xml` (+ `hfields/hf1.bin`,
-`hfields/hf1_gen.py`).
+example: `envs/hf1.yml` ↔ `mjcf/hf1.xml` (+ `envs/hf1.bin`,
+`envs/hf1_gen.py`).
 
 Per-shape pose is the usual `ctran` (body-relative homogeneous transform), so an hfield can
 sit on any body at any orientation; all narrowphase/raycast works in hfield-local frame and
