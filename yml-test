@@ -5,19 +5,19 @@ sys.path[0] = os.path.dirname(sys.path[0]) if sys.path[0] else os.getcwd()
 import sys, socket, numpy as np, tact
 
 #env = tact.Env('demos/obj1', render=True, redraw=4)
-#env = tact.Env('demos/obj2', render=True, redraw=4)
+env = tact.Env('demos/obj2', render=True, redraw=4)
 
 #env = tact.Env('demos/box_wall', render=True, redraw=16)
 #env = tact.Env('demos/min_test', render=True, redraw=16)   # 'solver: minimal' test: sphere on z=0 ground, ball given +x qd0=0.1 m/s
 
-env = tact.Env('demos/arm2', render=True)
+#env = tact.Env('demos/arm2', render=True)
 #env = tact.Env('demos/arm2', offset=[0, 1, 0, 0, 0, 0], q0=[-90, 0], render=True, sleep=0.01, redraw=1); env.add('demos/arm2', offset=[0.1, 1, 0, 0, 0, 0], q0=[-45, 0])
 
-#env = tact.env('demos/arm3', render=True, sleep=0.01)
-#env = tact.env('demos/arm4', render=True, sleep=0.01)
+#env = tact.Env('demos/arm3', render=True, sleep=0.01)
+#env = tact.Env('demos/arm4', render=True, sleep=0.01)
 
-#env = tact.env('demos/fv', render=True)
-#env = tact.env('demos/cartpole/cartpole', q0=[0, 45], render=True)
+#env = tact.Env('demos/fv', render=True)
+#env = tact.Env('demos/cartpole', q0=[0, 45], render=True)
 
 
 #pull = zmq.Context().socket(zmq.PULL)
