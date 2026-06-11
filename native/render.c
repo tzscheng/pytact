@@ -1,7 +1,8 @@
+#define GL_GLEXT_PROTOTYPES
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <dlfcn.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,407 @@
 
 // Shared shape-asset slot storage (mesh_path, hf_* grids) — defined in shape.c.
 #include "shape.h"
+
+// Rendering/encoding dependencies are intentionally not link-time dependencies
+// of libtact.so. Headless physics users should be able to load libtact.so on a
+// machine without GL/GLFW/jpeg/zstd runtime libraries. Render entrypoints dlopen
+// their runtime libraries on demand and resolve every used symbol explicitly.
+static int load_shared(const char* const* names, char* err, size_t err_sz){
+    for(int i = 0; names[i]; i++){
+        void* h = dlopen(names[i], RTLD_LAZY | RTLD_GLOBAL);
+        if(h) return 1;
+    }
+    snprintf(err, err_sz, "missing shared library: %s", names[0]);
+    return 0;
+}
+
+#define TACT_GLFW_PROCS(X) \
+    X(int,         glfwInit,                       (void)) \
+    X(void,        glfwTerminate,                  (void)) \
+    X(void,        glfwWindowHint,                 (int hint, int value)) \
+    X(GLFWwindow*, glfwCreateWindow,               (int width, int height, const char *title, GLFWmonitor *monitor, GLFWwindow *share)) \
+    X(void,        glfwMakeContextCurrent,         (GLFWwindow *window)) \
+    X(GLFWglproc,  glfwGetProcAddress,             (const char *procname)) \
+    X(void,        glfwSwapInterval,               (int interval)) \
+    X(GLFWmousebuttonfun, glfwSetMouseButtonCallback,     (GLFWwindow *window, GLFWmousebuttonfun callback)) \
+    X(GLFWcursorposfun,   glfwSetCursorPosCallback,       (GLFWwindow *window, GLFWcursorposfun callback)) \
+    X(GLFWscrollfun,      glfwSetScrollCallback,          (GLFWwindow *window, GLFWscrollfun callback)) \
+    X(GLFWframebuffersizefun, glfwSetFramebufferSizeCallback, (GLFWwindow *window, GLFWframebuffersizefun callback)) \
+    X(GLFWkeyfun,         glfwSetKeyCallback,             (GLFWwindow *window, GLFWkeyfun callback)) \
+    X(void,        glfwGetCursorPos,               (GLFWwindow *window, double *xpos, double *ypos)) \
+    X(int,         glfwGetWindowAttrib,            (GLFWwindow *window, int attrib)) \
+    X(void,        glfwGetFramebufferSize,         (GLFWwindow *window, int *width, int *height)) \
+    X(void,        glfwSetWindowTitle,             (GLFWwindow *window, const char *title)) \
+    X(void,        glfwSwapBuffers,                (GLFWwindow *window)) \
+    X(void,        glfwPollEvents,                 (void))
+
+#define TACT_EGL_PROCS(X) \
+    X(EGLDisplay, eglGetDisplay,              (EGLNativeDisplayType display_id)) \
+    X(EGLBoolean, eglInitialize,              (EGLDisplay dpy, EGLint *major, EGLint *minor)) \
+    X(__eglMustCastToProperFunctionPointerType, eglGetProcAddress, (const char *procname)) \
+    X(EGLBoolean, eglChooseConfig,            (EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs, EGLint config_size, EGLint *num_config)) \
+    X(EGLBoolean, eglBindAPI,                 (EGLenum api)) \
+    X(EGLContext, eglCreateContext,           (EGLDisplay dpy, EGLConfig config, EGLContext share_context, const EGLint *attrib_list)) \
+    X(EGLSurface, eglCreatePbufferSurface,    (EGLDisplay dpy, EGLConfig config, const EGLint *attrib_list)) \
+    X(EGLBoolean, eglMakeCurrent,             (EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx)) \
+    X(EGLBoolean, eglDestroySurface,          (EGLDisplay dpy, EGLSurface surface))
+
+#define TACT_TJ_PROCS(X) \
+    X(tjhandle,       tjInitCompress, (void)) \
+    X(unsigned long,  tjBufSize,      (int width, int height, int jpegSubsamp)) \
+    X(unsigned char*, tjAlloc,        (int bytes)) \
+    X(void,           tjFree,         (unsigned char *buffer)) \
+    X(int,            tjCompress2,    (tjhandle handle, const unsigned char *srcBuf, int width, int pitch, int height, int pixelFormat, unsigned char **jpegBuf, unsigned long *jpegSize, int jpegSubsamp, int jpegQual, int flags))
+
+#define TACT_ZSTD_PROCS(X) \
+    X(ZSTD_CCtx*,   ZSTD_createCCtx,    (void)) \
+    X(size_t,       ZSTD_compressBound, (size_t srcSize)) \
+    X(size_t,       ZSTD_compressCCtx,  (ZSTD_CCtx *cctx, void *dst, size_t dstCapacity, const void *src, size_t srcSize, int compressionLevel)) \
+    X(unsigned int, ZSTD_isError,       (size_t code)) \
+    X(const char*,  ZSTD_getErrorName,  (size_t code))
+
+#define DECL_PROC(ret, name, args) static ret (*p_##name) args;
+TACT_GLFW_PROCS(DECL_PROC)
+TACT_EGL_PROCS(DECL_PROC)
+TACT_TJ_PROCS(DECL_PROC)
+TACT_ZSTD_PROCS(DECL_PROC)
+#undef DECL_PROC
+
+#define LOAD_PROC(ret, name, args) do { \
+    p_##name = (ret (*) args)dlsym(RTLD_DEFAULT, #name); \
+    if(!p_##name){ \
+        snprintf(err, err_sz, "cannot resolve symbol: %s", #name); \
+        return 0; \
+    } \
+} while(0);
+
+static int render_load_glfw_procs(char* err, size_t err_sz){
+    static int ok = 0;
+    if(ok) return 1;
+    TACT_GLFW_PROCS(LOAD_PROC)
+    ok = 1;
+    return 1;
+}
+
+static int render_load_egl_procs(char* err, size_t err_sz){
+    static int ok = 0;
+    if(ok) return 1;
+    TACT_EGL_PROCS(LOAD_PROC)
+    ok = 1;
+    return 1;
+}
+
+static int render_load_tj_procs(char* err, size_t err_sz){
+    static int ok = 0;
+    if(ok) return 1;
+    TACT_TJ_PROCS(LOAD_PROC)
+    ok = 1;
+    return 1;
+}
+
+static int render_load_zstd_procs(char* err, size_t err_sz){
+    static int ok = 0;
+    if(ok) return 1;
+    TACT_ZSTD_PROCS(LOAD_PROC)
+    ok = 1;
+    return 1;
+}
+
+#undef LOAD_PROC
+
+static int render_load_window_deps(void){
+    static int ok = 0, tried = 0;
+    static char err[256];
+    if(ok) return 1;
+    if(tried){ fprintf(stderr, "tact render unavailable: %s\n", err); return 0; }
+    tried = 1;
+    const char* gl[]   = {"libOpenGL.so.0", "libOpenGL.so", "libGL.so.1", "libGL.so", NULL};
+    const char* glfw[] = {"libglfw.so.3", "libglfw.so", NULL};
+    if(!load_shared(gl, err, sizeof(err))) return 0;
+    if(!load_shared(glfw, err, sizeof(err))) return 0;
+    if(!render_load_glfw_procs(err, sizeof(err))){
+        fprintf(stderr, "tact render unavailable: %s\n", err);
+        return 0;
+    }
+    ok = 1;
+    return 1;
+}
+
+static int render_load_egl_deps(void){
+    static int gl_ok = 0, egl_ok = 0, tj_ok = 0, zstd_ok = 0;
+    static char err[256];
+    const char* gl[]   = {"libOpenGL.so.0", "libOpenGL.so", "libGL.so.1", "libGL.so", NULL};
+    const char* egl[]  = {"libEGL.so.1", "libEGL.so", NULL};
+    const char* tj[]   = {"libturbojpeg.so.0", "libturbojpeg.so", NULL};
+    const char* zstd[] = {"libzstd.so.1", "libzstd.so", NULL};
+
+    if(!gl_ok   && !(gl_ok   = load_shared(gl,   err, sizeof(err)))) goto fail;
+    if(!egl_ok  && !(egl_ok  = load_shared(egl,  err, sizeof(err)))) goto fail;
+    if(!render_load_egl_procs(err, sizeof(err))) goto fail;
+    // egl_render currently initializes both encoder contexts on first use
+    // (tjInitCompress + ZSTD_createCCtx), even though each frame uses only one
+    // opt. Load both here to keep that existing lifecycle unchanged.
+    if(!tj_ok   && !(tj_ok   = load_shared(tj,   err, sizeof(err)))) goto fail;
+    if(!zstd_ok && !(zstd_ok = load_shared(zstd, err, sizeof(err)))) goto fail;
+    if(!render_load_tj_procs(err, sizeof(err))) goto fail;
+    if(!render_load_zstd_procs(err, sizeof(err))) goto fail;
+    return 1;
+fail:
+    fprintf(stderr, "tact egl render unavailable: %s\n", err);
+    return 0;
+}
+
+#define TACT_GL_PROCS(X) \
+    X(void,   glActiveTexture,            (GLenum texture)) \
+    X(void,   glAttachShader,             (GLuint program, GLuint shader)) \
+    X(void,   glBindBuffer,               (GLenum target, GLuint buffer)) \
+    X(void,   glBindFramebuffer,          (GLenum target, GLuint framebuffer)) \
+    X(void,   glBindRenderbuffer,         (GLenum target, GLuint renderbuffer)) \
+    X(void,   glBindTexture,              (GLenum target, GLuint texture)) \
+    X(void,   glBindVertexArray,          (GLuint array)) \
+    X(void,   glBlendFunc,                (GLenum sfactor, GLenum dfactor)) \
+    X(void,   glBlitFramebuffer,          (GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)) \
+    X(void,   glBufferData,               (GLenum target, GLsizeiptr size, const void *data, GLenum usage)) \
+    X(GLenum, glCheckFramebufferStatus,   (GLenum target)) \
+    X(void,   glClear,                    (GLbitfield mask)) \
+    X(void,   glClearColor,               (GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)) \
+    X(void,   glCompileShader,            (GLuint shader)) \
+    X(GLuint, glCreateProgram,            (void)) \
+    X(GLuint, glCreateShader,             (GLenum type)) \
+    X(void,   glCullFace,                 (GLenum mode)) \
+    X(void,   glDeleteBuffers,            (GLsizei n, const GLuint *buffers)) \
+    X(void,   glDeleteShader,             (GLuint shader)) \
+    X(void,   glDeleteVertexArrays,       (GLsizei n, const GLuint *arrays)) \
+    X(void,   glDepthMask,                (GLboolean flag)) \
+    X(void,   glDisable,                  (GLenum cap)) \
+    X(void,   glDrawArrays,               (GLenum mode, GLint first, GLsizei count)) \
+    X(void,   glDrawBuffer,               (GLenum buf)) \
+    X(void,   glEnable,                   (GLenum cap)) \
+    X(void,   glEnableVertexAttribArray,  (GLuint index)) \
+    X(void,   glFramebufferRenderbuffer,  (GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer)) \
+    X(void,   glFramebufferTexture2D,     (GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level)) \
+    X(void,   glGenBuffers,               (GLsizei n, GLuint *buffers)) \
+    X(void,   glGenFramebuffers,          (GLsizei n, GLuint *framebuffers)) \
+    X(void,   glGenRenderbuffers,         (GLsizei n, GLuint *renderbuffers)) \
+    X(void,   glGenTextures,              (GLsizei n, GLuint *textures)) \
+    X(void,   glGenVertexArrays,          (GLsizei n, GLuint *arrays)) \
+    X(GLenum, glGetError,                 (void)) \
+    X(void,   glGetProgramInfoLog,        (GLuint program, GLsizei bufSize, GLsizei *length, GLchar *infoLog)) \
+    X(void,   glGetProgramiv,             (GLuint program, GLenum pname, GLint *params)) \
+    X(void,   glGetShaderInfoLog,         (GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog)) \
+    X(void,   glGetShaderiv,              (GLuint shader, GLenum pname, GLint *params)) \
+    X(GLint,  glGetUniformLocation,       (GLuint program, const GLchar *name)) \
+    X(void,   glLinkProgram,              (GLuint program)) \
+    X(void,   glPolygonOffset,            (GLfloat factor, GLfloat units)) \
+    X(void,   glReadBuffer,               (GLenum src)) \
+    X(void,   glReadPixels,               (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels)) \
+    X(void,   glRenderbufferStorage,      (GLenum target, GLenum internalformat, GLsizei width, GLsizei height)) \
+    X(void,   glShaderSource,             (GLuint shader, GLsizei count, const GLchar *const*string, const GLint *length)) \
+    X(void,   glTexImage2D,               (GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels)) \
+    X(void,   glTexParameterfv,           (GLenum target, GLenum pname, const GLfloat *params)) \
+    X(void,   glTexParameteri,            (GLenum target, GLenum pname, GLint param)) \
+    X(void,   glUniform1i,                (GLint location, GLint v0)) \
+    X(void,   glUniform3f,                (GLint location, GLfloat v0, GLfloat v1, GLfloat v2)) \
+    X(void,   glUniform4f,                (GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3)) \
+    X(void,   glUniformMatrix3fv,         (GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)) \
+    X(void,   glUniformMatrix4fv,         (GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)) \
+    X(void,   glUseProgram,               (GLuint program)) \
+    X(void,   glVertexAttribPointer,      (GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer)) \
+    X(void,   glViewport,                 (GLint x, GLint y, GLsizei width, GLsizei height))
+
+#define DECL_GL_PROC(ret, name, args) static ret (*p_##name) args;
+TACT_GL_PROCS(DECL_GL_PROC)
+#undef DECL_GL_PROC
+
+static void* render_get_gl_proc(const char* name, int use_glfw){
+    void* p = NULL;
+    if(use_glfw) p = (void*)p_glfwGetProcAddress(name);
+    else         p = (void*)p_eglGetProcAddress(name);
+    if(!p) p = dlsym(RTLD_DEFAULT, name);
+    return p;
+}
+
+static int render_load_gl_procs(int use_glfw){
+    static int window_ok = 0;
+    static int egl_ok = 0;
+    if(use_glfw && window_ok) return 1;
+    if(!use_glfw && egl_ok) return 1;
+
+    #define LOAD_GL_PROC(ret, name, args) do { \
+        p_##name = (ret (*) args)render_get_gl_proc(#name, use_glfw); \
+        if(!p_##name){ \
+            fprintf(stderr, "tact render unavailable: cannot resolve OpenGL symbol %s\n", #name); \
+            return 0; \
+        } \
+    } while(0);
+    TACT_GL_PROCS(LOAD_GL_PROC)
+    #undef LOAD_GL_PROC
+
+    if(use_glfw) window_ok = 1;
+    else egl_ok = 1;
+    return 1;
+}
+
+#define glActiveTexture p_glActiveTexture
+#define glAttachShader p_glAttachShader
+#define glBindBuffer p_glBindBuffer
+#define glBindFramebuffer p_glBindFramebuffer
+#define glBindRenderbuffer p_glBindRenderbuffer
+#define glBindTexture p_glBindTexture
+#define glBindVertexArray p_glBindVertexArray
+#define glBlendFunc p_glBlendFunc
+#define glBlitFramebuffer p_glBlitFramebuffer
+#define glBufferData p_glBufferData
+#define glCheckFramebufferStatus p_glCheckFramebufferStatus
+#define glClear p_glClear
+#define glClearColor p_glClearColor
+#define glCompileShader p_glCompileShader
+#define glCreateProgram p_glCreateProgram
+#define glCreateShader p_glCreateShader
+#define glCullFace p_glCullFace
+#define glDeleteBuffers p_glDeleteBuffers
+#define glDeleteShader p_glDeleteShader
+#define glDeleteVertexArrays p_glDeleteVertexArrays
+#define glDepthMask p_glDepthMask
+#define glDisable p_glDisable
+#define glDrawArrays p_glDrawArrays
+#define glDrawBuffer p_glDrawBuffer
+#define glEnable p_glEnable
+#define glEnableVertexAttribArray p_glEnableVertexAttribArray
+#define glFramebufferRenderbuffer p_glFramebufferRenderbuffer
+#define glFramebufferTexture2D p_glFramebufferTexture2D
+#define glGenBuffers p_glGenBuffers
+#define glGenFramebuffers p_glGenFramebuffers
+#define glGenRenderbuffers p_glGenRenderbuffers
+#define glGenTextures p_glGenTextures
+#define glGenVertexArrays p_glGenVertexArrays
+#define glGetError p_glGetError
+#define glGetProgramInfoLog p_glGetProgramInfoLog
+#define glGetProgramiv p_glGetProgramiv
+#define glGetShaderInfoLog p_glGetShaderInfoLog
+#define glGetShaderiv p_glGetShaderiv
+#define glGetUniformLocation p_glGetUniformLocation
+#define glLinkProgram p_glLinkProgram
+#define glPolygonOffset p_glPolygonOffset
+#define glReadBuffer p_glReadBuffer
+#define glReadPixels p_glReadPixels
+#define glRenderbufferStorage p_glRenderbufferStorage
+#define glShaderSource p_glShaderSource
+#define glTexImage2D p_glTexImage2D
+#define glTexParameterfv p_glTexParameterfv
+#define glTexParameteri p_glTexParameteri
+#define glUniform1i p_glUniform1i
+#define glUniform3f p_glUniform3f
+#define glUniform4f p_glUniform4f
+#define glUniformMatrix3fv p_glUniformMatrix3fv
+#define glUniformMatrix4fv p_glUniformMatrix4fv
+#define glUseProgram p_glUseProgram
+#define glVertexAttribPointer p_glVertexAttribPointer
+#define glViewport p_glViewport
+
+#define glfwInit p_glfwInit
+#define glfwTerminate p_glfwTerminate
+#define glfwWindowHint p_glfwWindowHint
+#define glfwCreateWindow p_glfwCreateWindow
+#define glfwMakeContextCurrent p_glfwMakeContextCurrent
+#define glfwGetProcAddress p_glfwGetProcAddress
+#define glfwSwapInterval p_glfwSwapInterval
+#define glfwSetMouseButtonCallback p_glfwSetMouseButtonCallback
+#define glfwSetCursorPosCallback p_glfwSetCursorPosCallback
+#define glfwSetScrollCallback p_glfwSetScrollCallback
+#define glfwSetFramebufferSizeCallback p_glfwSetFramebufferSizeCallback
+#define glfwSetKeyCallback p_glfwSetKeyCallback
+#define glfwGetCursorPos p_glfwGetCursorPos
+#define glfwGetWindowAttrib p_glfwGetWindowAttrib
+#define glfwGetFramebufferSize p_glfwGetFramebufferSize
+#define glfwSetWindowTitle p_glfwSetWindowTitle
+#define glfwSwapBuffers p_glfwSwapBuffers
+#define glfwPollEvents p_glfwPollEvents
+
+#define eglGetDisplay p_eglGetDisplay
+#define eglInitialize p_eglInitialize
+#define eglGetProcAddress p_eglGetProcAddress
+#define eglChooseConfig p_eglChooseConfig
+#define eglBindAPI p_eglBindAPI
+#define eglCreateContext p_eglCreateContext
+#define eglCreatePbufferSurface p_eglCreatePbufferSurface
+#define eglMakeCurrent p_eglMakeCurrent
+#define eglDestroySurface p_eglDestroySurface
+
+#define tjInitCompress p_tjInitCompress
+#define tjBufSize p_tjBufSize
+#define tjAlloc p_tjAlloc
+#define tjFree p_tjFree
+#define tjCompress2 p_tjCompress2
+
+#define ZSTD_createCCtx p_ZSTD_createCCtx
+#define ZSTD_compressBound p_ZSTD_compressBound
+#define ZSTD_compressCCtx p_ZSTD_compressCCtx
+#define ZSTD_isError p_ZSTD_isError
+#define ZSTD_getErrorName p_ZSTD_getErrorName
+
+static EGLDisplay try_init_egl_display(EGLDisplay d, const char* label){
+    if(d == EGL_NO_DISPLAY) return EGL_NO_DISPLAY;
+    if(eglInitialize(d, NULL, NULL)){
+        fprintf(stderr, "egl_render: EGL display = %s\n", label);
+        return d;
+    }
+    return EGL_NO_DISPLAY;
+}
+
+static EGLDisplay choose_egl_display(void){
+    PFNEGLGETPLATFORMDISPLAYEXTPROC gpd =
+        (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+    PFNEGLQUERYDEVICESEXTPROC qd =
+        (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+    const char* (*qds)(EGLDeviceEXT, EGLint) =
+        (const char*(*)(EGLDeviceEXT, EGLint))eglGetProcAddress("eglQueryDeviceStringEXT");
+
+    // Explicit iGPU/Mesa path retained from the previous code: force Mesa's EGL
+    // ICD before the first successful display init, then choose the first
+    // hardware device with a DRM render node.
+    if(getenv("TACT_RENDER_IGPU") && qd && gpd){
+        setenv("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/50_mesa.json", 1);
+        EGLDeviceEXT devs[8]; EGLint n_dev = 0;
+        if(qd(8, devs, &n_dev)){
+            for(int i = 0; i < n_dev; i++){
+                const char* node = qds ? qds(devs[i], EGL_DRM_RENDER_NODE_FILE_EXT) : NULL;
+                if(!node) continue;
+                EGLDisplay d = try_init_egl_display(gpd(EGL_PLATFORM_DEVICE_EXT, devs[i], NULL), "device/iGPU");
+                if(d != EGL_NO_DISPLAY){
+                    fprintf(stderr, "egl_render: TACT_RENDER_IGPU -> device %d/%d node=%s\n", i, n_dev, node);
+                    return d;
+                }
+            }
+        }
+        fprintf(stderr, "egl_render: TACT_RENDER_IGPU set but no mesa HW device; using fallback display search\n");
+        unsetenv("__EGL_VENDOR_LIBRARY_FILENAMES");
+    }
+
+    // Best match for headless machines without DISPLAY: Mesa surfaceless EGL.
+    if(gpd){
+#ifdef EGL_PLATFORM_SURFACELESS_MESA
+        EGLDisplay d = try_init_egl_display(gpd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL), "surfaceless");
+        if(d != EGL_NO_DISPLAY) return d;
+#endif
+    }
+
+    // Generic device-platform fallback. This may select software llvmpipe on
+    // Mesa if no hardware node is available; still useful for correctness tests.
+    if(qd && gpd){
+        EGLDeviceEXT devs[8]; EGLint n_dev = 0;
+        if(qd(8, devs, &n_dev)){
+            for(int i = 0; i < n_dev; i++){
+                EGLDisplay d = try_init_egl_display(gpd(EGL_PLATFORM_DEVICE_EXT, devs[i], NULL), "device");
+                if(d != EGL_NO_DISPLAY) return d;
+            }
+        }
+    }
+
+    // Last: legacy default display, usually requires DISPLAY or vendor-specific
+    // default-device support.
+    return try_init_egl_display(eglGetDisplay(EGL_DEFAULT_DISPLAY), "default");
+}
 
 //---- Stage R.1: in-window mp4 recording (toggled by Shift+R key in win_render) ----
 static int rec_request = 0;            //toggled by key_cb; win_render acts on transitions
@@ -396,16 +798,20 @@ static const char* SHADOW_FS =
 static void check_shader(GLuint s, const char* name){
     GLint ok=0; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if(!ok){
-        char log[4096]; glGetShaderInfoLog(s, sizeof(log), NULL, log);
-        fprintf(stderr,"[%s] compile error:\n%s\n", name, log);
+        char log[4096] = {0};
+        GLsizei n = 0;
+        glGetShaderInfoLog(s, sizeof(log)-1, &n, log);
+        fprintf(stderr,"[%s] compile error (%d bytes):\n%s\n", name, (int)n, log);
     }
 }
 
 static void check_program(GLuint p){
     GLint ok=0; glGetProgramiv(p, GL_LINK_STATUS, &ok);
     if(!ok){
-        char log[4096]; glGetProgramInfoLog(p, sizeof(log), NULL, log);
-        fprintf(stderr,"[program] link error:\n%s\n", log);
+        char log[4096] = {0};
+        GLsizei n = 0;
+        glGetProgramInfoLog(p, sizeof(log)-1, &n, log);
+        fprintf(stderr,"[program] link error (%d bytes):\n%s\n", (int)n, log);
     }
 }
 
@@ -1109,6 +1515,8 @@ int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
     int win_width = 1200;
     int win_height = 800;  //initial window size; matches mjenv.cpp default
 
+    if(!render_load_window_deps()) return -2;
+
     if(cnt == 0) {
 	if(!glfwInit()){ fprintf(stderr,"GLFW init failed\n"); exit(0); }
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -1122,12 +1530,7 @@ int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	glfwMakeContextCurrent(window);
 	glfwSwapInterval(1);   //명시적 vsync. 안 해도 NVIDIA 드라이버 기본값(SyncToVBlank=1)으로 vsync 걸리지만, mesa/iGPU 시스템 이식성을 위해 명시.
 	//glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-
-	glewExperimental = GL_TRUE;
-	//GLenum ge = glewInit();
-	//if(ge != GLEW_OK){ fprintf(stderr,"GLEW init error: %s\n", glewGetErrorString(ge)); exit(0); }
-	glewInit();
-	glGetError();
+	if(!render_load_gl_procs(1)) return -2;
 
 	glfwSetMouseButtonCallback(window, mouse_button_cb);
 	glfwSetCursorPosCallback(window, cursor_pos_cb);
@@ -1406,6 +1809,8 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
     static char* raw_buf  = NULL;
     static ZSTD_CCtx* cctx;
 
+    if(!render_load_egl_deps()) return -2;
+
     // Output size requested per call (from the YAML camera `resolution`); <=0
     // falls back to the legacy 640x480 so callers that don't pass a size are
     // unchanged.
@@ -1431,44 +1836,13 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 
     
     if(cnt == 0) {
-	// 1. EGL 초기화
-	//---- EGL display 선택. 기본(옵션 A): glvnd ICD 우선순위 -> 보통 dGPU(NVIDIA).
-	//  카메라 publish / 헤드리스 RL 워크로드의 병목은 glReadPixels(GPU->CPU). dGPU는 PCIe를
-	//  건너며 드라이버가 호출 스레드를 busy-spin 시켜 물리 루프의 CPU를 훔침; iGPU는 통합메모리
-	//  복사라 훨씬 쌈 (절대 GPU 성능이 낮아도 이 워크로드는 iGPU가 더 빠름).
-	//  env TACT_RENDER_IGPU=1 이면 mesa가 구동 가능한 첫 하드웨어 디바이스(iGPU)를 강제 선택;
-	//  못 찾으면 옵션 A로 폴백. 미설정 시 동작은 종전과 100% 동일.
-	//  주의: render=True 인터랙티브 모드에선 vsync 캡(60Hz×redraw)이 wall time을 고정하므로
-	//  이득이 안 보임 — 카메라 publish가 vsync 예산 초과하거나 render=False 헤드리스일 때만 의미.
-	egl_dpy = EGL_NO_DISPLAY;
-	if (getenv("TACT_RENDER_IGPU")) {
-	    // NVIDIA ICD는 자기 GPU만 enumerate -> iGPU(AMD/Intel)를 보려면 mesa ICD 강제. 첫 EGL 호출 전에 set.
-	    setenv("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/50_mesa.json", 1);
-	    PFNEGLQUERYDEVICESEXTPROC qd = (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
-	    PFNEGLGETPLATFORMDISPLAYEXTPROC gpd = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
-	    const char* (*qds)(EGLDeviceEXT, EGLint) = (const char*(*)(EGLDeviceEXT, EGLint))eglGetProcAddress("eglQueryDeviceStringEXT");
-	    EGLDeviceEXT devs[8]; EGLint n_dev = 0;
-	    if (qd && gpd && qd(8, devs, &n_dev)) {
-	        for (int i = 0; i < n_dev; i++) {
-	            // skip the software (llvmpipe) device: it has no DRM render node.
-	            const char* node = qds ? qds(devs[i], EGL_DRM_RENDER_NODE_FILE_EXT) : NULL;
-	            if (!node) continue;
-	            EGLDisplay d = gpd(EGL_PLATFORM_DEVICE_EXT, devs[i], NULL);
-	            if (d != EGL_NO_DISPLAY && eglInitialize(d, NULL, NULL)) {   // first HW device mesa can drive
-	                egl_dpy = d;
-	                fprintf(stderr, "egl_render: TACT_RENDER_IGPU -> device %d/%d node=%s\n", i, n_dev, node);
-	                break;
-	            }
-	        }
-	    }
-	    if (egl_dpy == EGL_NO_DISPLAY) {
-	        fprintf(stderr, "egl_render: TACT_RENDER_IGPU set but no mesa HW device; using default ICD\n");
-	        unsetenv("__EGL_VENDOR_LIBRARY_FILENAMES");
-	    }
-	}
-	if (egl_dpy == EGL_NO_DISPLAY) egl_dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);   // 옵션 A (기본/폴백)
-
-	eglInitialize(egl_dpy, NULL, NULL);
+	// 1. EGL 초기화. choose_egl_display() tries iGPU/Mesa override,
+	// surfaceless EGL, generic device platform, then the legacy default display.
+	egl_dpy = choose_egl_display();
+        if (egl_dpy == EGL_NO_DISPLAY) {
+            fprintf(stderr, "egl_render: cannot initialize any EGL display\n");
+            return -2;
+        }
 
 	//Set configuration
 	EGLint config_attribs[] = {
@@ -1483,10 +1857,16 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	    EGL_NONE
 	};
 	EGLint num_configs;
-	eglChooseConfig(egl_dpy, config_attribs, &egl_cfg, 1, &num_configs);
+	if(!eglChooseConfig(egl_dpy, config_attribs, &egl_cfg, 1, &num_configs) || num_configs <= 0){
+            fprintf(stderr, "egl_render: eglChooseConfig failed\n");
+            return -2;
+        }
 
 	//OpenGL API bind
-	eglBindAPI(EGL_OPENGL_API);
+	if(!eglBindAPI(EGL_OPENGL_API)){
+            fprintf(stderr, "egl_render: eglBindAPI(EGL_OPENGL_API) failed\n");
+            return -2;
+        }
 
 	//Generate context (the pbuffer surface + makeCurrent live in the
 	// resolution-capacity block below, which also handles later grows)
@@ -1496,6 +1876,10 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	    EGL_NONE
 	};
 	egl_ctx = eglCreateContext(egl_dpy, egl_cfg, EGL_NO_CONTEXT, context_attribs);
+        if (egl_ctx == EGL_NO_CONTEXT) {
+            fprintf(stderr, "egl_render: eglCreateContext failed\n");
+            return -2;
+        }
     }
 
     // (Re)create the pbuffer surface whenever the requested resolution grows the
@@ -1511,16 +1895,18 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	    EGL_NONE
 	};
 	egl_surf = eglCreatePbufferSurface(egl_dpy, egl_cfg, pbuffer_attribs);
-	eglMakeCurrent(egl_dpy, egl_surf, egl_surf, egl_ctx);
+        if (egl_surf == EGL_NO_SURFACE) {
+            fprintf(stderr, "egl_render: eglCreatePbufferSurface failed\n");
+            return -2;
+        }
+	if(!eglMakeCurrent(egl_dpy, egl_surf, egl_surf, egl_ctx)){
+            fprintf(stderr, "egl_render: eglMakeCurrent failed\n");
+            return -2;
+        }
+	if(!render_load_gl_procs(0)) return -2;
     }
 
     if(cnt == 0) {
-	// GLEW 초기화 (컨텍스트/서피스 생성 후 수행)
-	glewExperimental = GL_TRUE;
-	glewInit();
-	//if(ge != GLEW_OK){ fprintf(stderr,"GLEW init error: %s\n", glewGetErrorString(ge));} // exit(0); }
-	glGetError(); // glear GLEW internal error
-	
 	glEnable(GL_DEPTH_TEST);
 	glEnable(GL_MULTISAMPLE);
 

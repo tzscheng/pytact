@@ -166,7 +166,7 @@ def load_hfield(path):
     Format = MuJoCo's custom hfield binary (int32 nrow, int32 ncol, float32
     data[nrow*ncol]) so ONE data file under tact/envs/ serves both scene
     definitions: the tact YAML (`type: hfield, file: ...`) reads raw meters
-    via this function; the mjcf scene's `<hfield file=...>` reads the same
+    via this function; the mjenv scene's `<hfield file=...>` reads the same
     file but MuJoCo normalizes to [0,1] — its size[2]/geom-z must carry the
     range/min constants (printed by the terrain generator). Used by the Model
     loader and by external consumers needing the ground-truth grid
@@ -2058,6 +2058,8 @@ class Env:
         _campose = (ctypes.c_float*len(campose))(*campose)
         self._push_light()
         ret = clib.win_render(len(_type), _type, _shape, _objcolor,_objpose, _campose)
+        if ret == -2:
+            raise RuntimeError("tact window rendering unavailable: missing GL/GLFW runtime libraries")
         return ret
     
     # NOTE: the per-type getters (get_rgb_image/get_depth_image/get_lidar_image/
@@ -2118,6 +2120,8 @@ class Env:
             imglen = clib.egl_render(len(_type), _type, _shape, _objcolor, _objpose,
                                      _campose, self._imgbuf, opt, w, h,
                                      ctypes.c_float(c['vfov']))
+            if imglen == -2:
+                raise RuntimeError("tact offscreen rendering unavailable: missing EGL/GL/encoder runtime libraries")
             if imglen > 0: yield c['name'], ctypes.string_at(self._imgbuf, imglen)
 
     # NOTE: the lidar wire is RAW float32 since 2026-06-06 (Python-side zstd
@@ -2181,7 +2185,7 @@ class Env:
 
 
 class CEnv:
-    """Thin adapter that gives a ctypes.CDLL (bin/mjenv.so / chenv.so / eio.so)
+    """Thin adapter that gives a ctypes.CDLL (mjenv/mjenv.so / chenv.so / eio.so)
     the core backend contract (step/reset/finish/backend/has_pd/dt — see
     docs/backend-interface.md) of tact.Env, so callers (the start script, RL
     envs) can stay backend-agnostic. Capabilities beyond the core are optional
@@ -2191,7 +2195,7 @@ class CEnv:
     via __getattr__ (caller owns the signature — prefer ledger-declared methods).
 
     Usage: load and init the cdll yourself, then wrap:
-        cdll = ctypes.CDLL(f'{tact.pkg_dir}/bin/mjenv.so')
+        cdll = ctypes.CDLL('/path/to/fg/tact/mjenv/mjenv.so')
         cdll.init(xmlpath.encode(), redraw_or_0)
         env = tact.CEnv(cdll, n_y=28, n_u=12, backend='mujoco', has_pd=True)
 

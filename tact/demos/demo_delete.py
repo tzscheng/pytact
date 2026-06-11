@@ -10,13 +10,13 @@ the deleted body's DoF slots get spliced out of q/qd.
 
 Run from anywhere — the mesh asset is referenced by absolute path
 (`<pkg>/demos/meshes/<name>.obj`), so no particular CWD is required:
-    uv run python /home/ubuntu/uv/fg/tact/demos/demo_delete.py
+    uv run python /home/ubuntu/fg/tact/tact/demos/demo_delete.py
 """
 import os, sys, tempfile
 
-# Make `tact` importable without installing — script lives at fg/tact/demos/
+# Make `tact` importable without installing — script lives at fg/tact/tact/demos/
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))   # → .../fg
+sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))   # → .../fg/tact
 os.chdir(HERE)
 import numpy as np
 import tact

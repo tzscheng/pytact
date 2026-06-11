@@ -2,7 +2,7 @@
 """Generate envs/hf1.bin — a 10x10 m walkable height field for legged robots.
 
 One data file, two scene definitions: envs/hf1.yml (tact, same dir) and
-mjcf/hf1.xml (mujoco, ../envs/hf1.bin) both reference this output.
+mjenv/hf1.xml (mujoco, ../tact/envs/hf1.bin) both reference this output.
 Heights are in METERS (the YAML uses size: [5, 5, 1], i.e. sz=1, so no extra scaling).
 Grid is 101x101 (0.1 m spacing). Gentle rolling hills (typical slope <12 deg, peaks
 ~15 deg) with a flat ~1 m-radius spawn disc at the center so a robot can stand up before
@@ -33,18 +33,18 @@ z = np.ascontiguousarray(z, dtype=np.float32)
 # YAML loader and MuJoCo's <hfield file=...>): int32 nrow, int32 ncol,
 # float32 data[nrow*ncol], row-major data[i*ncol+j], row i along +Y, col j
 # along +X. Values are raw meters; tact uses them as-is (size sz=1), MuJoCo
-# normalizes to [0,1] — the mjcf scene must carry size[2]=range and a geom z
-# offset of min (printed below; update tact/mjcf/hf1.xml if regenerated).
+# normalizes to [0,1] — the mjenv scene must carry size[2]=range and a geom z
+# offset of min (printed below; update tact/mjenv/hf1.xml if regenerated).
 out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'hf1.bin')
 with open(out, 'wb') as f:
     np.array(z.shape, dtype=np.int32).tofile(f)   # nrow, ncol
     z.tofile(f)
 
-# Report walkability stats + the constants the mjcf scene file needs.
+# Report walkability stats + the constants the mjenv scene file needs.
 dx = 2*HALF/(N-1)
 gy, gx = np.gradient(z.astype(np.float64), dx)
 slope_deg = np.degrees(np.arctan(np.hypot(gx, gy)))
 print(f"wrote {out}  grid={z.shape}  spacing={dx:.3f} m")
 print(f"height range = [{z.min():+.6f}, {z.max():+.6f}] m  (range {z.max()-z.min():.6f})")
-print(f"mjcf: <hfield size=\"{HALF} {HALF} {z.max()-z.min():.6f} ...\"/>, geom pos z = {z.min():+.6f}")
+print(f"mjenv: <hfield size=\"{HALF} {HALF} {z.max()-z.min():.6f} ...\"/>, geom pos z = {z.min():+.6f}")
 print(f"slope: mean={slope_deg.mean():.1f} deg, max={slope_deg.max():.1f} deg")

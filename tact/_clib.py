@@ -1,18 +1,21 @@
-import sys, os, ctypes, ctypes.util
+import os, ctypes, ctypes.util
 
 # libtact.so resolution order:
-#   1. <package_dir>/bin/libtact.so — co-located with this _clib.py (follows symlinks).
-#      Per-project layouts symlink `<proj>/tact` → `fg/tact/`, so this finds
-#      `fg/tact/bin/libtact.so` automatically. Primary path in the monorepo.
-#   2. ./bin/libtact.so      — development build in CWD (e.g. when running from tact/)
+#   1. <package_dir>/bin/libtact.so — co-located with this _clib.py in the
+#      inner package (`fg/tact/tact`). This is the normal editable-install and
+#      wheel-install path.
+#   2. ./bin/libtact.so      — legacy/ad-hoc development build in CWD.
 #   3. ctypes.util.find_library('tact')  — OS dynamic loader (ldconfig / LD_LIBRARY_PATH /
 #      /usr/lib, /usr/local/lib on Linux; DYLD_LIBRARY_PATH on macOS; PATH on Windows).
 #      Use this when tact is installed system-wide outside the monorepo layout.
 _pkg = os.path.dirname(os.path.abspath(__file__))
-if   os.path.exists(f'{_pkg}/bin/libtact.so'): clib = ctypes.CDLL(f'{_pkg}/bin/libtact.so')
-elif os.path.exists('./bin/libtact.so'):       clib = ctypes.CDLL('./bin/libtact.so')
-elif (_p := ctypes.util.find_library('tact')) is not None: clib = ctypes.CDLL(_p)
-else: print('cannot find libtact.so (package / CWD / system loader)'); sys.exit(0)
+_mode = getattr(os, 'RTLD_LOCAL', 0)
+if hasattr(os, 'RTLD_LAZY'):
+    _mode |= os.RTLD_LAZY
+if   os.path.exists(f'{_pkg}/bin/libtact.so'): clib = ctypes.CDLL(f'{_pkg}/bin/libtact.so', mode=_mode)
+elif os.path.exists('./bin/libtact.so'):       clib = ctypes.CDLL('./bin/libtact.so', mode=_mode)
+elif (_p := ctypes.util.find_library('tact')) is not None: clib = ctypes.CDLL(_p, mode=_mode)
+else: raise ImportError('cannot find libtact.so (package / CWD / system loader)')
 
 #ctypes signatures for the dynamics functions ported from Python (Stage A).
 #all pointers are non-owning — caller (Python) keeps the underlying numpy arrays alive.

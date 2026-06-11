@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=70.1", "wheel", "numpy>=2.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tact"
+version = "0.1.0"
+description = "Robotics simulation and control toolkit"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+control = [
+    "scipy>=1.11",
+    "osqp>=1.0",
+]
+ipc = [
+    "pyzmq>=25",
+]
+
+[tool.setuptools]
+packages = ["tact", "tact.bin", "tact.demos", "tact.demos.meshes", "tact.envs"]
+
+[tool.setuptools.package-data]
+tact = [
+    "bin/libtact.so",
+    "envs/*.yml",
+    "envs/*.bin",
+    "envs/*.py",
+    "demos/*.yml",
+    "demos/*.py",
+    "demos/meshes/*.obj",
+]
