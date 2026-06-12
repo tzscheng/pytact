@@ -30,10 +30,11 @@ mkdir -p tact/bin mjenv
 # native/ray.c    : ray-primitive intersections (triangle/mesh/hfield/box/sphere/cyl/capsule)
 # native/lcp.c    : contact_lcp       — Stewart-Trinkle LCP with PGS, 4 cones
 # native/tact.c   : tact_t handle + tact_step_lcp + queries
+# native/tact_model.c : tactbin loader + public tact_model_t/tact_state_t wrapper
 # native/render.c : GLFW window + EGL offscreen renderer; GL/GLFW/jpeg/zstd are
 #                   loaded lazily with dlopen so headless physics can import on
 #                   systems without render runtime libraries.
-TACT_SRC="native/rbd.c native/shape.c native/mpr.c native/narrow.c native/box_box.c native/ray.c native/lcp.c native/tact.c native/render.c"
+TACT_SRC="native/rbd.c native/shape.c native/mpr.c native/narrow.c native/box_box.c native/ray.c native/lcp.c native/tact.c native/tact_model.c native/render.c"
 TACT_LIBS="-lm -ldl"
 
 gcc $CFLAGS -shared -fPIC -o tact/bin/libtact.so $TACT_SRC $TACT_LIBS

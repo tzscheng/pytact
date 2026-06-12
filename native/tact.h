@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <math.h>
 
 /* =============================================================================
@@ -264,6 +265,20 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
  * Build / runtime split + lifecycle invariants: see docs/design-c-state.md §3.
  * ============================================================================= */
 typedef struct tact_t tact_t;
+typedef struct tact_model_t tact_model_t;
+typedef struct tact_state_t tact_state_t;
+
+typedef struct {
+    int nb;
+    int nq;
+    int n_shape;
+    int n_pair;
+    int n_frame;
+    int n_feed;
+    int y_size;
+    int lam_size;
+    double dt;
+} tact_model_info_t;
 
 tact_t *tact_create(int nb, int *parent, int *jtype,
                     double *X, double *I6, double *Ti, double *ff, double *sk,
@@ -360,5 +375,15 @@ double *tact_get_v       (tact_t *h);
 double *tact_get_q_next  (tact_t *h);
 double *tact_get_qd_next (tact_t *h);
 double *tact_get_y       (tact_t *h);
+
+int     tact_load_model     (const char *path, tact_model_t **out);
+void    tact_destroy_model  (tact_model_t *m);
+int     tact_model_info     (const tact_model_t *m, tact_model_info_t *out);
+int     tact_create_state   (const tact_model_t *m, tact_state_t **out);
+void    tact_destroy_state  (tact_state_t *s);
+double *tact_q              (tact_state_t *s);
+double *tact_qd             (tact_state_t *s);
+double *tact_y              (tact_state_t *s);
+int     tact_step           (const tact_model_t *m, tact_state_t *s, const double *tau);
 
 #endif /* TACT_H */
