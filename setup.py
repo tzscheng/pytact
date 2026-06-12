@@ -22,7 +22,6 @@ TACT_SRC = [
     "ray.c",
     "lcp.c",
     "tact.c",
-    "tact_model.c",
     "render.c",
 ]
 

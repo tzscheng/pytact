@@ -23,14 +23,12 @@ TACT_SRC := \
 	native/ray.c \
 	native/lcp.c \
 	native/tact.c \
-	native/tact_model.c \
 	native/render.c
 
 TACT_HEADERS := native/tact.h native/shape.h
 TACT_LIB := $(LIB_DIR)/libtact.so
 PKG_TACT_LIB := $(PKG_LIB_DIR)/libtact.so
 MANUAL_STEP := $(EXAMPLE_DIR)/manual_step
-LOAD_TACTBIN := $(EXAMPLE_DIR)/load_tactbin
 
 .PHONY: all clean install uninstall package-lib examples
 
@@ -44,13 +42,10 @@ package-lib: $(PKG_TACT_LIB)
 $(PKG_TACT_LIB): $(TACT_LIB) | $(PKG_LIB_DIR)
 	cp $< $@
 
-examples: $(MANUAL_STEP) $(LOAD_TACTBIN)
+examples: $(MANUAL_STEP)
 
 $(MANUAL_STEP): examples/c/manual_step.c $(TACT_LIB) native/tact.h | $(EXAMPLE_DIR)
 	$(CC) -W -Wall -O2 -Inative -o $@ examples/c/manual_step.c -L$(LIB_DIR) -ltact -Wl,-rpath,'$$ORIGIN/../lib'
-
-$(LOAD_TACTBIN): examples/c/load_tactbin.c $(TACT_LIB) native/tact.h | $(EXAMPLE_DIR)
-	$(CC) -W -Wall -O2 -Inative -o $@ examples/c/load_tactbin.c -L$(LIB_DIR) -ltact -Wl,-rpath,'$$ORIGIN/../lib'
 
 $(LIB_DIR) $(PKG_LIB_DIR) $(EXAMPLE_DIR):
 	mkdir -p $@
