@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <math.h>
 
 /* =============================================================================
@@ -264,6 +265,23 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
  * Build / runtime split + lifecycle invariants: see docs/design-c-state.md §3.
  * ============================================================================= */
 typedef struct tact_t tact_t;
+typedef struct tact_model_t tact_model_t;
+typedef struct tact_state_t tact_state_t;
+
+/* Immutable summary for a loaded tactbin model. Sizes are counts of doubles or
+ * records, not bytes. `lam_size` is the unified warm-start vector length:
+ *   6*MAX_PTS_PER_PAIR*max(n_pair,1) + 2*nq. */
+typedef struct {
+    int nb;
+    int nq;
+    int n_shape;
+    int n_pair;
+    int n_frame;
+    int n_feed;
+    int y_size;
+    int lam_size;
+    double dt;
+} tact_model_info_t;
 
 tact_t *tact_create(int nb, int *parent, int *jtype,
                     double *X, double *I6, double *Ti, double *ff, double *sk,
@@ -275,6 +293,14 @@ tact_t *tact_create(int nb, int *parent, int *jtype,
                     double erp, double slop, double cfm_scale,
                     double v_rest_thresh, int iters, double tol);
 void    tact_destroy(tact_t *h);
+
+int     tact_get_nb       (const tact_t *h);
+int     tact_get_nq       (const tact_t *h);
+int     tact_get_n_shape  (const tact_t *h);
+int     tact_get_n_pair   (const tact_t *h);
+int     tact_get_y_size   (const tact_t *h);
+int     tact_get_lam_size (const tact_t *h);
+double  tact_get_dt       (const tact_t *h);
 
 void    tact_set_feedback(tact_t *h,
                           int n_feeds, int *kinds, int *offsets, int *idx,
@@ -352,5 +378,39 @@ double *tact_get_v       (tact_t *h);
 double *tact_get_q_next  (tact_t *h);
 double *tact_get_qd_next (tact_t *h);
 double *tact_get_y       (tact_t *h);
+
+/* tactbin standalone C API.
+ *
+ * Ownership:
+ *   - tact_load_model(path, &m) allocates an immutable model; release it with
+ *     tact_destroy_model(m).
+ *   - tact_create_state(m, &s) allocates mutable q/qd/warm-start/output state
+ *     bound to that exact model; release it before destroying m.
+ *   - tact_model_t owns all compiled arrays loaded from the file. Pointers
+ *     returned by accessors are owned by tact_state_t and become invalid after
+ *     tact_destroy_state(s), or after the next tact_step* if the caller kept
+ *     stale values that should be re-read.
+ *
+ * Step inputs:
+ *   - tau, q_ref, qd_ref, kp, kd are nq-length arrays when non-NULL.
+ *   - tau == NULL means zero torque.
+ *   - tact_step_pd activates P terms only when q_ref && kp are non-NULL, and D
+ *     terms only when kd && (q_ref || qd_ref) are non-NULL, matching Model.step.
+ *   - implicit PD is implemented for 1-DoF rev/lin joints. Free-joint PD inputs
+ *     are currently not a standalone contract; keep their gains zero/NULL.
+ */
+int     tact_load_model     (const char *path, tact_model_t **out);
+void    tact_destroy_model  (tact_model_t *m);
+int     tact_model_info     (const tact_model_t *m, tact_model_info_t *out);
+int     tact_create_state   (const tact_model_t *m, tact_state_t **out);
+void    tact_destroy_state  (tact_state_t *s);
+double *tact_q              (tact_state_t *s);
+double *tact_qd             (tact_state_t *s);
+double *tact_y              (tact_state_t *s);
+int     tact_step           (const tact_model_t *m, tact_state_t *s, const double *tau);
+int     tact_step_pd        (const tact_model_t *m, tact_state_t *s,
+                             const double *tau,
+                             const double *q_ref, const double *qd_ref,
+                             const double *kp, const double *kd);
 
 #endif /* TACT_H */

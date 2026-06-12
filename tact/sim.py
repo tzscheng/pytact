@@ -278,6 +278,7 @@ class Model:
         # CLAUDE.md's "Dynamic add/delete" section).
         self.mesh_path_to_idx = {}    # abs_path → idx
         self._mesh_max_slots = 64     # matches MAX_MESH in shape.h
+        self.hfield_data = []         # retained hfield slot metadata for tactbin export
         self.hf_next_slot = 0         # next free height-field slot (monotonic; slots not freed)
         self._hf_max_slots = 16       # matches MAX_HFIELD in shape.h
         self.add(modelname, prefix, base, offset, q0, fixed_base, name=name)
@@ -478,6 +479,14 @@ class Model:
                         slot = self.hf_next_slot
                         self.hf_next_slot += 1
                         clib.set_hfield_data(slot, nrow, ncol, sx, sy, heights.ctypes.data_as(_DBL))
+                        self.hfield_data.append({
+                            'slot': slot,
+                            'nrow': nrow,
+                            'ncol': ncol,
+                            'sx': sx,
+                            'sy': sy,
+                            'data': heights.copy(),
+                        })
                         sh['param'] = [float(slot)]
 
             if 'frames' in body:
