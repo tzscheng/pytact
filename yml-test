@@ -2,22 +2,26 @@
 # -*- mode: python -*-
 import sys, os
 sys.path[0] = os.path.dirname(sys.path[0]) if sys.path[0] else os.getcwd()
-import sys, socket, numpy as np, tact
+import socket, numpy as np, tact
 
-#env = tact.Env('demos/obj1', render=True, redraw=4)
-env = tact.Env('demos/obj2', render=True, redraw=4)
+def scene_path(name):
+    if os.path.isabs(name) or os.path.exists(name) or os.path.exists(name + '.yml'):
+        return name
+    for subdir in ('demos', 'envs'):
+        path = os.path.join(tact.pkg_dir, subdir, name)
+        if os.path.exists(path + '.yml'):
+            return path
+    return name
 
-#env = tact.Env('demos/box_wall', render=True, redraw=16)
-#env = tact.Env('demos/min_test', render=True, redraw=16)   # 'solver: minimal' test: sphere on z=0 ground, ball given +x qd0=0.1 m/s
+scene = scene_path(sys.argv[1] if len(sys.argv) > 1 else 'obj2')
+env = tact.Env(scene, render=True, redraw=4)
 
-#env = tact.Env('demos/arm2', render=True)
-#env = tact.Env('demos/arm2', offset=[0, 1, 0, 0, 0, 0], q0=[-90, 0], render=True, sleep=0.01, redraw=1); env.add('demos/arm2', offset=[0.1, 1, 0, 0, 0, 0], q0=[-45, 0])
-
-#env = tact.Env('demos/arm3', render=True, sleep=0.01)
-#env = tact.Env('demos/arm4', render=True, sleep=0.01)
-
-#env = tact.Env('demos/fv', render=True)
-#env = tact.Env('demos/cartpole', q0=[0, 45], render=True)
+# Examples:
+#   ./yml-test obj1
+#   ./yml-test box_wall
+#   ./yml-test min_test
+#   ./yml-test arm2
+#   ./yml-test hf1
 
 
 #pull = zmq.Context().socket(zmq.PULL)
@@ -33,6 +37,7 @@ cnt = 0
 def msgproc(msg):
     global cnt
     w = msg.split()
+    if not w: return
     if w[0] == 'quit': env.finish(); exit(0)
     elif w[0] == 'reset': env.reset(); cnt = 0
 
