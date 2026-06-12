@@ -248,6 +248,20 @@ void tact_destroy(tact_t *h)
     free(h);
 }
 
+int tact_get_nb(const tact_t *h)       { return h ? h->nb : 0; }
+int tact_get_nq(const tact_t *h)       { return h ? h->nq : 0; }
+int tact_get_n_shape(const tact_t *h)  { return h ? h->n_shape : 0; }
+int tact_get_n_pair(const tact_t *h)   { return h ? h->n_pair : 0; }
+int tact_get_y_size(const tact_t *h)   { return h ? h->y_size : 0; }
+double tact_get_dt(const tact_t *h)    { return h ? h->dt : 0.0; }
+
+int tact_get_lam_size(const tact_t *h)
+{
+    if (!h) return 0;
+    int npair_max = h->n_pair > 0 ? h->n_pair : 1;
+    return 6 * MAX_PTS_PER_PAIR * npair_max + 2 * h->nq;
+}
+
 /* Phase 2: pre-marshal feedback descriptors into the handle. Allocates a separate
  * arena (h->fb_arena) so it can be re-set without disturbing the dynamics arena.
  * After this is called, tact_step() will fill h->y_buf at the end of each step. */

@@ -276,6 +276,14 @@ tact_t *tact_create(int nb, int *parent, int *jtype,
                     double v_rest_thresh, int iters, double tol);
 void    tact_destroy(tact_t *h);
 
+int     tact_get_nb       (const tact_t *h);
+int     tact_get_nq       (const tact_t *h);
+int     tact_get_n_shape  (const tact_t *h);
+int     tact_get_n_pair   (const tact_t *h);
+int     tact_get_y_size   (const tact_t *h);
+int     tact_get_lam_size (const tact_t *h);
+double  tact_get_dt       (const tact_t *h);
+
 void    tact_set_feedback(tact_t *h,
                           int n_feeds, int *kinds, int *offsets, int *idx,
                           int n_frames, int *fbody, double *ftran, double *ftran_inv,
