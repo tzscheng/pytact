@@ -8,87 +8,8 @@
  *
  * Public surface declared in tact.h. Struct definition is private to this
  * file — Python only sees an opaque void* handle. */
-#include "tact.h"
+#include "tact_internal.h"
 
-/* ============================================================================
- * tact_t struct — owns dynamics arena (static + dynamic buffers) + a separate
- * feedback arena (resettable via tact_set_feedback).
- * ============================================================================ */
-struct tact_t {
-    /* scalars */
-    int     nb;
-    int     nq;                 /* total q vector length = sum(nq_per_body) */
-    int     nv;                 /* total v vector length = sum(nv_per_body) */
-                                /* Under axis-angle convention nq == nv; quat would
-                                 * make them diverge by one extra slot per free joint. */
-    int     n_shape, n_pair;
-    int     integrator;         /* 1=euler, 2=rk4 — generic integrator selector (vestigial: the lcp path uses its own semi-implicit Euler) */
-    double  dt;
-    double  g[3];
-
-    /* LCP solver knobs (set at create from YAML sim:, constant per sim). erp/slop/
-     * cfm_scale = Baumgarte/deadband/CFM regularization; v_rest_thresh = restitution
-     * velocity gate; iters/tol = PGS budget. Passed straight into contact_lcp(). */
-    double  erp, slop, cfm_scale, v_rest_thresh, tol;
-    int     iters;
-
-    /* static (build-time copies) */
-    int    *parent;             /* nb */
-    int    *jtype;              /* nb */
-    int    *q_base;             /* nb — first q index of body i (cumsum of nq_per_body) */
-    int    *v_base;             /* nb — first v index of body i (cumsum of nv_per_body) */
-    int    *nq_per_body;        /* nb — per-body q-state slot count */
-    int    *nv_per_body;        /* nb — per-body v-state DoF count (currently == nq_per_body) */
-    double *X;                  /* 36*nb */
-    double *I6;                 /* 36*nb */
-    double *Ti;                 /* 16*nb */
-    double *ff;                 /* nq — joint damping coefficient (viscous) */
-    double *sk;                 /* nq — joint spring stiffness */
-    double *floss;              /* nq — joint Coulomb friction bound (frictionloss); 0 = off */
-    double *armature;           /* nq — joint rotor/reflected inertia (added to M diagonal & ABA d); 0 = off */
-    double *jnt_lo;             /* nq — joint lower limit (rev: rad, lin: m); limited iff lo < hi */
-    double *jnt_hi;             /* nq — joint upper limit */
-    int    *ctype;              /* n_shape */
-    int    *cbody;              /* n_shape */
-    double *cshape;             /* 3*n_shape */
-    double *ctran;              /* 16*n_shape */
-    double *cparam;             /* 13*n_shape — [pair_id, k_n, d_n, k_t, d_t, mu, k_spin, d_spin, mu_spin, k_roll, d_roll, mu_roll, restitution] */
-    int    *craycast;           /* n_shape — 1: included in raycast, 0: invisible to ray (still renders + collides) */
-    int    *cpair;              /* 2*n_pair */
-
-    /* dynamic (overwritten each step) */
-    double *T;                  /* 16*nb */
-    double *f_ext;              /* 6*nb */
-    double *f, *a, *v;          /* 6*nb each */
-    double *qdd;                /* nb */
-    double *q_next, *qd_next;   /* nb each */
-    double *tau_p;              /* nb — scratch: tau - ff*qd - sk*q for integrator (explicit damping/spring) */
-    double *workspace;          /* 120*nb (shared by euler_step / rk4_step / tact_gravity_query / tact_inertia_query / tact_bias_query / crb_featherstone) */
-
-    /* LCP path (method=2) scratch. NOTE: the PGS warm-start λ is NOT here — it is
-     * caller-threaded through tact_step_lcp's lam_in/lam_out (the ctx/SolverState
-     * pure-step contract; the internal *_prev fallbacks were removed 2026-06-06 —
-     * the handle holds no solver state across steps). */
-    double *qd_free_buf;        /* nb — predictor velocity (qd + qdd_free * dt) */
-    double *M_buf;              /* nb*nb — joint-space mass matrix (CRB output) */
-    double *lcp_ws;             /* contact_lcp workspace; sized in tact_create */
-
-    void   *arena;              /* root malloc — destroy() frees this + struct */
-
-    /* Phase 2: feedback (filled by tact_set_feedback; separate arena allocated lazily) */
-    int     fb_set;             /* 1 once feedback has been wired up */
-    int     n_feeds;
-    int    *feed_kinds;         /* n_feeds */
-    int    *feed_offsets;       /* n_feeds + 1 — start of each feed's idx range */
-    int    *feed_idx;           /* total count = feed_offsets[n_feeds] (frame indices) */
-    int     n_frames;
-    int    *fbody;              /* n_frames — frame_idx → body_idx, or -1 for root */
-    double *ftran;              /* 16*n_frames */
-    double *ftran_inv;          /* 16*n_frames — pre-computed for case 14 */
-    int     y_size;
-    double *y_buf;              /* y_size */
-    void   *fb_arena;
-};
 
 tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, double *Ti, double *ff, double *sk, double *floss, double *armature, double *jnt_lo, double *jnt_hi, double *g, double dt, int integrator, int n_shape, int n_pair, int *ctype, int *cbody, double *cshape, double *ctran, double *cparam, int *craycast, int *cpair, double erp, double slop, double cfm_scale, double v_rest_thresh, int iters, double tol)
 {
@@ -157,7 +78,10 @@ tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, doub
     h->integrator = integrator; h->dt = dt;
     h->erp = erp; h->slop = slop; h->cfm_scale = cfm_scale;
     h->v_rest_thresh = v_rest_thresh; h->iters = iters; h->tol = tol;
+    h->lam_size = (int)(6 * MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1) + 2 * nq);
     h->g[0] = g[0]; h->g[1] = g[1]; h->g[2] = g[2];
+    h->zero_tau = (double*)calloc((size_t)(nq > 0 ? nq : 1), sizeof(double));
+    h->zero_lam = (double*)calloc((size_t)(h->lam_size > 0 ? h->lam_size : 1), sizeof(double));
 
     char *p = (char*)h->arena;
     #define CARVE_DBL(field, n) do { h->field = (double*)p; p += (size_t)(n)*sizeof(double); } while (0)
@@ -245,21 +169,26 @@ void tact_destroy(tact_t *h)
     if (!h) return;
     free(h->arena);
     if (h->fb_arena) free(h->fb_arena);
+    free(h->q0);
+    free(h->qd0);
+    free(h->zero_tau);
+    free(h->zero_lam);
+    free(h->crgba);
+    free(h->view);
+    free(h->light0);
     free(h);
 }
 
-int tact_get_nb(const tact_t *h)       { return h ? h->nb : 0; }
-int tact_get_nq(const tact_t *h)       { return h ? h->nq : 0; }
-int tact_get_n_shape(const tact_t *h)  { return h ? h->n_shape : 0; }
-int tact_get_n_pair(const tact_t *h)   { return h ? h->n_pair : 0; }
-int tact_get_y_size(const tact_t *h)   { return h ? h->y_size : 0; }
-double tact_get_dt(const tact_t *h)    { return h ? h->dt : 0.0; }
+int tact_nb(const tact_t *h)       { return h ? h->nb : 0; }
+int tact_nq(const tact_t *h)       { return h ? h->nq : 0; }
+int tact_n_shape(const tact_t *h)  { return h ? h->n_shape : 0; }
+int tact_n_pair(const tact_t *h)   { return h ? h->n_pair : 0; }
+int tact_y_size(const tact_t *h)   { return h ? h->y_size : 0; }
+double tact_dt(const tact_t *h)    { return h ? h->dt : 0.0; }
 
-int tact_get_lam_size(const tact_t *h)
+int tact_lam_size(const tact_t *h)
 {
-    if (!h) return 0;
-    int npair_max = h->n_pair > 0 ? h->n_pair : 1;
-    return 6 * MAX_PTS_PER_PAIR * npair_max + 2 * h->nq;
+    return h ? h->lam_size : 0;
 }
 
 /* Phase 2: pre-marshal feedback descriptors into the handle. Allocates a separate
@@ -307,7 +236,7 @@ void tact_set_feedback(tact_t *h, int n_feeds, int *kinds, int *offsets, int *id
 }
 
 /* In-place update of inertia buffers (X, I6, Ti). Topology (nb) must be unchanged.
- * Arena is preserved, so any numpy views from tact_get_* remain valid (cf. §3.5).
+ * Arena is preserved, so any numpy views from tact_* remain valid (cf. §3.5).
  * For topology changes, the caller must destroy + create a fresh handle. */
 void tact_edit_model(tact_t *h, double *X, double *I6, double *Ti)
 {
@@ -593,7 +522,7 @@ void tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, 
  *   jacob : body_idx<0              → same as error, AND jacob_whitney walks from nb+body_idx
  * ============================================================================ */
 
-void tact_fk_query(tact_t *h, double *q, int n, int *frame_idx, int *mode, const char *eulerseq, double *out)
+void tact_fk(tact_t *h, double *q, int n, int *frame_idx, int *mode, const char *eulerseq, double *out)
 {
     _fk(h->T, h->nb, h->Ti, h->parent, h->jtype, q);
     int oi = 0;
@@ -608,7 +537,7 @@ void tact_fk_query(tact_t *h, double *q, int n, int *frame_idx, int *mode, const
     }
 }
 
-void tact_error_query(tact_t *h, double *q, double *x_d, int n, int *frame_idx, int *mode, const char *eulerseq, double *out)
+void tact_error(tact_t *h, double *q, double *x_d, int n, int *frame_idx, int *mode, const char *eulerseq, double *out)
 {
     _fk(h->T, h->nb, h->Ti, h->parent, h->jtype, q);
     int oi = 0;
@@ -641,7 +570,7 @@ void tact_error_query(tact_t *h, double *q, double *x_d, int n, int *frame_idx, 
 
 /* J_out shape: (total_rows, nb), row-major, where total_rows = sum(3 if mode==0 else 6).
  * caller (Python) computes total_rows and pre-allocates. */
-void tact_jacob_query(tact_t *h, double *q, int n, int *frame_idx, int *mode, double *J_out)
+void tact_jacob(tact_t *h, double *q, int n, int *frame_idx, int *mode, double *J_out)
 {
     int nb = h->nb, nq = h->nq;
     _fk(h->T, nb, h->Ti, h->parent, h->jtype, q);
@@ -670,7 +599,7 @@ void tact_jacob_query(tact_t *h, double *q, int n, int *frame_idx, int *mode, do
  *
  * The two mass/offset arrays are passed in by the caller because tact_t stores
  * only the 6×6 spatial inertia I6 (not raw (m_i, c_i)) — see tact.h note. */
-void tact_com_jacob_query(tact_t *h, double *q, double *m_in, double *c_in, double *J_out)
+void tact_com_jacob(tact_t *h, double *q, double *m_in, double *c_in, double *J_out)
 {
     int nb = h->nb, nq = h->nq;
     _fk(h->T, nb, h->Ti, h->parent, h->jtype, q);
@@ -705,8 +634,8 @@ void tact_com_jacob_query(tact_t *h, double *q, double *m_in, double *c_in, doub
 }
 
 /* CoM world position. r_out[0..2] = Σ m_i · (T_i · c_i)[:3] / Σ m_i.
- * Same (m_in, c_in) inputs as tact_com_jacob_query — see header for why. */
-void tact_com_query(tact_t *h, double *q, double *m_in, double *c_in, double *r_out)
+ * Same (m_in, c_in) inputs as tact_com_jacob — see header for why. */
+void tact_com(tact_t *h, double *q, double *m_in, double *c_in, double *r_out)
 {
     int nb = h->nb;
     _fk(h->T, nb, h->Ti, h->parent, h->jtype, q);
@@ -732,7 +661,7 @@ void tact_com_query(tact_t *h, double *q, double *m_in, double *c_in, double *r_
 /* gravity-only inverse dynamics. Internally zeros qd/qdd/f_ext in workspace and
  * dispatches to rne_featherstone. Caller pre-allocates b_out (length nb).
  * If g_override is non-NULL it replaces h->g (used by walk2.py-style body-frame gravity). */
-void tact_gravity_query(tact_t *h, double *q, double *g_override, double *b_out)
+void tact_gravity(tact_t *h, double *q, double *g_override, double *b_out)
 {
     int nb = h->nb, nq = h->nq;
     double *zero_qd   = h->workspace;          /* nq */
@@ -746,7 +675,7 @@ void tact_gravity_query(tact_t *h, double *q, double *g_override, double *b_out)
 /* joint-space mass matrix at q (mirrors Model.inertia). Thin wrapper over
  * crb_featherstone; caller pre-allocates H_out (nq*nq, row-major). The Python
  * caller is responsible for the np.delete(self.fixed, axis=0/1) post-processing. */
-void tact_inertia_query(tact_t *h, double *q, double *H_out)
+void tact_inertia(tact_t *h, double *q, double *H_out)
 {
     crb_featherstone(h->nb, h->X, h->I6, h->parent, h->jtype, q, H_out, h->workspace);
 }
@@ -754,7 +683,7 @@ void tact_inertia_query(tact_t *h, double *q, double *H_out)
 /* bias = C(q,qd)·qd + g(q) − Jᵀf_ext (mirrors Model.bias). Calls rne_featherstone
  * with qdd=0. Caller pre-allocates b_out (length nq). f_ext_in may be NULL → treat
  * as zero (matches Python `f_ext=None` default); else it is a 6*nb body-frame wrench. */
-void tact_bias_query(tact_t *h, double *q, double *qd, double *f_ext_in, double *b_out)
+void tact_bias(tact_t *h, double *q, double *qd, double *f_ext_in, double *b_out)
 {
     int nb = h->nb, nq = h->nq;
     double *zero_qdd  = h->workspace;          /* nq */
@@ -1025,7 +954,7 @@ void tact_raycast_frame(tact_t *h, double *q, int frame_idx, double *dirs, int n
 
 /* ---------------------------------------------------------------------------
  * Cholesky helpers — small, dense, SPD m×m matrices (m ≤ ~6*MAX_NB in practice).
- * Used by tact_ik2_query to solve (J Jᵀ + λ²I) x = e_x. λ²>0 guarantees SPD.
+ * Used by tact_ik2 to solve (J Jᵀ + λ²I) x = e_x. λ²>0 guarantees SPD.
  * In-place factorization writes L into the lower triangle of A.
  * --------------------------------------------------------------------------- */
 static int chol_factor(double *A, int m) {
@@ -1060,7 +989,7 @@ static void chol_solve(double *A, int m, double *b, double *x, double *y) {
     }
 }
 
-/* tact_ik2_query — Damped Least Squares IK, mirrors fixed sim.py:Model.ik2().
+/* tact_ik2 — Damped Least Squares IK, mirrors fixed sim.py:Model.ik2().
  * Algorithm (per iter): e=error(q); if |e|<tol return; J=jacob(q); A=JJᵀ+λ²I;
  * solve A x=e; q += advance · Jᵀ x.
  *
@@ -1071,7 +1000,7 @@ static void chol_solve(double *A, int m, double *b, double *x, double *y) {
  * Workspace layout (in h->workspace, 120·nb doubles): q_full(nb) | dq(nb) | J(m·nb)
  *                                                   | A(m·m) | e(m) | bx(m) | yvec(m).
  * Caller responsibility: ensure m ≤ ~6·MAX_NB so the carve fits. */
-int tact_ik2_query(tact_t *h, double *q_in, double *x_d, int n, int *frame_idx, int *mode, const char *eulerseq, double advance, double tolerance, double damping, int max_iter, double *q_out)
+int tact_ik2(tact_t *h, double *q_in, double *x_d, int n, int *frame_idx, int *mode, const char *eulerseq, double advance, double tolerance, double damping, int max_iter, double *q_out)
 {
     int nb = h->nb, nq = h->nq;
     int m  = 0;
@@ -1093,7 +1022,7 @@ int tact_ik2_query(tact_t *h, double *q_in, double *x_d, int n, int *frame_idx, 
     int iter = 0;
     double e_norm = 0.0;
     while (iter < max_iter) {
-        /* error: _fk + per-frame Te + 3d/6d residual (parity with tact_error_query) */
+        /* error: _fk + per-frame Te + 3d/6d residual (parity with tact_error) */
         _fk(h->T, nb, h->Ti, h->parent, h->jtype, q_full);
         int oi = 0;
         for (int k = 0; k < n; k++) {
@@ -1182,9 +1111,9 @@ int tact_ik2_query(tact_t *h, double *q_in, double *x_d, int n, int *frame_idx, 
 }
 
 /* arena read-only accessors */
-double *tact_get_f       (tact_t *h) { return h->f; }
-double *tact_get_a       (tact_t *h) { return h->a; }
-double *tact_get_v       (tact_t *h) { return h->v; }
-double *tact_get_q_next  (tact_t *h) { return h->q_next; }
-double *tact_get_qd_next (tact_t *h) { return h->qd_next; }
-double *tact_get_y       (tact_t *h) { return h->y_buf; }
+double *tact_f       (tact_t *h) { return h->f; }
+double *tact_a       (tact_t *h) { return h->a; }
+double *tact_v       (tact_t *h) { return h->v; }
+double *tact_q_next  (tact_t *h) { return h->q_next; }
+double *tact_qd_next (tact_t *h) { return h->qd_next; }
+double *tact_y       (tact_t *h) { return h->y_buf; }

@@ -278,7 +278,7 @@ class Model:
         # CLAUDE.md's "Dynamic add/delete" section).
         self.mesh_path_to_idx = {}    # abs_path → idx
         self._mesh_max_slots = 64     # matches MAX_MESH in shape.h
-        self.hfield_data = []         # retained hfield slot metadata for tactbin export
+        self.hfield_data = []         # retained hfield slot metadata for bin export
         self.hf_next_slot = 0         # next free height-field slot (monotonic; slots not freed)
         self._hf_max_slots = 16       # matches MAX_HFIELD in shape.h
         self.add(modelname, prefix, base, offset, q0, fixed_base, name=name)
@@ -1073,7 +1073,7 @@ class Model:
         self.X = get_spatial_transform(self.Ti)
         self.I6 = get_spatial_inertia(self.m, self.c, self.I)
 
-        #topology unchanged — push X/I6/Ti in place so existing tact_get_* views survive
+        #topology unchanged — push X/I6/Ti in place so existing tact_* views survive
         if self.use_c and getattr(self, '_h', None):
             X  = np.ascontiguousarray(np.asarray(self.X),  dtype=np.float64)
             I6 = np.ascontiguousarray(np.asarray(self.I6), dtype=np.float64)
@@ -1152,8 +1152,8 @@ class Model:
         # Buffers are per-DoF (length nq) — equals nb when no free6 joints, larger
         # by 5 per free6 body otherwise. self.q is already nq-long after build.
         nq = len(self.q0)
-        self._h_q_next  = np.ctypeslib.as_array(clib.tact_get_q_next(self._h),  shape=(nq,))
-        self._h_qd_next = np.ctypeslib.as_array(clib.tact_get_qd_next(self._h), shape=(nq,))
+        self._h_q_next  = np.ctypeslib.as_array(clib.tact_q_next(self._h),  shape=(nq,))
+        self._h_qd_next = np.ctypeslib.as_array(clib.tact_qd_next(self._h), shape=(nq,))
 
         #---- Phase 2: marshal feedback descriptors → handle ----
         # output size per feed kind: module-level _Y_PER (shared with feed_slices)
@@ -1188,7 +1188,7 @@ class Model:
             self._build_ftran_inv.ctypes.data_as(_DBL),
             y_size)
         self._y_size = y_size
-        self._h_y = np.ctypeslib.as_array(clib.tact_get_y(self._h), shape=(max(y_size, 1),))
+        self._h_y = np.ctypeslib.as_array(clib.tact_y(self._h), shape=(max(y_size, 1),))
 
     def __del__(self):
         h = getattr(self, '_h', None)
@@ -1524,7 +1524,7 @@ class Model:
             out_size = sum(3 if frames[f]=='3d' else 6 for f in keys)
             out      = np.empty(out_size, dtype=np.float64)
             q_in     = np.ascontiguousarray(q, dtype=np.float64)
-            clib.tact_fk_query(self._h, q_in.ctypes.data_as(_DBL), len(keys), idx_arr.ctypes.data_as(_INT), mode_arr.ctypes.data_as(_INT),  eulerseq.encode('ascii'), out.ctypes.data_as(_DBL))
+            clib.tact_fk(self._h, q_in.ctypes.data_as(_DBL), len(keys), idx_arr.ctypes.data_as(_INT), mode_arr.ctypes.data_as(_INT),  eulerseq.encode('ascii'), out.ctypes.data_as(_DBL))
             return out
 
         T = _fk(self.Ti, self.parent, self.jtype, q)
@@ -1577,7 +1577,7 @@ class Model:
             q_in      = np.ascontiguousarray(q, dtype=np.float64)
             x_in      = np.ascontiguousarray(x_d, dtype=np.float64)
             q_out     = np.empty(len(q_in), dtype=np.float64)   # nq (per-DoF)
-            iters = clib.tact_ik2_query(self._h, q_in.ctypes.data_as(_DBL), x_in.ctypes.data_as(_DBL), len(keys), idx_arr.ctypes.data_as(_INT), mode_arr.ctypes.data_as(_INT), eulerseq.encode('ascii'), advance, tolerance, damping, max_iter, q_out.ctypes.data_as(_DBL))
+            iters = clib.tact_ik2(self._h, q_in.ctypes.data_as(_DBL), x_in.ctypes.data_as(_DBL), len(keys), idx_arr.ctypes.data_as(_INT), mode_arr.ctypes.data_as(_INT), eulerseq.encode('ascii'), advance, tolerance, damping, max_iter, q_out.ctypes.data_as(_DBL))
             if iters < 0: raise RuntimeError('ik2 did not converge in %d iters, x_d=%s' %(max_iter, x_d))
             return q_out
 
@@ -1603,7 +1603,7 @@ class Model:
             total_rows = sum(3 if frames[f]=='3d' else 6 for f in keys)
             J_out    = np.empty((total_rows, nv), dtype=np.float64)
             q_in     = np.ascontiguousarray(q, dtype=np.float64)
-            clib.tact_jacob_query(self._h, q_in.ctypes.data_as(_DBL), len(keys), idx_arr.ctypes.data_as(_INT), mode_arr.ctypes.data_as(_INT), J_out.ctypes.data_as(_DBL))
+            clib.tact_jacob(self._h, q_in.ctypes.data_as(_DBL), len(keys), idx_arr.ctypes.data_as(_INT), mode_arr.ctypes.data_as(_INT), J_out.ctypes.data_as(_DBL))
             return J_out
 
         T = _fk(self.Ti, self.parent, self.jtype, q)
@@ -1629,7 +1629,7 @@ class Model:
             out      = np.empty(out_size, dtype=np.float64)
             q_in     = np.ascontiguousarray(q,   dtype=np.float64)
             xd_in    = np.ascontiguousarray(x_d, dtype=np.float64)
-            clib.tact_error_query(self._h, q_in.ctypes.data_as(_DBL), xd_in.ctypes.data_as(_DBL), len(keys), idx_arr.ctypes.data_as(_INT), mode_arr.ctypes.data_as(_INT), eulerseq.encode('ascii'), out.ctypes.data_as(_DBL))
+            clib.tact_error(self._h, q_in.ctypes.data_as(_DBL), xd_in.ctypes.data_as(_DBL), len(keys), idx_arr.ctypes.data_as(_INT), mode_arr.ctypes.data_as(_INT), eulerseq.encode('ascii'), out.ctypes.data_as(_DBL))
             return out
 
         T = _fk(self.Ti, self.parent, self.jtype, q)
@@ -1659,7 +1659,7 @@ class Model:
             #pass NULL g_override → C uses h->g; only wrap when caller overrode self.g
             if g is self.g: g_ptr = None
             else:           g_ptr = np.ascontiguousarray(g, dtype=np.float64).ctypes.data_as(_DBL)
-            clib.tact_gravity_query(self._h, q_in.ctypes.data_as(_DBL), g_ptr, b.ctypes.data_as(_DBL))
+            clib.tact_gravity(self._h, q_in.ctypes.data_as(_DBL), g_ptr, b.ctypes.data_as(_DBL))
         else: b = rne_featherstone(self.X, self.I6, self.parent, self.jtype, q, np.zeros(len(q)), np.zeros(len(q)), None, g)
         return b
 
@@ -1674,7 +1674,7 @@ class Model:
             nq   = len(q)
             q_in = np.ascontiguousarray(q, dtype=np.float64)
             H    = np.empty((nq, nq), dtype=np.float64)
-            clib.tact_inertia_query(self._h, q_in.ctypes.data_as(_DBL), H.ctypes.data_as(_DBL))
+            clib.tact_inertia(self._h, q_in.ctypes.data_as(_DBL), H.ctypes.data_as(_DBL))
         else: H = crb_featherstone(self.X, self.I6, self.parent, self.jtype, q)
         return H
 
@@ -1693,7 +1693,7 @@ class Model:
                 fe_in  = np.ascontiguousarray(np.asarray(f_ext).reshape(-1, 6), dtype=np.float64)
                 fe_ptr = fe_in.ctypes.data_as(_DBL)
             else: fe_ptr = None
-            clib.tact_bias_query(self._h, q_in.ctypes.data_as(_DBL), qd_in.ctypes.data_as(_DBL), fe_ptr, b.ctypes.data_as(_DBL))
+            clib.tact_bias(self._h, q_in.ctypes.data_as(_DBL), qd_in.ctypes.data_as(_DBL), fe_ptr, b.ctypes.data_as(_DBL))
         else:
             qdd = np.zeros(len(q))
             b = rne_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, qdd, f_ext, self.g)
@@ -1711,7 +1711,7 @@ class Model:
                 self._m_arr_c = np.ascontiguousarray(self.m, dtype=np.float64)
                 self._c_arr_c = np.ascontiguousarray(np.asarray(self.c).reshape(-1), dtype=np.float64)
             r = np.empty(3, dtype=np.float64)
-            clib.tact_com_query(self._h, q_in.ctypes.data_as(_DBL),
+            clib.tact_com(self._h, q_in.ctypes.data_as(_DBL),
                                 self._m_arr_c.ctypes.data_as(_DBL),
                                 self._c_arr_c.ctypes.data_as(_DBL),
                                 r.ctypes.data_as(_DBL))
@@ -1730,7 +1730,7 @@ class Model:
                 self._m_arr_c = np.ascontiguousarray(self.m, dtype=np.float64)
                 self._c_arr_c = np.ascontiguousarray(np.asarray(self.c).reshape(-1), dtype=np.float64)
             J = np.empty((3, nq), dtype=np.float64)
-            clib.tact_com_jacob_query(self._h, q_in.ctypes.data_as(_DBL),
+            clib.tact_com_jacob(self._h, q_in.ctypes.data_as(_DBL),
                                       self._m_arr_c.ctypes.data_as(_DBL),
                                       self._c_arr_c.ctypes.data_as(_DBL),
                                       J.ctypes.data_as(_DBL))

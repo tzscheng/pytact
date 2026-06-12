@@ -1,4 +1,4 @@
-"""Compile a tact YAML model into a C-readable tactbin file."""
+"""Compile a tact YAML model into a C-readable bin file."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import numpy as np
 from .sim import Model
 
 
-MAGIC = b"TACTBIN\0"
+MAGIC = b"TACTMDL\0"
 VERSION = 1
 
 DTYPE_I32 = 1
@@ -34,7 +34,7 @@ def _chunk_array(tag: str, dtype: int, arr: np.ndarray) -> tuple[bytes, bytes]:
     if len(tag.encode("ascii")) > 15:
         raise ValueError(f"chunk tag too long: {tag!r}")
     if arr.ndim > 4:
-        raise ValueError(f"chunk {tag!r}: ndim {arr.ndim} exceeds tactbin limit")
+        raise ValueError(f"chunk {tag!r}: ndim {arr.ndim} exceeds bin limit")
     shape = list(arr.shape) + [0] * (4 - arr.ndim)
     payload = arr.tobytes(order="C")
     header = struct.pack(
@@ -76,7 +76,7 @@ def _model_from_yaml(path: Path) -> Model:
         os.chdir(prev)
 
 
-def compile_model(src: str | os.PathLike[str], out: str | os.PathLike[str]) -> None:
+def compile(src: str | os.PathLike[str], out: str | os.PathLike[str]) -> None:
     src_path = Path(src).expanduser().resolve()
     out_path = Path(out).expanduser().resolve()
     model = _model_from_yaml(src_path)
@@ -120,11 +120,21 @@ def compile_model(src: str | os.PathLike[str], out: str | os.PathLike[str]) -> N
     add_f64("cshape", model._build_cshape.reshape(n_shape, 3))
     add_f64("ctran", model._build_ctran.reshape(n_shape, 4, 4))
     add_f64("cparam", model._build_cparam.reshape(n_shape, 13))
+    add_f64("crgba", np.asarray(model.crgba, dtype=np.float64).reshape(n_shape, 4))
     add_i32("craycast", model._build_craycast)
     add_i32("cpair", model._build_cpair.reshape(n_pair, 2))
 
     add_f64("q0", model.q0)
     add_f64("qd0", model.qd0)
+    add_f64("view", model.view)
+    light0 = model.lights[0] if model.lights else {
+        "pos": [7.0, 7.0, 7.0],
+        "target": [0.0, 0.0, 0.0],
+        "ortho": 5.0,
+        "shadow": True,
+    }
+    add_f64("light0", [*light0["pos"], *light0["target"],
+                       light0["ortho"], 1.0 if light0.get("shadow", True) else 0.0])
 
     add_i32("feed_kinds", model._build_feed_kinds[:n_feed])
     add_i32("feed_offsets", model._build_feed_offsets)
@@ -135,7 +145,7 @@ def compile_model(src: str | os.PathLike[str], out: str | os.PathLike[str]) -> N
     add_f64("ftran_inv", model._build_ftran_inv[:n_frame].reshape(n_frame, 4, 4))
 
     meta = {
-        "format": "tactbin",
+        "format": "bin",
         "version": VERSION,
         "source": str(src_path),
         "fdict": model.fdict,
@@ -175,11 +185,11 @@ def compile_model(src: str | os.PathLike[str], out: str | os.PathLike[str]) -> N
 
 
 def main(argv: Iterable[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Compile tact YAML to tactbin.")
+    parser = argparse.ArgumentParser(description="Compile tact YAML to bin.")
     parser.add_argument("src", help="source YAML model")
-    parser.add_argument("-o", "--out", required=True, help="output .tactbin path")
+    parser.add_argument("-o", "--out", required=True, help="output .bin path")
     args = parser.parse_args(argv)
-    compile_model(args.src, args.out)
+    compile(args.src, args.out)
 
 
 if __name__ == "__main__":

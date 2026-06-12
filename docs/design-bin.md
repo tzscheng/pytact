@@ -1,61 +1,68 @@
-# tactbin v1
+# bin v1
 
-`tactbin` is the compiled-model handoff format for the standalone C API.
+`bin` is the compiled-model handoff format for the standalone C API.
 It keeps YAML parsing and schema evolution in Python while letting C programs
 load a model without importing Python.
 
 Intended flow:
 
 ```bash
-python -m tact.compile_model robot.yml -o robot.tactbin
+python -m tact.compile robot.yml -o robot.bin
 ```
 
 ```c
 #include "tact.h"
 
-tact_model_t *m = NULL;
-tact_state_t *s = NULL;
+tact_t *h = NULL;
+tact_ctx_t *ctx = NULL, *ctx_next = NULL;
 
-tact_load_model("robot.tactbin", &m);
-tact_create_state(m, &s);
-tact_step(m, s, tau);
-tact_destroy_state(s);
-tact_destroy_model(m);
+tact_load("robot.bin", &h);
+tact_create_ctx(h, &ctx);
+tact_create_ctx(h, &ctx_next);
+tact_step(h, q, qd, tau, ctx, q_next, qd_next, y, ctx_next);
+tact_destroy_ctx(ctx);
+tact_destroy_ctx(ctx_next);
+tact_destroy(h);
 ```
 
 The v1 exporter serializes the same compiled arrays that `Model._create_c_handle`
-passes to `tact_create`. The first C loader can therefore reconstruct the current
+passes to the C handle. The C loader can therefore reconstruct the same
 low-level handle without implementing a YAML loader in C.
 
 ## Object Split
 
-The public C API should look like MuJoCo's `mjModel` / `mjData` split:
+The public C API keeps immutable model data separate from caller-owned runtime
+state:
 
 | tact | Owns |
 | --- | --- |
-| `tact_model_t` | immutable compiled topology, geometry, frames, feeds, defaults |
-| `tact_state_t` | mutable `q`, `qd`, warm-start lambda, outputs, scratch/handle |
+| `tact_t` | immutable compiled topology, geometry, frames, feeds, defaults, reusable scratch |
+| `tact_ctx_t` | caller-threaded warm-start lambda |
+| caller arrays | mutable `q`, `qd`, `q_next`, `qd_next`, `y`, control inputs |
 
-The first implementation may keep the existing internal `tact_t` inside each
-`tact_state_t`. That avoids a large internal split while presenting the right
-public API.
+This mirrors Python `Model.step(q, qd, tau, ctx=...)`: `q`/`qd` are explicit
+inputs, and warm-start state is explicit through `ctx`.
 
 ## Public C Contract
 
-`tact_load_model(path, &m)` owns all arrays decoded from the tactbin file. The
-caller releases that immutable model with `tact_destroy_model(m)`.
-`tact_create_state(m, &s)` allocates mutable state for that exact model: `q`,
-`qd`, the two warm-start lambda buffers, and the internal `tact_t` handle used
-to step. Destroy states before destroying their model.
+`tact_load(path, &h)` owns all arrays decoded from the bin file plus the
+scratch used by step/render calls. The caller releases it with
+`tact_destroy(h)`.
+`tact_create_ctx(h, &ctx)` allocates a warm-start lambda buffer for that handle.
+Destroy contexts before or after destroying their handle only if they are no
+longer passed to tact APIs; normal ownership is `tact_destroy_ctx(ctx)`.
 
 The main accessors are:
 
 | Function | Contract |
 | --- | --- |
-| `tact_model_info(m, &info)` | fills counts and `dt`; no ownership transfer |
-| `tact_q(s)`, `tact_qd(s)`, `tact_y(s)` | borrowed pointers owned by `s`; re-read after each step |
-| `tact_step(m, s, tau)` | one zero-PD step; `tau == NULL` means zero torque |
-| `tact_step_pd(m, s, tau, q_ref, qd_ref, kp, kd)` | one step with optional implicit joint PD |
+| `tact_info(h, &info)` | fills counts and `dt`; no ownership transfer |
+| `tact_q0(h)`, `tact_qd0(h)` | borrowed default-state pointers owned by `h` |
+| `tact_create_ctx(h, &ctx)` | allocates one warm-start lambda buffer |
+| `tact_ctx_lam(ctx)` | borrowed lambda pointer owned by `ctx` |
+| `tact_step(h, q, qd, tau, ctx_in, q_out, qd_out, y_out, ctx_out)` | one zero-PD step; `tau == NULL` means zero torque |
+| `tact_step_pd(h, q, qd, tau, q_ref, qd_ref, kp, kd, ctx_in, q_out, qd_out, y_out, ctx_out)` | one step with optional implicit joint PD |
+| `tact_render(h, q)` | renders the loaded model at `q` in a GLFW window |
 
 All control arrays are `nq`-length when non-NULL. `tact_step_pd` activates the
 P term only when `q_ref && kp` are non-NULL, and the D term only when
@@ -63,10 +70,8 @@ P term only when `q_ref && kp` are non-NULL, and the D term only when
 only a supported public contract for 1-DoF `rev`/`lin` joints; free-joint gains
 should remain zero/NULL in standalone C callers.
 
-`tact_state_t` carries warm-start lambda internally and flips between two
-buffers on each step. That makes the standalone stateful API convenient while
-preserving the lower-level `tact_step_lcp` contract, where callers explicitly
-thread immutable `lam_in` / `lam_out`.
+Use separate `ctx_in` and `ctx_out` for referentially transparent stepping.
+Passing NULL `ctx_in` cold-starts; passing NULL `ctx_out` discards warm-start.
 
 ## File Format
 
@@ -74,8 +79,8 @@ All integers are little-endian. All float arrays are `float64`. The file starts
 with:
 
 ```c
-struct tactbin_header {
-    char     magic[8];     // "TACTBIN\0"
+struct bin_header {
+    char     magic[8];     // "TACTMDL\0"
     uint32_t version;      // 1
     uint32_t n_chunks;
 };
@@ -84,7 +89,7 @@ struct tactbin_header {
 Then `n_chunks` records:
 
 ```c
-struct tactbin_chunk_header {
+struct bin_chunk_header {
     char     tag[16];      // NUL-padded ASCII
     uint32_t dtype;        // 1=int32, 2=float64, 3=utf8
     uint32_t ndim;         // 0..4
@@ -101,7 +106,7 @@ and `nbytes` must match exactly for known chunks. Required scalar chunks
 (`dims_i32`, `sim_f64`, `sim_i32`) reject duplicates. Generic required arrays
 also reject duplicates when their pointer has already been filled. Unknown
 chunks are ignored so future debug metadata can be added without breaking old
-loaders, but a missing or malformed required chunk makes `tact_load_model`
+loaders, but a missing or malformed required chunk makes `tact_load`
 fail.
 
 ## Required Chunks
@@ -146,13 +151,13 @@ Optional chunks:
 
 ## Compatibility
 
-The file is a compiled ABI artifact, not a source scene format. A `tactbin`
-version bump is expected whenever `tact_create`'s array contract changes.
+The file is a compiled ABI artifact, not a source scene format. A `bin`
+version bump is expected whenever the compiled model array contract changes.
 YAML remains the source format owned by `pytact`.
 
 ## Current Test Gates
 
-`tests/test_tactbin_smoke.py` covers:
+`tests/test_bin_smoke.py` covers:
 
 - header sanity and malformed file rejection: bad version, missing required
   chunk, duplicate required chunk, bad chunk shape, inconsistent `lam_size`,
@@ -160,12 +165,12 @@ YAML remains the source format owned by `pytact`.
 - C API vs Python wrapper parity for arm dynamics, implicit PD, feedback `y`,
   free-body gravity, single-contact settling, multi-body box manifold contact,
   mesh contact, joint friction, and joint limit;
-- mesh and hfield tactbin load paths.
+- mesh and hfield bin load paths.
 
 `tests/test_packaging_smoke.py` additionally checks that the installed package
-exports the tactbin C API from `tact/bin/libtact.so`, that
-`python -m tact.compile_model` works from package assets, and that a
-`ctypes`-loaded tactbin state steps with Python parity. With
+exports the bin C API from `tact/bin/libtact.so`, that
+`python -m tact.compile` works from package assets, and that a
+`ctypes`-loaded bin state steps with Python parity. With
 `TACT_PACKAGING_INSTALLED=1`, it avoids injecting the checkout into
 `sys.path`, so the same test can run against a wheel installed into a target
 directory.

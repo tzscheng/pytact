@@ -216,6 +216,8 @@ void set_mesh_path(int idx, const char* path);
 void set_hfield_data(int slot, int nrow, int ncol, double sx, double sy, const double* data);
 /* 3×3 orthonormal frame whose third column = normalized z_in. Row-major, R[3*r+c]. */
 void choose_rotation(double *z_in, double *R);
+void render_set_light(float pos[3], float target[3], float ortho, int shadow_enabled);
+int  win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* objpose, float* campose);
 
 
 /* =============================================================================
@@ -265,11 +267,10 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
  * Build / runtime split + lifecycle invariants: see docs/design-c-state.md §3.
  * ============================================================================= */
 typedef struct tact_t tact_t;
-typedef struct tact_model_t tact_model_t;
-typedef struct tact_state_t tact_state_t;
+typedef struct tact_ctx_t tact_ctx_t;
 
-/* Immutable summary for a loaded tactbin model. Sizes are counts of doubles or
- * records, not bytes. `lam_size` is the unified warm-start vector length:
+/* Immutable summary for a tact handle. Sizes are counts of doubles or records,
+ * not bytes. `lam_size` is the unified warm-start vector length:
  *   6*MAX_PTS_PER_PAIR*max(n_pair,1) + 2*nq. */
 typedef struct {
     int nb;
@@ -281,7 +282,7 @@ typedef struct {
     int y_size;
     int lam_size;
     double dt;
-} tact_model_info_t;
+} tact_info_t;
 
 tact_t *tact_create(int nb, int *parent, int *jtype,
                     double *X, double *I6, double *Ti, double *ff, double *sk,
@@ -294,20 +295,20 @@ tact_t *tact_create(int nb, int *parent, int *jtype,
                     double v_rest_thresh, int iters, double tol);
 void    tact_destroy(tact_t *h);
 
-int     tact_get_nb       (const tact_t *h);
-int     tact_get_nq       (const tact_t *h);
-int     tact_get_n_shape  (const tact_t *h);
-int     tact_get_n_pair   (const tact_t *h);
-int     tact_get_y_size   (const tact_t *h);
-int     tact_get_lam_size (const tact_t *h);
-double  tact_get_dt       (const tact_t *h);
+int     tact_nb       (const tact_t *h);
+int     tact_nq       (const tact_t *h);
+int     tact_n_shape  (const tact_t *h);
+int     tact_n_pair   (const tact_t *h);
+int     tact_y_size   (const tact_t *h);
+int     tact_lam_size (const tact_t *h);
+double  tact_dt       (const tact_t *h);
 
 void    tact_set_feedback(tact_t *h,
                           int n_feeds, int *kinds, int *offsets, int *idx,
                           int n_frames, int *fbody, double *ftran, double *ftran_inv,
                           int y_size);
 
-/* In-place updates that preserve the arena → tact_get_* views stay valid.
+/* In-place updates that preserve the arena → tact_* views stay valid.
  * Topology (nb / n_shape / n_pair) must be unchanged; for topology changes,
  * destroy + create a fresh handle. */
 void    tact_edit_model (tact_t *h, double *X, double *I6, double *Ti);
@@ -328,29 +329,29 @@ void    tact_step_lcp    (tact_t *h, double *q, double *qd, double *tau,
                           double *lam_in, double *lam_out);
 
 /* multi-frame query API — caller resolves names→indices once; mode[k]: 0=3d, 1=6d */
-void    tact_fk_query     (tact_t *h, double *q, int n, int *frame_idx, int *mode, const char *eulerseq, double *out);
-void    tact_error_query  (tact_t *h, double *q, double *x_d, int n, int *frame_idx, int *mode, const char *eulerseq, double *out);
-void    tact_jacob_query  (tact_t *h, double *q, int n, int *frame_idx, int *mode, double *J_out);
-/* tact_com_jacob_query: 3 × nq CoM linear Jacobian at q.
+void    tact_fk     (tact_t *h, double *q, int n, int *frame_idx, int *mode, const char *eulerseq, double *out);
+void    tact_error  (tact_t *h, double *q, double *x_d, int n, int *frame_idx, int *mode, const char *eulerseq, double *out);
+void    tact_jacob  (tact_t *h, double *q, int n, int *frame_idx, int *mode, double *J_out);
+/* tact_com_jacob: 3 × nq CoM linear Jacobian at q.
  * m_in (nb) and c_in (3*nb row-major) are body masses and body-frame CoM offsets
  * — passed in because tact_t holds only the 6×6 spatial inertia I6, not the
  * raw (m_i, c_i) tuples. Algorithm mirrors Python's com_jacob_lagrange: mass-
  * weighted average of per-body world-linear Jacobians (top 3 rows of
  * jacob_whitney evaluated at each body's world-frame CoM point). */
-void    tact_com_jacob_query(tact_t *h, double *q, double *m_in, double *c_in, double *J_out);
-/* tact_com_query: 3-vector CoM world position. Same (m_in, c_in) inputs as
- * tact_com_jacob_query for the same reason — tact_t lacks the raw (m_i, c_i). */
-void    tact_com_query    (tact_t *h, double *q, double *m_in, double *c_in, double *r_out);
-void    tact_gravity_query(tact_t *h, double *q, double *g_override, double *b_out);
-/* tact_inertia_query: joint-space mass matrix at q. H_out is row-major (nq*nq). */
-void    tact_inertia_query(tact_t *h, double *q, double *H_out);
-/* tact_bias_query: C(q,qd)·qd + g(q) − Jᵀf_ext. f_ext_in NULL → treated as zero. */
-void    tact_bias_query   (tact_t *h, double *q, double *qd, double *f_ext_in, double *b_out);
+void    tact_com_jacob(tact_t *h, double *q, double *m_in, double *c_in, double *J_out);
+/* tact_com: 3-vector CoM world position. Same (m_in, c_in) inputs as
+ * tact_com_jacob for the same reason — tact_t lacks the raw (m_i, c_i). */
+void    tact_com    (tact_t *h, double *q, double *m_in, double *c_in, double *r_out);
+void    tact_gravity(tact_t *h, double *q, double *g_override, double *b_out);
+/* tact_inertia: joint-space mass matrix at q. H_out is row-major (nq*nq). */
+void    tact_inertia(tact_t *h, double *q, double *H_out);
+/* tact_bias: C(q,qd)·qd + g(q) − Jᵀf_ext. f_ext_in NULL → treated as zero. */
+void    tact_bias   (tact_t *h, double *q, double *qd, double *f_ext_in, double *b_out);
 
 /* Damped Least Squares IK. q_in/q_out are nq-length per-DoF vectors (fixed joints
  * contribute 0 slots so no extend/compress is needed by the caller).
  * Returns iter count if converged (|e|<tolerance), -iter count if max_iter hit. */
-int     tact_ik2_query    (tact_t *h, double *q_in, double *x_d,
+int     tact_ik2    (tact_t *h, double *q_in, double *x_d,
                            int n, int *frame_idx, int *mode, const char *eulerseq,
                            double advance, double tolerance, double damping, int max_iter,
                            double *q_out);
@@ -372,26 +373,27 @@ void    tact_raycast_frame(tact_t *h, double *q, int frame_idx,
 
 /* arena read-only accessors — Python wraps as numpy views.
  * Views are valid only until the next tact_destroy on this handle (§3.5 invariant). */
-double *tact_get_f       (tact_t *h);
-double *tact_get_a       (tact_t *h);
-double *tact_get_v       (tact_t *h);
-double *tact_get_q_next  (tact_t *h);
-double *tact_get_qd_next (tact_t *h);
-double *tact_get_y       (tact_t *h);
+double *tact_f       (tact_t *h);
+double *tact_a       (tact_t *h);
+double *tact_v       (tact_t *h);
+double *tact_q_next  (tact_t *h);
+double *tact_qd_next (tact_t *h);
+double *tact_y       (tact_t *h);
 
-/* tactbin standalone C API.
+/* bin/load + explicit-state C API.
  *
  * Ownership:
- *   - tact_load_model(path, &m) allocates an immutable model; release it with
- *     tact_destroy_model(m).
- *   - tact_create_state(m, &s) allocates mutable q/qd/warm-start/output state
- *     bound to that exact model; release it before destroying m.
- *   - tact_model_t owns all compiled arrays loaded from the file. Pointers
- *     returned by accessors are owned by tact_state_t and become invalid after
- *     tact_destroy_state(s), or after the next tact_step* if the caller kept
- *     stale values that should be re-read.
+ *   - tact_load(path, &h) allocates a tact handle from a compiled .bin file.
+ *     Release it with tact_destroy(h).
+ *   - tact_create_ctx(h, &ctx) allocates the caller-threaded warm-start vector
+ *     used by tact_step*. Release it with tact_destroy_ctx(ctx). Passing NULL
+ *     ctx_in cold-starts the solve; passing NULL ctx_out discards warm-start.
+ *   - tact_t owns compiled topology, geometry, default state, render metadata,
+ *     and reusable scratch. The q/qd/y buffers are caller-owned.
  *
  * Step inputs:
+ *   - q, qd, q_out, qd_out are nq-length arrays. y_out is y_size-length when
+ *     non-NULL. q_out/qd_out may alias q/qd.
  *   - tau, q_ref, qd_ref, kp, kd are nq-length arrays when non-NULL.
  *   - tau == NULL means zero torque.
  *   - tact_step_pd activates P terms only when q_ref && kp are non-NULL, and D
@@ -399,18 +401,25 @@ double *tact_get_y       (tact_t *h);
  *   - implicit PD is implemented for 1-DoF rev/lin joints. Free-joint PD inputs
  *     are currently not a standalone contract; keep their gains zero/NULL.
  */
-int     tact_load_model     (const char *path, tact_model_t **out);
-void    tact_destroy_model  (tact_model_t *m);
-int     tact_model_info     (const tact_model_t *m, tact_model_info_t *out);
-int     tact_create_state   (const tact_model_t *m, tact_state_t **out);
-void    tact_destroy_state  (tact_state_t *s);
-double *tact_q              (tact_state_t *s);
-double *tact_qd             (tact_state_t *s);
-double *tact_y              (tact_state_t *s);
-int     tact_step           (const tact_model_t *m, tact_state_t *s, const double *tau);
-int     tact_step_pd        (const tact_model_t *m, tact_state_t *s,
-                             const double *tau,
+int     tact_load           (const char *path, tact_t **out);
+int     tact_info           (const tact_t *h, tact_info_t *out);
+const double *tact_q0       (const tact_t *h);
+const double *tact_qd0      (const tact_t *h);
+int     tact_create_ctx     (const tact_t *h, tact_ctx_t **out);
+void    tact_destroy_ctx    (tact_ctx_t *ctx);
+double *tact_ctx_lam        (tact_ctx_t *ctx);
+int     tact_step           (const tact_t *h,
+                             const double *q, const double *qd, const double *tau,
+                             const tact_ctx_t *ctx_in,
+                             double *q_out, double *qd_out, double *y_out,
+                             tact_ctx_t *ctx_out);
+int     tact_step_pd        (const tact_t *h,
+                             const double *q, const double *qd, const double *tau,
                              const double *q_ref, const double *qd_ref,
-                             const double *kp, const double *kd);
+                             const double *kp, const double *kd,
+                             const tact_ctx_t *ctx_in,
+                             double *q_out, double *qd_out, double *y_out,
+                             tact_ctx_t *ctx_out);
+int     tact_render         (const tact_t *h, const double *q);
 
 #endif /* TACT_H */

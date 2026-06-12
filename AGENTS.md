@@ -32,9 +32,9 @@ User works on this project from multiple machines, so preferences live here (in 
 ## Build / run
 
 ```bash
-./build.sh                   # builds tact/bin/libtact.so from native/{rbd,shape,mpr,narrow,box_box,ray,lcp,tact,render}.c
-                             # link deps: -lm -ldl; GL/EGL/GLFW/turbojpeg/zstd are dlopen/dlsym'd on render paths
-                             # also builds mjenv/mjenv.so from mjenv/mjenv.cpp (auxiliary MuJoCo backend for
+make                         # builds tact/bin/libtact.so and build/tools/bin-test
+make debug                   # no-opt/gdb-friendly libtact.so + bin-test
+make mjenv                   # builds mjenv/mjenv.so from mjenv/mjenv.cpp (auxiliary MuJoCo backend for
                              # cross-checking tact's dynamics; -I/usr/local/include/mujoco -lmujoco -lGL -lglfw)
 ./yml-test arm2              # quick test loading a YAML model + running env.step in a window
 perf/build.sh                # builds C/C++ matmul benchmarks (cmm, eigmm)
@@ -47,7 +47,7 @@ Python is run via `uv` from the workspace root `/home/ubuntu/fg` (see `fg/pyproj
 `_clib.py` resolves `libtact.so` in order: (1) **next to itself** — `<package_dir>/bin/libtact.so` where `<package_dir>` is the inner `tact` package (`fg/pytact/tact` after the outer project rename, currently `fg/tact/tact` in this checkout); (2) `./bin/libtact.so` in cwd (legacy/ad-hoc development build); (3) the OS loader via `ctypes.util.find_library('tact')`. In the current monorepo layout path (1) succeeds, so no system install is required.
 
 Asset layout (runtime assets under the inner `tact/` import package, discoverable as `tact.pkg_dir/<asset>`):
-- `bin/libtact.so` — installable native library (build.sh output)
+- `bin/libtact.so` — installable native library (`make` / `make package-lib` output)
 - `mjenv/mjenv.cpp`, `mjenv/mjenv.so` — internal MuJoCo backend source/output for `start -m` (not packaged)
 - `envs/*.yml` — **background-environment** scene YAMLs (passive terrain a robot is dropped onto: `1.yml`–`5.yml` ground planes, `d3.yml` stepping stones, `hf1.yml` hfield, `stairs.yml`, `box1.yml`/`desk1.yml`). Loaded by `start -e <name>` (searches `envs` then `demos`) and composed by per-project RL envs (`sim.add(f'{tact.pkg_dir}/envs/<name>')`). Height-field **grid data + generators** live here too: `hf1.bin` (MuJoCo's custom hfield binary — int32 nrow, int32 ncol, float32 data; raw meters, row i→+Y col j→+X) ← `hf1_gen.py`. ONE data file per terrain, referenced by BOTH the tact YAML (`type: hfield, file: hf1.bin` → raw meters × `sz`) and the MuJoCo env xml (`mjenv/hf1.xml`, `<hfield file=../tact/envs/hf1.bin>`; MuJoCo-normalized to [0,1] so the xml carries data-derived `size[2]` + geom z, printed by the generator)
 - `demos/*.yml`, `demos/*.py` — **tact feature/physics demos** (manipulators `arm2`–`arm4`/`fv`, contact-manifold brick walls `box_wall`/`wall5_box`/`mini_wall_box`, solver tests `sphere_test`/`min_test`, floating objects `obj1`/`obj2`, driver scripts `ball_throw.py`/`raymap_demo.py`/`demo_delete.py`)
@@ -163,7 +163,7 @@ Each `add()` call is tracked as a named **group** so the same set of bodies/shap
 
 ## Subdirectories
 
-- `native/` — installable C sources + headers (`rbd.c`, `shape.c`/`shape.h`, `mpr.c`, `narrow.c`, `ray.c`, `lcp.c`, `tact.c`/`tact.h`, `render.c`). `build.sh` compiles these → `tact/bin/libtact.so`. Headers beside sources so `#include` needs no `-I`; nothing references them at runtime except the package loader.
+- `native/` — installable C sources + headers (`rbd.c`, `shape.c`/`shape.h`, `mpr.c`, `narrow.c`, `ray.c`, `lcp.c`, `tact.c`/`tact.h`, `model.c`, `render.c`) plus native tools under `native/tools/`. `make` compiles these → `tact/bin/libtact.so` and `build/tools/bin-test`. Headers beside sources so `#include` needs no `-I`; nothing references them at runtime except the package loader.
 - `mjenv/` — internal MuJoCo backend (`mjenv.cpp` → `mjenv.so`) plus shared MuJoCo environment XMLs (`0.xml`, `hf1.xml`, etc.) used only by repo-local `start -m`; excluded from packaging.
 - `docs/` — reference + design docs: **`yaml-schema.md`** (full YAML scene/robot schema), **`runtime.md`** (`start` speed/render pacing + ZMQ IPC wire detail), **`backend-interface.md`** (backend core contract N=6 — `step/reset/finish/backend/has_pd/dt` — + capability ledger; enforced by `tests/test_backend_contract.py`), `design-c-state.md` (C handle lifecycle), `design-lcp-perf.md` (LCP block-sparsity perf + constraint-row invariants), `design-contact.md` (narrowphase dispatch, multi-point manifold), `design-joint-friction.md` (frictionloss/armature/limit as constraint rows), `design-pure-step.md` (Model.step referential transparency), `design-hfield.md` (height-field terrain — read before extending hfield).
 - `tests/` — **all test assets live here**. `regression/` — bit-identical golden suite: `capture_baseline.py` (captures `baseline/*.npy`), `test_traj.py` (re-runs, compares at atol 1e-12; capture is a deliberate reviewed act, never auto-update). `test_pure_step.py` — Model.step pure-function invariants. `box_wall_stability.py` — headless stability analysis. `_prof_*.py` — perf profilers (`_prof_box_wall` frozen; `_prof_multizen`/`_prof_multidog` profile **live** sibling models). **`tests/scenes/`** — FROZEN copies of the YAMLs + meshes the suite loads, decoupled from the mutable `demos/`/`envs/` trees; all test/prof loaders read here (`tests/scenes/README.md`).

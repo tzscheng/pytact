@@ -15,7 +15,7 @@ For domain-explicit access:
 Package layout (sibling assets):
     tact.pkg_dir                         → '/.../fg/pytact/tact' or '/.../fg/tact/tact'
                                             (the import package itself)
-    tact.pkg_dir/bin/libtact.so          → installable native library (output of build.sh)
+    tact.pkg_dir/bin/libtact.so          → installable native library (output of make package-lib)
     ../mjenv/mjenv.so                    → internal MuJoCo backend for start -m (not packaged)
     tact.pkg_dir/envs/                    → background-environment scene YAMLs
                                             (1.yml–5.yml, d3, hf1, stairs, box1, desk1).

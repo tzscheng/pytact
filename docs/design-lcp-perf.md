@@ -246,7 +246,7 @@ hit. Weld / loop-closure rows follow the same path. See `docs/design-joint-frict
 
 ```bash
 # stage timers (off by default, zero-cost when off)
-gcc ... -DLCP_PROF ...                      # or edit build.sh CFLAGS
+make CFLAGS="-W -Wall -O3 -fPIC -ffast-math -funroll-loops -DLCP_PROF"
 TACT_LCP_PROF=1 uv run python tests/_prof_box_wall.py 2000
 TACT_LCP_PROF=1 uv run python tests/_prof_multizen.py   # multi-robot scaling
 

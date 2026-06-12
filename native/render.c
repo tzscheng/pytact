@@ -1518,14 +1518,14 @@ int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
     if(!render_load_window_deps()) return -2;
 
     if(cnt == 0) {
-	if(!glfwInit()){ fprintf(stderr,"GLFW init failed\n"); exit(0); }
+	if(!glfwInit()){ fprintf(stderr,"GLFW init failed\n"); return -2; }
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	glfwWindowHint(GLFW_SAMPLES, 4);
 
 	window = glfwCreateWindow(win_width, win_height, "test", NULL, NULL);
-	if(!window){ fprintf(stderr,"Window create failed\n"); glfwTerminate(); exit(0); }
+	if(!window){ fprintf(stderr,"Window create failed\n"); glfwTerminate(); return -2; }
 
 	glfwMakeContextCurrent(window);
 	glfwSwapInterval(1);   //명시적 vsync. 안 해도 NVIDIA 드라이버 기본값(SyncToVBlank=1)으로 vsync 걸리지만, mesa/iGPU 시스템 이식성을 위해 명시.

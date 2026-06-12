@@ -36,6 +36,7 @@ tact = [
     "envs/*.bin",
     "envs/*.py",
     "demos/*.yml",
+    "demos/*.bin",
     "demos/*.py",
     "demos/meshes/*.obj",
 ]

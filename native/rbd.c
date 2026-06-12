@@ -241,8 +241,8 @@ static int _euler_axes(const char *seq, int axes[3]){
 //the 24 standard 3-axis conventions. ~1.5x slower than the explicit-formula form
 //at -O2 in C, but at -O3 -march=native gcc dead-code-eliminates the elementary-
 //rotation zeros and the two forms produce identical assembly (measured 21->21 ns).
-//since build.sh currently omits -O3, the gap is real here -- worth revisiting
-//when build flags change.
+//Makefile release builds use -O3; debug builds keep the slower generic path
+//visible for easier inspection.
 void euler_to_rotation(double *e, double *R, const char *eulerseq){
     int axes[3];
     int intrinsic = _euler_axes(eulerseq, axes);

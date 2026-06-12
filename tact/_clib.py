@@ -46,44 +46,44 @@ clib.tact_step_lcp.restype      = None
 clib.tact_set_feedback.argtypes = [ctypes.c_void_p, ctypes.c_int, _INT, _INT, _INT, ctypes.c_int, _INT, _DBL, _DBL, ctypes.c_int]
 clib.tact_set_feedback.restype  = None
 
-#in-place setters — preserve arena → tact_get_* views stay valid
+#in-place setters — preserve arena → tact_* views stay valid
 clib.tact_edit_model.argtypes   = [ctypes.c_void_p, _DBL, _DBL, _DBL]
 clib.tact_edit_model.restype    = None
 
 #Phase 4: query functions — frame loop in C. mode[k]: 0=3d, 1=6d.
-clib.tact_fk_query.argtypes    = [ctypes.c_void_p, _DBL, ctypes.c_int, _INT, _INT, ctypes.c_char_p, _DBL]
-clib.tact_fk_query.restype     = None
+clib.tact_fk.argtypes    = [ctypes.c_void_p, _DBL, ctypes.c_int, _INT, _INT, ctypes.c_char_p, _DBL]
+clib.tact_fk.restype     = None
 
-clib.tact_error_query.argtypes = [ctypes.c_void_p, _DBL, _DBL, ctypes.c_int, _INT, _INT, ctypes.c_char_p, _DBL]
-clib.tact_error_query.restype  = None
+clib.tact_error.argtypes = [ctypes.c_void_p, _DBL, _DBL, ctypes.c_int, _INT, _INT, ctypes.c_char_p, _DBL]
+clib.tact_error.restype  = None
 
-clib.tact_jacob_query.argtypes = [ctypes.c_void_p, _DBL, ctypes.c_int, _INT, _INT, _DBL]
-clib.tact_jacob_query.restype  = None
+clib.tact_jacob.argtypes = [ctypes.c_void_p, _DBL, ctypes.c_int, _INT, _INT, _DBL]
+clib.tact_jacob.restype  = None
 
 #h, q, g_override (NULL → use h->g), b_out (caller-allocated, length nb)
-clib.tact_gravity_query.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL]
-clib.tact_gravity_query.restype  = None
+clib.tact_gravity.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL]
+clib.tact_gravity.restype  = None
 
 #h, q, H_out (caller-allocated, nq*nq row-major)
-clib.tact_inertia_query.argtypes = [ctypes.c_void_p, _DBL, _DBL]
-clib.tact_inertia_query.restype  = None
+clib.tact_inertia.argtypes = [ctypes.c_void_p, _DBL, _DBL]
+clib.tact_inertia.restype  = None
 
 #h, q, m (nb), c (3*nb row-major), J_out (3*nq row-major)
-clib.tact_com_jacob_query.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL]
-clib.tact_com_jacob_query.restype  = None
+clib.tact_com_jacob.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL]
+clib.tact_com_jacob.restype  = None
 
 #h, q, m (nb), c (3*nb row-major), r_out (3,)
-clib.tact_com_query.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL]
-clib.tact_com_query.restype  = None
+clib.tact_com.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL]
+clib.tact_com.restype  = None
 
 #h, q, qd, f_ext (NULL → treated as zero; else 6*nb row-major), b_out (length nq)
-clib.tact_bias_query.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL]
-clib.tact_bias_query.restype  = None
+clib.tact_bias.argtypes = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL]
+clib.tact_bias.restype  = None
 
 #h, q_in, x_d, n, frame_idx, mode, eulerseq, advance, tolerance, damping, max_iter, q_out
 #returns iter count (≥0) on convergence, -iter count on max_iter without convergence
-clib.tact_ik2_query.argtypes = [ctypes.c_void_p, _DBL, _DBL, ctypes.c_int, _INT, _INT, ctypes.c_char_p, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, _DBL]
-clib.tact_ik2_query.restype  = ctypes.c_int
+clib.tact_ik2.argtypes = [ctypes.c_void_p, _DBL, _DBL, ctypes.c_int, _INT, _INT, ctypes.c_char_p, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, _DBL]
+clib.tact_ik2.restype  = ctypes.c_int
 
 #h, q, R0s (n*3, world), Rds (n*3, unit, world), n, t_out (n; -1 = no hit).
 #n world rays with per-ray origins — the general primitive (height_scan,
@@ -98,9 +98,9 @@ clib.tact_raycast_world.restype  = None
 clib.tact_raycast_frame.argtypes = [ctypes.c_void_p, _DBL, ctypes.c_int, _DBL, ctypes.c_int, _DBL]
 clib.tact_raycast_frame.restype  = None
 
-clib.tact_get_q_next.argtypes   = [ctypes.c_void_p]; clib.tact_get_q_next.restype   = _DBL
-clib.tact_get_qd_next.argtypes  = [ctypes.c_void_p]; clib.tact_get_qd_next.restype  = _DBL
-clib.tact_get_y.argtypes        = [ctypes.c_void_p]; clib.tact_get_y.restype        = _DBL
+clib.tact_q_next.argtypes   = [ctypes.c_void_p]; clib.tact_q_next.restype   = _DBL
+clib.tact_qd_next.argtypes  = [ctypes.c_void_p]; clib.tact_qd_next.restype  = _DBL
+clib.tact_y.argtypes        = [ctypes.c_void_p]; clib.tact_y.restype        = _DBL
 
 # Register filesystem path for a mesh slot. Python resolves relative paths
 # against the YAML file's directory before calling this.
