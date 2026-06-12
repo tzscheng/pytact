@@ -1,4 +1,7 @@
-"""tact: robotics simulation + control toolkit.
+"""tact: a high contact/tactile fidelity dynamics simulator.
+
+Distributed on PyPI as ``pytact`` and imported in Python as ``tact``.
+The package wraps the native ``libtact.so`` runtime.
 
 Splits into two domains, but exposes a flat API:
     import tact
@@ -10,7 +13,8 @@ For domain-explicit access:
     tact.control.PIDController(...)
 
 Package layout (sibling assets):
-    tact.pkg_dir                         → '/.../fg/tact/tact'  (the package itself)
+    tact.pkg_dir                         → '/.../fg/pytact/tact' or '/.../fg/tact/tact'
+                                            (the import package itself)
     tact.pkg_dir/bin/libtact.so          → installable native library (output of build.sh)
     ../mjenv/mjenv.so                    → internal MuJoCo backend for start -m (not packaged)
     tact.pkg_dir/envs/                    → background-environment scene YAMLs

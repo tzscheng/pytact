@@ -3,9 +3,10 @@ requires = ["setuptools>=70.1", "wheel", "numpy>=2.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tact"
+name = "pytact"
 version = "0.1.0"
-description = "Robotics simulation and control toolkit"
+description = "Python package for tact, a high contact/tactile fidelity dynamics simulator"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0",
@@ -20,6 +21,10 @@ control = [
 ipc = [
     "pyzmq>=25",
 ]
+
+[project.urls]
+Repository = "https://github.com/tzscheng/fg"
+Issues = "https://github.com/tzscheng/fg/issues"
 
 [tool.setuptools]
 packages = ["tact", "tact.bin", "tact.demos", "tact.demos.meshes", "tact.envs"]

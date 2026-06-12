@@ -2,8 +2,8 @@ import os, ctypes, ctypes.util
 
 # libtact.so resolution order:
 #   1. <package_dir>/bin/libtact.so — co-located with this _clib.py in the
-#      inner package (`fg/tact/tact`). This is the normal editable-install and
-#      wheel-install path.
+#      inner `tact` import package. This is the normal editable-install and
+#      wheel-install path for the `pytact` distribution.
 #   2. ./bin/libtact.so      — legacy/ad-hoc development build in CWD.
 #   3. ctypes.util.find_library('tact')  — OS dynamic loader (ldconfig / LD_LIBRARY_PATH /
 #      /usr/lib, /usr/local/lib on Linux; DYLD_LIBRARY_PATH on macOS; PATH on Windows).

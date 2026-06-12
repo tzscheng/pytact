@@ -1,9 +1,10 @@
 """Development shim for the monorepo layout.
 
-The installable Python package lives in ``tact/tact``. When Python is launched
-from the repository root, the outer ``fg/tact`` tooling directory would otherwise
-be seen first as a namespace package named ``tact``. Point import resolution at
-the nested package and execute its real ``__init__``.
+The PyPI distribution is ``pytact``, but the import package is ``tact``. In the
+monorepo layout, the installable Python package lives in the nested ``tact/``
+directory. When Python is launched from this project root, the outer tooling
+directory would otherwise be seen first as a namespace package named ``tact``.
+Point import resolution at the nested package and execute its real ``__init__``.
 """
 import os as _os
 
