@@ -1,15 +1,15 @@
 # tests/scenes — frozen test fixtures
 
 These YAMLs (and `objs/` meshes) are the **frozen scene fixtures** for the test
-suite. They are copies of files from the live scene trees (`demos/`, `envs/`),
+suite. They are copies of files from the live scene trees (`demos/`, `extras/envs/`),
 but deliberately decoupled:
 
-- `demos/*.yml` / `envs/*.yml` are **mutable** — meant to be tweaked, retuned, and changed.
+- `demos/*.yml` / `extras/envs/*.yml` are **mutable** — meant to be tweaked, retuned, and changed.
 - `tests/scenes/*.yml` are **test inputs** — they must NOT drift, or golden
   baselines (`tests/regression/baseline/*.npy`) silently break and the tests
   stop meaning what they meant.
 
-Consumers (all load from here, not `demos/`/`envs/`):
+Consumers (all load from here, not `demos/`/`extras/envs/`):
 
 - `tests/regression/capture_baseline.py` + `test_traj.py` — bit-identical golden
   regression over `SCENARIOS`.
@@ -21,7 +21,7 @@ Consumers (all load from here, not `demos/`/`envs/`):
 2. **Changing a fixture is a deliberate act**: edit the YAML here, then re-run
    `uv run python tests/regression/capture_baseline.py <name>` to re-capture the
    golden baseline, and commit both together (reviewed). Never auto-recapture.
-3. To pull a fresh copy of a scene after improving it in `demos/`/`envs/`, copy it
+3. To pull a fresh copy of a scene after improving it in `demos/`/`extras/envs/`, copy it
    here explicitly and re-capture — that is the only way the test set tracks an
    example change.
 

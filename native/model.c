@@ -1,4 +1,4 @@
-#include "tact_internal.h"
+#include "model.h"
 
 enum {
     BIN_DTYPE_I32 = 1,
@@ -507,21 +507,11 @@ double *tact_ctx_lam(tact_ctx_t *ctx)
 
 int tact_step(const tact_t *h,
               const double *q, const double *qd, const double *tau,
+              const double *q_ref, const double *qd_ref,
+              const double *kp, const double *kd,
               const tact_ctx_t *ctx_in,
               double *q_out, double *qd_out, double *y_out,
               tact_ctx_t *ctx_out)
-{
-    return tact_step_pd(h, q, qd, tau, NULL, NULL, NULL, NULL,
-                        ctx_in, q_out, qd_out, y_out, ctx_out);
-}
-
-int tact_step_pd(const tact_t *h,
-                 const double *q, const double *qd, const double *tau,
-                 const double *q_ref, const double *qd_ref,
-                 const double *kp, const double *kd,
-                 const tact_ctx_t *ctx_in,
-                 double *q_out, double *qd_out, double *y_out,
-                 tact_ctx_t *ctx_out)
 {
     if (!h || !q || !qd || !q_out || !qd_out) return -1;
     if (ctx_in && ctx_in->h != h) return -2;

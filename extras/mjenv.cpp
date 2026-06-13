@@ -196,7 +196,7 @@ void scroll(GLFWwindow* window, double xoffset, double yoffset) {
 // init(robot_xml, env_xml, render) — env_xml NULL/"" loads the robot xml alone
 // (mj_loadXML, the legacy single-file path). Otherwise both files are parsed as
 // mjSpec and the environment's worldbody is attached into the robot's world as a
-// frame (mjs_attach, MuJoCo >= 3.3): one shared env file (tact/mjenv/*.xml) serves
+// frame (mjs_attach, MuJoCo >= 3.3): one shared env file (tact/extras/mjcf/*.xml) serves
 // every robot, replacing the per-robot combined `<include>` scenes. The robot is
 // the PARENT spec, so its <option>/<visual>/<compiler> win and its joint/actuator/
 // sensor names stay unprefixed; env files should carry assets + worldbody only.

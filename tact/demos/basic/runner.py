@@ -1,28 +1,32 @@
 #!/usr/bin/env -S uv run python
 # -*- mode: python -*-
 import sys, os
-sys.path[0] = os.path.dirname(sys.path[0]) if sys.path[0] else os.getcwd()
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+sys.path.insert(0, PROJECT_ROOT)
 import socket, numpy as np, tact
 
 def scene_path(name):
     if os.path.isabs(name) or os.path.exists(name) or os.path.exists(name + '.yml'):
         return name
-    for subdir in ('demos', 'envs'):
-        path = os.path.join(tact.pkg_dir, subdir, name)
-        if os.path.exists(path + '.yml'):
-            return path
-    return name
+    if os.path.sep in name or (os.path.altsep and os.path.altsep in name):
+        return name
+    return os.path.join(HERE, name)
 
-scene = scene_path(sys.argv[1] if len(sys.argv) > 1 else 'obj2')
+def usage():
+    print("Usage: ./runner.py <scene>")
+    print("Examples:")
+    print("  ./runner.py obj1")
+    print("  ./runner.py min_test")
+    print("  ./runner.py arm2")
+    print("  ./runner.py ../box-wall/box_wall")
+
+if len(sys.argv) != 2:
+    usage()
+    sys.exit(0)
+
+scene = scene_path(sys.argv[1])
 env = tact.Env(scene, render=True, redraw=4)
-
-# Examples:
-#   ./yml-test obj1
-#   ./yml-test box_wall
-#   ./yml-test min_test
-#   ./yml-test arm2
-#   ./yml-test hf1
-
 
 #pull = zmq.Context().socket(zmq.PULL)
 #pull.bind('ipc:///dev/shm/zmq-pp0')

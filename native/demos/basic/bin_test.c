@@ -4,15 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MAX_NQ 64
+#define MAX_Y  256
+
 static void usage(const char *argv0)
 {
-    fprintf(stderr, "usage: %s model.bin [steps] [--headless] [--pd] [--steps N]\n", argv0);
+    fprintf(stderr, "usage: %s model.bin [steps] [--headless] [--steps N]\n", argv0);
 }
 
 int main(int argc, char **argv)
 {
     int headless = 0;
-    int use_pd = 0;
     int steps = 1000;
     int saw_steps = 0;
 
@@ -22,10 +24,6 @@ int main(int argc, char **argv)
     }
     for (int i = 2; i < argc; ++i) {
         if (strcmp(argv[i], "--headless") == 0) {
-            headless = 1;
-            if (!saw_steps) steps = 1;
-        } else if (strcmp(argv[i], "--pd") == 0) {
-            use_pd = 1;
             headless = 1;
             if (!saw_steps) steps = 1;
         } else if (strcmp(argv[i], "--steps") == 0 && i + 1 < argc) {
@@ -59,22 +57,26 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    size_t nq_alloc = (size_t)(info.nq > 0 ? info.nq : 1);
-    size_t y_alloc = (size_t)(info.y_size > 0 ? info.y_size : 1);
-    double *q = (double*)malloc(nq_alloc * sizeof(double));
-    double *qd = (double*)malloc(nq_alloc * sizeof(double));
-    double *q_next = (double*)malloc(nq_alloc * sizeof(double));
-    double *qd_next = (double*)malloc(nq_alloc * sizeof(double));
-    double *y = (double*)calloc(y_alloc, sizeof(double));
-    double *tau = (double*)calloc(nq_alloc, sizeof(double));
-    double *q_ref = NULL, *qd_ref = NULL, *kp = NULL, *kd = NULL;
+    if (info.nq > MAX_NQ || info.y_size > MAX_Y) {
+        fprintf(stderr, "model too large for this demo: nq=%d/%d y=%d/%d\n",
+                info.nq, MAX_NQ, info.y_size, MAX_Y);
+        tact_destroy(model);
+        return 1;
+    }
+
+    double q_buf[MAX_NQ] = {0}, q_next_buf[MAX_NQ] = {0};
+    double qd_buf[MAX_NQ] = {0}, qd_next_buf[MAX_NQ] = {0};
+    double y[MAX_Y] = {0};
+    double tau[MAX_NQ] = {0};
+    double q_ref[MAX_NQ] = {0}, qd_ref[MAX_NQ] = {0};
+    double kp[MAX_NQ] = {0}, kd[MAX_NQ] = {0};
+    double *q = q_buf, *q_next = q_next_buf;
+    double *qd = qd_buf, *qd_next = qd_next_buf;
     tact_ctx_t *ctx = NULL;
     tact_ctx_t *ctx_next = NULL;
-    if (!q || !qd || !q_next || !qd_next || !y || !tau ||
-        tact_create_ctx(model, &ctx) != 0 ||
+    if (tact_create_ctx(model, &ctx) != 0 ||
         tact_create_ctx(model, &ctx_next) != 0) {
         fprintf(stderr, "allocation failed\n");
-        free(q); free(qd); free(q_next); free(qd_next); free(y); free(tau);
         tact_destroy_ctx(ctx);
         tact_destroy_ctx(ctx_next);
         tact_destroy(model);
@@ -84,26 +86,6 @@ int main(int argc, char **argv)
         memcpy(q, tact_q0(model), (size_t)info.nq * sizeof(double));
         memcpy(qd, tact_qd0(model), (size_t)info.nq * sizeof(double));
     }
-    if (use_pd) {
-        q_ref = (double*)calloc(nq_alloc, sizeof(double));
-        qd_ref = (double*)calloc(nq_alloc, sizeof(double));
-        kp = (double*)malloc(nq_alloc * sizeof(double));
-        kd = (double*)malloc(nq_alloc * sizeof(double));
-        if (!q_ref || !qd_ref || !kp || !kd) {
-            fprintf(stderr, "allocation failed\n");
-            free(q); free(qd); free(q_next); free(qd_next); free(y); free(tau);
-            free(q_ref); free(qd_ref); free(kp); free(kd);
-            tact_destroy_ctx(ctx);
-            tact_destroy_ctx(ctx_next);
-            tact_destroy(model);
-            return 1;
-        }
-        for (int i = 0; i < info.nq; ++i) {
-            kp[i] = 10.0;
-            kd[i] = 0.1;
-        }
-    }
-
     if (!headless) {
         printf("nb=%d nq=%d n_shape=%d n_pair=%d dt=%.6f\n",
                info.nb, info.nq, info.n_shape, info.n_pair, info.dt);
@@ -111,16 +93,10 @@ int main(int argc, char **argv)
 
     int ran_steps = 0;
     for (int step = 0; step < steps; ++step) {
-        if (use_pd) {
-            rc = tact_step_pd(model, q, qd, tau, q_ref, qd_ref, kp, kd,
-                              ctx, q_next, qd_next, y, ctx_next);
-        } else {
-            rc = tact_step(model, q, qd, tau, ctx, q_next, qd_next, y, ctx_next);
-        }
+        rc = tact_step(model, q, qd, tau, q_ref, qd_ref, kp, kd,
+                       ctx, q_next, qd_next, y, ctx_next);
         if (rc != 0) {
             fprintf(stderr, "tact_step failed at step %d: %d\n", step, rc);
-            free(q); free(qd); free(q_next); free(qd_next); free(y); free(tau);
-            free(q_ref); free(qd_ref); free(kp); free(kd);
             tact_destroy_ctx(ctx);
             tact_destroy_ctx(ctx_next);
             tact_destroy(model);
@@ -158,16 +134,6 @@ int main(int argc, char **argv)
     for (int i = 0; i < info.y_size; ++i) printf(" %.17g", y[i]);
     printf("\n");
 
-    free(q);
-    free(qd);
-    free(q_next);
-    free(qd_next);
-    free(y);
-    free(tau);
-    free(q_ref);
-    free(qd_ref);
-    free(kp);
-    free(kd);
     tact_destroy_ctx(ctx);
     tact_destroy_ctx(ctx_next);
     tact_destroy(model);

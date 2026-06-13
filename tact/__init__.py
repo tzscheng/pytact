@@ -16,18 +16,16 @@ Package layout (sibling assets):
     tact.pkg_dir                         → '/.../fg/pytact/tact' or '/.../fg/tact/tact'
                                             (the import package itself)
     tact.pkg_dir/bin/libtact.so          → installable native library (output of make package-lib)
-    ../mjenv/mjenv.so                    → internal MuJoCo backend for start -m (not packaged)
-    tact.pkg_dir/envs/                    → background-environment scene YAMLs
+    ../extras/mjenv.so                   → internal MuJoCo backend for start -m (not packaged)
+    ../extras/mjcf/                      → repo-local MuJoCo environment XMLs
+    ../extras/envs/                       → repo-local background scene YAMLs
                                             (1.yml–5.yml, d3, hf1, stairs, box1, desk1).
-                                            Loaded by start's -e flag (probes envs/ then
-                                            demos/) and by per-project RL envs.
-    tact.pkg_dir/demos/                   → tact feature/physics demos: sample model
-                                            YAMLs (arm2, arm3, arm4, fv, obj1, obj2,
-                                            sphere_test, box_wall, ...), demo scripts
-                                            (ball_throw.py, raymap_demo.py, demo_delete.py),
-                                            and example project (cartpole/).
-    tact.pkg_dir/demos/meshes/            → shared mesh assets (*.obj); mesh-shape YAMLs
-                                            in demos/ reference them as meshes/<name>.obj.
+                                            Loaded by extras/start -e; not packaged.
+    tact.pkg_dir/demos/                   → tact feature/physics demos grouped by topic:
+                                            basic/, box-wall/, cartpole/, raymap/,
+                                            topology/.
+    tact.pkg_dir/demos/basic/meshes/      → mesh assets used by basic/ demos only.
+                                            Other demo folders carry their own assets.
 """
 import os as _os
 pkg_dir = _os.path.dirname(_os.path.abspath(__file__))

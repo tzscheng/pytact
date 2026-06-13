@@ -386,7 +386,7 @@ double *tact_y       (tact_t *h);
  *   - tact_load(path, &h) allocates a tact handle from a compiled .bin file.
  *     Release it with tact_destroy(h).
  *   - tact_create_ctx(h, &ctx) allocates the caller-threaded warm-start vector
- *     used by tact_step*. Release it with tact_destroy_ctx(ctx). Passing NULL
+ *     used by tact_step. Release it with tact_destroy_ctx(ctx). Passing NULL
  *     ctx_in cold-starts the solve; passing NULL ctx_out discards warm-start.
  *   - tact_t owns compiled topology, geometry, default state, render metadata,
  *     and reusable scratch. The q/qd/y buffers are caller-owned.
@@ -396,7 +396,7 @@ double *tact_y       (tact_t *h);
  *     non-NULL. q_out/qd_out may alias q/qd.
  *   - tau, q_ref, qd_ref, kp, kd are nq-length arrays when non-NULL.
  *   - tau == NULL means zero torque.
- *   - tact_step_pd activates P terms only when q_ref && kp are non-NULL, and D
+ *   - tact_step activates P terms only when q_ref && kp are non-NULL, and D
  *     terms only when kd && (q_ref || qd_ref) are non-NULL, matching Model.step.
  *   - implicit PD is implemented for 1-DoF rev/lin joints. Free-joint PD inputs
  *     are currently not a standalone contract; keep their gains zero/NULL.
@@ -412,11 +412,6 @@ int     tact_create_ctx     (const tact_t *h, tact_ctx_t **out);
 void    tact_destroy_ctx    (tact_ctx_t *ctx);
 double *tact_ctx_lam        (tact_ctx_t *ctx);
 int     tact_step           (const tact_t *h,
-                             const double *q, const double *qd, const double *tau,
-                             const tact_ctx_t *ctx_in,
-                             double *q_out, double *qd_out, double *y_out,
-                             tact_ctx_t *ctx_out);
-int     tact_step_pd        (const tact_t *h,
                              const double *q, const double *qd, const double *tau,
                              const double *q_ref, const double *qd_ref,
                              const double *kp, const double *kd,

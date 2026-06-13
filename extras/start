@@ -1,24 +1,23 @@
 #!/usr/bin/env -S uv run python
 # -*- mode: python -*-
 # When `start` is launched via a per-project symlink (e.g. zen/start →
-# ../tact/start), Python resolves the symlink and sets sys.path[0] to the
-# real script directory — which IS the tact package. That makes `import tact`
-# fail because the package can't find itself listed as a subdirectory of its
-# own location. Replace sys.path[0] with the package's parent so the package
-# (as a sibling dir named `tact`) becomes importable.
+# ../tact/extras/start), Python resolves the symlink and sets
+# sys.path[0] to the real script directory. Replace sys.path[0] with the
+# project root so the package (as a sibling dir named `tact`) becomes importable.
 import sys, os
 sys.path[0] = os.path.dirname(sys.path[0]) if sys.path[0] else os.getcwd()
 import importlib, ctypes, argparse, numpy as np, zmq, tact
 from collections import deque
 
-TACT_ROOT = os.path.dirname(os.path.realpath(__file__))
+TACT_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+EXTRAS_ROOT = os.path.join(TACT_ROOT, 'extras')
 
 def parse_args():
     par = argparse.ArgumentParser()
     par.add_argument('-m', action='store_true', default=False, help='mujoco backend; robot model = <module>.xml, environment via -e')
     par.add_argument('-x', default=False, nargs='?', help='real')
     par.add_argument('-y', default=None, help='yml file name')
-    par.add_argument('-e', default=None, help='environment scene: yml for the tact backend, xml for -m (searched in cwd then tact/mjenv/)')
+    par.add_argument('-e', default=None, help='environment scene: yml for the tact backend, xml for -m (searched in cwd then tact/extras/mjcf/)')
     par.add_argument('-o', nargs=6, default=[0, 0, 0, 0, 0, 0], type=float, help='offset')
     par.add_argument('-d', default=None, help = 'dispatch')
     par.add_argument('-t', default=16, type=int, help = 'redraw step (16 => x1.0 speed')
@@ -57,15 +56,15 @@ if arg.m:
     elif os.path.exists('xml/%s.xml' %src[0]): xmlpath = 'xml/%s.xml' %src[0]
     else: print('cannot find xml...'); sys.exit(0)
     # -e names a robot-independent environment xml: project dir first, then the
-    # shared library tact/mjenv/ (e.g. 0.xml = infinite plane floor). mjenv
+    # shared library tact/extras/mjcf/ (e.g. 0.xml = infinite plane floor). mjenv
     # attaches it into the robot spec (mjSpec) — same composition as tact's
     # env.add, so one env file serves every robot.
     envpath = None
     if arg.e != None:
         if   os.path.exists('%s.xml' %arg.e): envpath = '%s.xml' %arg.e
-        elif os.path.exists(f'{TACT_ROOT}/mjenv/{arg.e}.xml'): envpath = f'{TACT_ROOT}/mjenv/{arg.e}.xml'
+        elif os.path.exists(f'{EXTRAS_ROOT}/mjcf/{arg.e}.xml'): envpath = f'{EXTRAS_ROOT}/mjcf/{arg.e}.xml'
         else: print('cannot find env xml...'); sys.exit(0)
-    cdll = ctypes.CDLL(f'{TACT_ROOT}/mjenv/mjenv.so')
+    cdll = ctypes.CDLL(f'{EXTRAS_ROOT}/mjenv.so')
     # mjenv.cpp::init third arg is `render`: 0 → no GLFW window (headless),
     # >0 → window + redraw every Nth step. Honors -l like the tact backend.
     cdll.init(xmlpath.encode(), envpath.encode() if envpath else None, 0 if arg.l else arg.t)
@@ -102,9 +101,19 @@ else:
     if arg.e != None:
         if os.path.exists('%s.yml' %arg.e): env.add('%s' %arg.e)
         elif os.path.exists('yml/%s.yml' %arg.e): env.add('yml/%s' %arg.e)
-        elif os.path.exists(f'{tact.pkg_dir}/envs/{arg.e}.yml'): env.add(f'{tact.pkg_dir}/envs/{arg.e}')
+        elif os.path.exists(f'{EXTRAS_ROOT}/envs/{arg.e}.yml'): env.add(f'{EXTRAS_ROOT}/envs/{arg.e}')
         elif os.path.exists(f'{tact.pkg_dir}/demos/{arg.e}.yml'): env.add(f'{tact.pkg_dir}/demos/{arg.e}')
-        else: print('cannot find yml...'); sys.exit()
+        else:
+            found = None
+            for root in (f'{EXTRAS_ROOT}/envs', f'{tact.pkg_dir}/demos'):
+                for dirpath, _, _ in os.walk(root):
+                    path = os.path.join(dirpath, arg.e)
+                    if os.path.exists(path + '.yml'):
+                        found = path
+                        break
+                if found: break
+            if found: env.add(found)
+            else: print('cannot find yml...'); sys.exit()
 
 ctx = zmq.Context()
 pull = ctx.socket(zmq.PULL)

@@ -30,7 +30,7 @@ TACT_SRC = [
 def build_libtact():
     """Build the package-local libtact.so.
 
-    This intentionally excludes mjenv/mjenv.cpp. The MuJoCo backend is an
+    This intentionally excludes extras/mjenv.cpp. The MuJoCo backend is an
     internal cross-check/dev path and is not part of the installable package.
     """
     LIB.parent.mkdir(parents=True, exist_ok=True)

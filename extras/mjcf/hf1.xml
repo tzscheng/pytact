@@ -1,9 +1,9 @@
 <mujoco>
   <!-- Shared MuJoCo environment: 10x10 m walkable height-field terrain.
-       Data: ../tact/envs/hf1.bin (101x101 float32 meters, MuJoCo custom
-       hfield binary) — the SAME file tact's envs/hf1.yml loads.
+       Data: ../envs/hf1.bin (101x101 float32 meters, MuJoCo custom
+       hfield binary) — the SAME file tact's extras/envs/hf1.yml loads.
        MuJoCo normalizes hfield data to [0,1] and scales by size[2], so this
-       scene carries the data-derived constants (printed by envs/hf1_gen.py;
+       scene carries the data-derived constants (printed by extras/envs/hf1_gen.py;
        update both if the terrain is regenerated):
          size[2]   = range  = 0.337242  (max - min)
          geom z    = min    = -0.168621 (shifts the surface back to raw meters)
@@ -11,7 +11,7 @@
        Floor convention: group="1" = terrain (raycast/height_scan visibility;
        robot geoms live in group 0). -->
   <asset>
-    <hfield name="hf1" file="../tact/envs/hf1.bin" size="5 5 0.337242 0.25"/>
+    <hfield name="hf1" file="../envs/hf1.bin" size="5 5 0.337242 0.25"/>
   </asset>
 
   <worldbody>

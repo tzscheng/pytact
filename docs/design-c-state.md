@@ -149,6 +149,7 @@ def step(self, q, qd, _tau, cff=False):
     if self.is_locked: ...
     if self.use_c:
         tact.tact_step(self._h, q.ctypes..., qd.ctypes..., tau.ctypes...,
+                       None, None, None, None,
                        self._q_next.ctypes..., self._qd_next.ctypes...,
                        self._y_buf.ctypes..., self._n_y,
                        self._cfs_buf.ctypes..., self._n_cfs)

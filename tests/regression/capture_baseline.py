@@ -39,7 +39,7 @@ SCENARIOS = [
 
 def run_one(yml, n_steps):
     # Load from tests/scenes/ — FROZEN copies of the example YAMLs. Test inputs must
-    # not drift when someone tweaks demos/ or envs/, so the suite owns its own fixtures.
+    # not drift when someone tweaks demos/ or extras/envs/, so the suite owns its own fixtures.
     # See tests/scenes/README.md. (Copies are byte-identical at capture time.)
     env = tact.Env(f'tests/scenes/{yml}', render=False)
     nq = len(env.q)

@@ -3,21 +3,23 @@
 disappear on a floor in time order. Press ESC in the render window to quit.
 
 Highlights arbitrary-order deletion (not just LIFO): we drop several
-objects (including a mesh from meshes/pyramid.obj), then remove a middle-aged
+objects (including a local mesh from pyramid.obj), then remove a middle-aged
 one while newer objects are still present. Each remaining object's
 physical state (pose + velocity) is preserved across the delete — only
 the deleted body's DoF slots get spliced out of q/qd.
 
 Run from anywhere — the mesh asset is referenced by absolute path
-(`<pkg>/demos/meshes/<name>.obj`), so no particular CWD is required:
-    uv run python /home/ubuntu/fg/tact/tact/demos/demo_delete.py
+(`./pyramid.obj` next to this script), so no particular CWD is required:
+    uv run python /home/ubuntu/fg/tact/tact/demos/topology/demo_delete.py
 """
 import os, sys, tempfile
 
-# Make `tact` importable without installing — script lives at fg/tact/tact/demos/
+# Make `tact` importable without installing — script lives under fg/tact/tact/demos/
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))   # → .../fg/tact
+DEMOS_ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.dirname(os.path.dirname(DEMOS_ROOT)))   # -> .../fg/tact
 os.chdir(HERE)
+PYRAMID_OBJ = os.path.join(HERE, 'pyramid.obj')
 import numpy as np
 import tact
 
@@ -65,7 +67,7 @@ def write_yml(name, content):
 floor_path = write_yml('floor', FLOOR_YML)
 
 # Object pool: each entry → unique YAML. (shape, param, rgb, drop_xy)
-# `mesh_teal` references meshes/pyramid.obj (tact/demos/meshes/) — see obj2.yml for the pattern.
+# `mesh_teal` references the local pyramid.obj copy, keeping this demo self-contained.
 POOL = {
     'sphere_red':    ('sphere',   '[0.07]',             '[0.9, 0.3, 0.3]',  ( 0.25,  0.00)),
     'box_blue':      ('box',      '[0.07, 0.07, 0.07]', '[0.3, 0.4, 0.9]',  (-0.25,  0.00)),
@@ -75,7 +77,7 @@ POOL = {
     'box_orange':    ('box',      '[0.06, 0.06, 0.06]', '[0.95, 0.6, 0.2]', (-0.22, -0.22)),
     # mesh: spec is a path. Absolute because the YAML lives in TMP (relative
     # paths resolve against TMP, where there are no meshes/).
-    'mesh_teal':     ('mesh',     f'{HERE}/meshes/pyramid.obj', '[0.4, 0.9, 0.9]',  (-0.20,  0.20)),
+    'mesh_teal':     ('mesh',     PYRAMID_OBJ, '[0.4, 0.9, 0.9]',  (-0.20,  0.20)),
 }
 for key, (shape, param, rgb, (x, y)) in POOL.items():
     write_yml(key, obj_yml(shape, param, rgb, f'[{x}, {y}, 0.6, 0, 0, 0]'))
@@ -90,7 +92,7 @@ SCHEDULE = [
     (1.2,  'add', 'box_blue'),
     (1.9,  'add', 'cyl_yellow'),
     (2.6,  'add', 'cap_magenta'),
-    (3.3,  'add', 'mesh_teal'),      # ← mesh shape (meshes/pyramid.obj)
+    (3.3,  'add', 'mesh_teal'),      # ← mesh shape (pyramid.obj)
     (4.0,  'del', 'box_blue'),       # ← middle-aged removal
     (4.5,  'add', 'sphere_green'),
     (5.5,  'del', 'sphere_red'),     # ← oldest removal

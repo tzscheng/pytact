@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run python
 """Cartpole RL demo (Stable-Baselines3 PPO) over a Gymnasium wrapper of tact.Env.
 
-    uv run python cartpole-sb3.py            # train 10k steps → saves out.zip
+    uv run python cartpole-sb3.py            # train 10k steps -> saves out.zip
     uv run python cartpole-sb3.py play       # load out.zip, render a rollout
 
 The cartpole model (`cartpole.yml`) is cart (lin) + pole (rev), both active →
@@ -13,7 +13,7 @@ import numpy as np
 # Run from anywhere: put fg on sys.path so `import tact` works, and chdir into
 # this dir so tact.Env('cartpole') resolves cartpole.yml next to this script.
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))   # → fg
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(HERE))))   # outer tact/
 os.chdir(HERE)
 import tact
 import stable_baselines3 as sb3, gymnasium as gym

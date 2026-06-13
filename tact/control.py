@@ -701,7 +701,7 @@ class BezierSwing:
 #   is expected to transform raw readings to P before they reach the controller (R and w
 #   are unchanged for a rigid body; a needs centripetal/tangential correction). The
 #   estimators take no frame-offset parameter — they have no way to know about one. See
-#   fg/dog/CLAUDE.md → "IMU frame contract" for the derivation and porting checklist.
+#   fg/dog/docs/imu-frame.md for the derivation and porting checklist.
 
 
 class ComplementaryEstimator:

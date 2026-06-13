@@ -1,5 +1,5 @@
-#ifndef TACT_INTERNAL_H
-#define TACT_INTERNAL_H
+#ifndef MODEL_H
+#define MODEL_H
 
 #include "tact.h"
 
@@ -76,4 +76,4 @@ struct tact_t {
     char   *frame_names;
 };
 
-#endif /* TACT_INTERNAL_H */
+#endif /* MODEL_H */

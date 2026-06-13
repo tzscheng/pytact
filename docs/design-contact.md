@@ -1,7 +1,7 @@
 # Contact narrowphase: multi-point manifold + dispatch
 
 Narrowphase dispatch table, the multi-point contact manifold (sub_id slotting),
-and the box_wall stability/drift result. Moved out of CLAUDE.md 2026-05-31 to keep
+and the box_wall stability/drift result. Moved out of AGENTS.md 2026-05-31 to keep
 it as orientation. Related: `design-hfield.md` (hfield detectors + fidelity roadmap),
 `design-lcp-perf.md` (the A-matrix cost behind the box_wall slowdown).
 
@@ -35,7 +35,7 @@ Height-field shape/raycast/contact + the contact-fidelity roadmap (Tier 2 → 2.
 
 **Canonical sub_id ordering:** when n_points ≥ 2, the narrowphase sorts contact points by polar angle around their centroid in the tangent plane (CCW). Stable across frames as long as the contact polygon topology doesn't change → warm-start λ keeps its meaning. Topology changes (polygon vertex count shift) cost one frame of cold-start PGS convergence.
 
-**Drift observed on `demos/box_wall.yml`** (4-row 18-brick running-bond wall, 30 s sim):
+**Drift observed on `demos/box-wall/box_wall.yml`** (4-row 18-brick running-bond wall, 30 s sim):
 
 | approach | edge drift @ 30 s | wall time |
 |---|---|---|

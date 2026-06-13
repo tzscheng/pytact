@@ -13,16 +13,23 @@
 # reproduce the baseline output exactly (a correct frustum cull / reject changes nothing).
 #
 # Run from a dir where `import tact` works (e.g. fg/dog or fg). Examples:
-#   uv run python ../tact/perf/bench_raycast.py --scene dog --save-ref /tmp/ref_dog.npy
-#   uv run python ../tact/perf/bench_raycast.py --scene syn --n 100 --save-ref /tmp/ref_syn100.npy
+#   uv run python ../tact/tests/perf/bench_raycast.py --scene dog --save-ref /tmp/ref_dog.npy
+#   uv run python ../tact/tests/perf/bench_raycast.py --scene syn --n 100 --save-ref /tmp/ref_syn100.npy
 import os, sys, time, argparse, tempfile
-# Run as a script, sys.path[0] is this file's dir (tact/perf) so `import tact` self-imports
+# Run as a script, sys.path[0] is this file's dir (tact/tests/perf) so `import tact` self-imports
 # and fails (same trap start.py handles). Prepend cwd so a sibling `tact` (e.g. fg/dog/tact
 # symlink, or fg/) resolves as the package.
 sys.path.insert(0, os.getcwd())
 import numpy as np
 
-MESH_OBJ = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'demos/meshes/10.obj')
+MESH_OBJ = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    'tact/demos/basic/meshes/10.obj',
+)
+EXTRA_ENVS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    'extras/envs',
+)
 
 def gen_syn_yml(n, seed, path, kind='mix'):
     """N raycast shapes on a shell around the sensor. Shell radius [1,6] m, random sizes —
@@ -63,7 +70,7 @@ def build_env(args):
     import tact
     if args.scene == 'dog':
         env = tact.Env('dog', render=False)
-        env.add(tact.pkg_dir + '/envs/steps1')
+        env.add(os.path.join(EXTRA_ENVS, 'steps1'))
         frame = 'lidar1'
     else:
         base = os.path.join(tempfile.gettempdir(), f'syn_{args.shapes}_{args.n}_{args.seed}')

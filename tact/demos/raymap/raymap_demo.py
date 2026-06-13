@@ -6,7 +6,7 @@ depth maps from two named camera frames, and saves the result as side-by-side
 images. Pass --show to also open the PNG in the system image viewer.
 
 Usage:
-    cd <repo>/fg/tact/tact/demos
+    cd <repo>/fg/tact/tact/demos/raymap
     ./raymap_demo.py                  # angular projection, range output (LiDAR-like)
     ./raymap_demo.py --pinhole        # RGB-D camera style (lines stay straight)
     ./raymap_demo.py --perpendicular  # cos-corrected: flat surfaces stay flat
@@ -18,9 +18,9 @@ import matplotlib
 matplotlib.use('Agg')   # headless: write PNG, no GUI dependency
 import matplotlib.pyplot as plt
 
-# Resolve tact package: demos/ → tact/ → fg/ on sys.path
+# Resolve tact package: demos/raymap/ → demos/ → tact/ → outer tact/ on sys.path
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(_here)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(_here))))
 import tact
 import ctypes
 from tact._clib import clib, _DBL
@@ -54,7 +54,7 @@ def render(env, frame, width, height, dth, pinhole, perpendicular):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--scene',  default='raymap_demo', help='YAML name under demos/')
+    ap.add_argument('--scene',  default='raymap_demo', help='YAML name in this directory, or any path accepted by tact.Env')
     ap.add_argument('--frame',  default=None, help='frame name (default: render both cam_top and cam_tilt)')
     ap.add_argument('--width',  type=int,   default=120)
     ap.add_argument('--height', type=int,   default=90)

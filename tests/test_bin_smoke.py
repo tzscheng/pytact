@@ -38,31 +38,27 @@ def parse_vector(stdout: str, label: str) -> np.ndarray:
     raise ValueError(f"missing {prefix!r} in output:\n{stdout}")
 
 
-def _step_python(model: tact.Model, *, steps: int, pd: bool):
+def _step_python(model: tact.Model, *, steps: int):
     q = model.q0.copy()
     qd = model.qd0.copy()
     ctx = None
     y = np.zeros(int(getattr(model, "_y_size", 0)), dtype=np.float64)
     tau = np.zeros_like(model.q0)
-    if pd:
-        q_ref = np.zeros_like(model.q0)
-        qd_ref = np.zeros_like(model.qd0)
-        kp = np.full_like(model.q0, 10.0)
-        kd = np.full_like(model.qd0, 0.1)
+    q_ref = np.zeros_like(model.q0)
+    qd_ref = np.zeros_like(model.qd0)
+    kp = np.zeros_like(model.q0)
+    kd = np.zeros_like(model.qd0)
     for _ in range(steps):
-        if pd:
-            q, qd, y, ctx = model.step(q, qd, tau,
-                                        q_ref=q_ref, qd_ref=qd_ref,
-                                        kp=kp, kd=kd, ctx=ctx)
-        else:
-            q, qd, y, ctx = model.step(q, qd, tau, ctx=ctx)
+        q, qd, y, ctx = model.step(q, qd, tau,
+                                    q_ref=q_ref, qd_ref=qd_ref,
+                                    kp=kp, kd=kd, ctx=ctx)
     return q, qd, y
 
 
-def check_parity(exe: str, bin_path: str, model: tact.Model, *, pd: bool,
+def check_parity(exe: str, bin_path: str, model: tact.Model, *,
                  steps: int = 1, expected: str | None = None,
                  atol: float = 1e-12, check_y: bool = False) -> int:
-    args = [exe, bin_path, "--headless", "--steps", str(steps)] + (["--pd"] if pd else [])
+    args = [exe, bin_path, "--headless", "--steps", str(steps)]
     ctest = run(args)
     print(ctest.stdout, end="")
     if ctest.returncode != 0:
@@ -74,7 +70,7 @@ def check_parity(exe: str, bin_path: str, model: tact.Model, *, pd: bool,
         print("unexpected frame id output")
         return 1
 
-    q_py, qd_py, y_py = _step_python(model, steps=steps, pd=pd)
+    q_py, qd_py, y_py = _step_python(model, steps=steps)
     q_c = parse_vector(ctest.stdout, "q")
     qd_c = parse_vector(ctest.stdout, "qd")
     y_c = parse_vector(ctest.stdout, "y")
@@ -83,8 +79,7 @@ def check_parity(exe: str, bin_path: str, model: tact.Model, *, pd: bool,
     if check_y:
         ok = ok and np.allclose(y_c, y_py, rtol=0.0, atol=atol)
     if not ok:
-        label = "PD" if pd else "torque"
-        print(f"C/Python {label} parity failed ({steps} steps)")
+        print(f"C/Python parity failed ({steps} steps)")
         print("q_c ", q_c)
         print("q_py", q_py)
         print("qd_c ", qd_c)
@@ -208,7 +203,7 @@ def check_malformed_rejected(exe: str, valid_bin: str) -> int:
 
 
 def check_asset_malformed_rejected(exe: str) -> int:
-    mesh_src = os.path.join(TACT, "tact/demos/obj1.yml")
+    mesh_src = os.path.join(TACT, "tact/demos/basic/obj1.yml")
     mesh_out, _model = compile_case(mesh_src, "obj1_bad_mesh_base")
     magic, version, chunks = read_bin(mesh_out)
     bad_mesh_chunks = [[tag, dtype, ndim, shape.copy(), nbytes, payload]
@@ -220,7 +215,7 @@ def check_asset_malformed_rejected(exe: str) -> int:
     if rc != 0:
         return rc
 
-    hfield_src = os.path.join(TACT, "tact/envs/hf1.yml")
+    hfield_src = os.path.join(TACT, "extras/envs/hf1.yml")
     hfield_out, _model = compile_case(hfield_src, "hf1_bad_hfield_base")
     magic, version, chunks = read_bin(hfield_out)
     bad_hfield_chunks = [[tag, dtype, ndim, shape.copy(), nbytes, bytearray(payload)]
@@ -237,7 +232,7 @@ def check_asset_malformed_rejected(exe: str) -> int:
 
 
 def main() -> int:
-    src = os.path.join(TACT, "tact/demos/arm2.yml")
+    src = os.path.join(TACT, "tact/demos/basic/arm2.yml")
     out, model = compile_case(src, "arm2_smoke")
 
     with open(out, "rb") as f:
@@ -246,12 +241,12 @@ def main() -> int:
         print(f"bad bin header: magic={magic!r} version={version} chunks={n_chunks}")
         return 1
 
-    build = run(["make", "tools"])
+    build = run(["make", "demos"])
     if build.returncode != 0:
         print(build.stdout)
         return build.returncode
 
-    exe = os.path.join(TACT, "build/tools/bin-test")
+    exe = os.path.join(TACT, "native/demos/basic/bin-test")
     rc = check_malformed_rejected(exe, out)
     if rc != 0:
         return rc
@@ -259,11 +254,7 @@ def main() -> int:
     if rc != 0:
         return rc
 
-    rc = check_parity(exe, out, model, pd=False, expected="nb=2 nq=2",
-                      check_y=True)
-    if rc != 0:
-        return rc
-    rc = check_parity(exe, out, model, pd=True, expected="nb=2 nq=2",
+    rc = check_parity(exe, out, model, expected="nb=2 nq=2",
                       check_y=True)
     if rc != 0:
         return rc
@@ -336,17 +327,17 @@ bodies:
 """)
     parity_cases = [
         # Free joint, no contact yet: catches nq=6 state stepping and gravity.
-        ("sphere_freefall", "tact/demos/sphere_test.yml", 1, "nb=1 nq=6 n_shape=2 n_pair=1"),
+        ("sphere_freefall", "tact/demos/basic/sphere_test.yml", 1, "nb=1 nq=6 n_shape=2 n_pair=1"),
         # Same scene after impact: exercises contact solve + warm-start threading.
-        ("sphere_contact", "tact/demos/sphere_test.yml", 400, "nb=1 nq=6 n_shape=2 n_pair=1"),
+        ("sphere_contact", "tact/demos/basic/sphere_test.yml", 400, "nb=1 nq=6 n_shape=2 n_pair=1"),
         # Multi free-body, multi-point box contact manifold.
-        ("mini_wall_contact", "tact/demos/mini_wall_box.yml", 25, "nb=3 nq=18 n_shape=4 n_pair=6"),
+        ("mini_wall_contact", "tact/demos/box-wall/mini_wall_box.yml", 25, "nb=3 nq=18 n_shape=4 n_pair=6"),
         # Mesh contact over multiple steps; also exercises mesh path registration.
-        ("obj1_mesh_contact", "tact/demos/obj1.yml", 400, "nb=1 nq=6 n_shape=4 n_pair=4"),
+        ("obj1_mesh_contact", "tact/demos/basic/obj1.yml", 400, "nb=1 nq=6 n_shape=4 n_pair=4"),
     ]
     for stem, rel, steps, expected in parity_cases:
         bin_path, case_model = compile_case(os.path.join(TACT, rel), stem)
-        rc = check_parity(exe, bin_path, case_model, pd=False,
+        rc = check_parity(exe, bin_path, case_model,
                           steps=steps, expected=expected)
         if rc != 0:
             return rc
@@ -359,13 +350,13 @@ bodies:
     ]
     for stem, src_path, steps, expected in explicit_cases:
         bin_path, case_model = compile_case(src_path, stem)
-        rc = check_parity(exe, bin_path, case_model, pd=False,
+        rc = check_parity(exe, bin_path, case_model,
                           steps=steps, expected=expected)
         if rc != 0:
             return rc
 
     mesh_out = os.path.join(tempfile.gettempdir(), "obj1_mesh_smoke.bin")
-    mesh_src = os.path.join(TACT, "tact/demos/obj1.yml")
+    mesh_src = os.path.join(TACT, "tact/demos/basic/obj1.yml")
     compile(mesh_src, mesh_out)
     mesh_run = run([exe, mesh_out, "--headless"])
     print(mesh_run.stdout, end="")
@@ -376,7 +367,7 @@ bodies:
         return 1
 
     hfield_out = os.path.join(tempfile.gettempdir(), "hf1_hfield_smoke.bin")
-    hfield_src = os.path.join(TACT, "tact/envs/hf1.yml")
+    hfield_src = os.path.join(TACT, "extras/envs/hf1.yml")
     compile(hfield_src, hfield_out)
     hfield_run = run([exe, hfield_out, "--headless"])
     print(hfield_run.stdout, end="")

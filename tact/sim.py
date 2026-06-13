@@ -164,7 +164,7 @@ def load_hfield(path):
     data[i*ncol+j], row i along +Y, col j along +X.
 
     Format = MuJoCo's custom hfield binary (int32 nrow, int32 ncol, float32
-    data[nrow*ncol]) so ONE data file under tact/envs/ serves both scene
+    data[nrow*ncol]) so ONE data file under tact/extras/envs/ serves both scene
     definitions: the tact YAML (`type: hfield, file: ...`) reads raw meters
     via this function; the mjenv scene's `<hfield file=...>` reads the same
     file but MuJoCo normalizes to [0,1] — its size[2]/geom-z must carry the
@@ -274,8 +274,8 @@ class Model:
         # Mesh slot allocation: YAML `file:` path → C-side mesh slot index.
         # Slots are global (one C-side table per process), deduplicated by
         # resolved absolute path. add()/delete() do not free slots (~64 slot
-        # budget; rare to exhaust in practice — see Q2 design note in
-        # CLAUDE.md's "Dynamic add/delete" section).
+        # budget; rare to exhaust in practice — see the dynamic add/delete notes
+        # in tact/AGENTS.md and docs/backend-interface.md.
         self.mesh_path_to_idx = {}    # abs_path → idx
         self._mesh_max_slots = 64     # matches MAX_MESH in shape.h
         self.hfield_data = []         # retained hfield slot metadata for bin export
@@ -447,7 +447,7 @@ class Model:
 
                     # Resolve heightfield grid → C-side slot. The grid is loaded
                     # here (`file:` = MuJoCo custom hfield binary via
-                    # load_hfield — the shared tact/envs/ format — or an
+                    # load_hfield — the shared tact/extras/envs/ format — or an
                     # inline `data:` list) and pushed to C via set_hfield_data;
                     # cshape[0]=slot mirrors the mesh slot scheme. size:
                     # [sx, sy, sz] — sx,sy are XY half-extents (m); sz
@@ -2193,7 +2193,7 @@ class Env:
 
 
 class CEnv:
-    """Thin adapter that gives a ctypes.CDLL (mjenv/mjenv.so / chenv.so / eio.so)
+    """Thin adapter that gives a ctypes.CDLL (extras/mjenv.so / chenv.so / eio.so)
     the core backend contract (step/reset/finish/backend/has_pd/dt — see
     docs/backend-interface.md) of tact.Env, so callers (the start script, RL
     envs) can stay backend-agnostic. Capabilities beyond the core are optional
@@ -2203,7 +2203,7 @@ class CEnv:
     via __getattr__ (caller owns the signature — prefer ledger-declared methods).
 
     Usage: load and init the cdll yourself, then wrap:
-        cdll = ctypes.CDLL('/path/to/fg/tact/mjenv/mjenv.so')
+        cdll = ctypes.CDLL('/path/to/fg/tact/extras/mjenv.so')
         cdll.init(xmlpath.encode(), redraw_or_0)
         env = tact.CEnv(cdll, n_y=28, n_u=12, backend='mujoco', has_pd=True)
 

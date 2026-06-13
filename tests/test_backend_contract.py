@@ -39,7 +39,7 @@ check(m is not None and m.group(1).split() == CORE,
 
 # 2) tact Env satisfies the core contract
 print('\n[Env (tact)]')
-env = tact.Env(f'{tact.pkg_dir}/demos/arm2', render=False)
+env = tact.Env(f'{tact.pkg_dir}/demos/basic/arm2', render=False)
 for n in CORE:
     check(hasattr(env, n), f'Env has {n!r}')
 check(env.backend == 'tact' and isinstance(env.backend, str), 'backend is the str label')

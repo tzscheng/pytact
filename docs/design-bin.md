@@ -19,7 +19,7 @@ tact_ctx_t *ctx = NULL, *ctx_next = NULL;
 tact_load("robot.bin", &h);
 tact_create_ctx(h, &ctx);
 tact_create_ctx(h, &ctx_next);
-tact_step(h, q, qd, tau, ctx, q_next, qd_next, y, ctx_next);
+tact_step(h, q, qd, tau, NULL, NULL, NULL, NULL, ctx, q_next, qd_next, y, ctx_next);
 tact_destroy_ctx(ctx);
 tact_destroy_ctx(ctx_next);
 tact_destroy(h);
@@ -62,12 +62,11 @@ The main accessors are:
 | `tact_frame_count(h)`, `tact_frame_name(h, id)` | enumerate loaded frame names |
 | `tact_create_ctx(h, &ctx)` | allocates one warm-start lambda buffer |
 | `tact_ctx_lam(ctx)` | borrowed lambda pointer owned by `ctx` |
-| `tact_step(h, q, qd, tau, ctx_in, q_out, qd_out, y_out, ctx_out)` | one zero-PD step; `tau == NULL` means zero torque |
-| `tact_step_pd(h, q, qd, tau, q_ref, qd_ref, kp, kd, ctx_in, q_out, qd_out, y_out, ctx_out)` | one step with optional implicit joint PD |
+| `tact_step(h, q, qd, tau, q_ref, qd_ref, kp, kd, ctx_in, q_out, qd_out, y_out, ctx_out)` | one step with optional implicit joint PD; `tau == NULL` means zero torque |
 | `tact_render(h, q)` | renders the loaded model at `q` in a GLFW window |
 
-All control arrays are `nq`-length when non-NULL. `tact_step_pd` activates the
-P term only when `q_ref && kp` are non-NULL, and the D term only when
+All control arrays are `nq`-length when non-NULL. `tact_step` activates the P
+term only when `q_ref && kp` are non-NULL, and the D term only when
 `kd && (q_ref || qd_ref)` are non-NULL. This mirrors `Model.step`. Implicit PD is
 only a supported public contract for 1-DoF `rev`/`lin` joints; free-joint gains
 should remain zero/NULL in standalone C callers.

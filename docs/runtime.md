@@ -1,21 +1,30 @@
-# Runtime: speed/render pacing + IPC contract (`start` script)
+# Runtime: render/frameskip + IPC contract (`start` script)
 
-Operational detail for the `start` runner. CLAUDE.md keeps the `-s`/`-f` summary +
-command table; the full pacing rationale and the ZMQ camera/lidar dispatch live here.
+Operational detail for the `start` runner. `AGENTS.md` keeps the short command
+table; ZMQ camera/lidar dispatch details live here.
 
-## Speed / render pacing
+## Frameskip / render cadence
 
-**Speed and render rate are two orthogonal knobs** (tact backend): `-s` SPEED (default 1.0, `0`=free-run) sets sim speed; `-f` (default 60) sets the GUI render rate. The window redraw cadence is **derived, never user-set**: `redraw = ceil(speed/(dt*fps))`, so the sim advances at `-s`× realtime while the window redraws at ~`-f` Hz, independently. **Both the tact and mujoco backends** derive it this way — mjenv exposes `get_dt`/`set_redraw` so `start` drives its cadence (and uses its dt) identically. (There is no longer a raw steps-per-render flag.)
+Current `start` is a fixed-step loop without wall-clock sleep pacing. There is
+no `-s` speed flag.
 
-**Real-time pacing**: the main loop sleeps so wall-clock tracks sim time at `-s`×. Anchored to an absolute target so per-step jitter doesn't drift; re-anchors (rather than catch-up-bursting) if it falls >100 ms behind, so overload degrades gracefully instead of spiralling. It paces **both** headless (previously `-l` free-ran at 100% of a core; now ~20%) **and** the GUI: deriving redraw from `-f` with `ceil` makes vsync's capacity (`refresh*redraw`) ≥ the `-s` step target, so the **sleep pacer governs speed** (vsync just caps presentation) → `-s` is exact in the GUI too (e.g. `-s 2` really runs 2×, not capped to ~1× as the old `-t`-as-speed scheme did). Window vsync stays **on** (`glfwSwapInterval(1)`): `glfwSwapBuffers` blocks on vblank, parking the CPU efficiently while the GPU renders. (NVIDIA drivers **busy-spin** during that vblank wait by default, which intermittently pins a core at ~50% when the sleep pacer and the 60 Hz vblank drift out of phase — and stays there regardless of window occlusion. `start` sets `__GL_YIELD=USLEEP` (before GL init; ignored on non-NVIDIA) so the driver sleeps during the wait → consistent low CPU.) (Turning vsync off to drive GUI speed purely by sleep was tried; isolated in-process CPU was the *same* (~40%) but a real desktop can show higher total CPU — likely the compositor recompositing the unthrottled window — so vsync stays on. Decoupling GUI render-rate fully from refresh without that risk needs an off-thread renderer, not done.) The **mujoco** backend is paced the same way (mjenv exposes `get_dt`, so `start` sleep-paces it and sets its cadence via `set_redraw`). Chrono/real have no `env.dt` → not sleep-paced (they pace via their own loop/HW).
+- `-f N`: physics ticks per controller update. The last full command tuple
+  `(tau, q_ref, qd_ref, kp, kd)` is held between controller updates (ZOH).
+- `-t N`: GUI redraw interval in physics ticks for tact `Env`; render interval
+  passed into `mjenv` for `-m`.
+- `-l`: headless/no render window.
+
+Real hardware pacing lives in the eio/backend loop. The generic sim path
+advances as fast as Python/render allows.
 
 ## IPC contract
 
 Bound by `start` over ZMQ IPC on `/dev/shm`:
 - PULL `ipc:///dev/shm/default` — incoming commands (whitespace-split string). Words `quit` and `reset` are handled in `start`; everything else is forwarded to `controller.msgproc(w)`.
-- PUB `ipc:///dev/shm/proprio` (CONFLATE) — float32 packed proprioceptive vector `y`, sent every 20 sim steps.
-- PUB `ipc:///dev/shm/<camera-name>` for each camera in the YAML `cameras:` block (see "YAML scene format"). The runner binds one PUB socket per camera (keyed by name; kida.run/single.run also bind a LAN `tcp://0.0.0.0:<port>` when the camera declares a `port`) and each loop iteration does `for name, buf in env.camera_frames(): socks[name].send(buf)`. **`env.camera_frames()` owns the rate-gating and type→encoder dispatch** — it yields `(name, payload_bytes)` only for cameras due at the current step (gated by each camera's `fps` against `env.cnt`, the same step counter that drives window redraw; per-camera publish cycle = `round((1/dt)/fps)`, cached) and encodes the payload by `type` inline (the per-type getters were inlined 2026-06-06): `rgb` → JPEG bytes, `depth` → zstd-compressed float32 metric depth — both via `egl_render`, called inline. The sim core has no zmq dependency — sockets/`send` stay in the runner. Sensor publishing is a tact-only capability: `start` guards on `env.backend == 'tact'`, and CEnv has no sensor members at all (ledger: `docs/backend-interface.md`).
-- PUB `ipc:///dev/shm/<lidar-name>` for each lidar in the YAML `lidars:` block (see "YAML scene format") — the **virtual LiDAR** counterpart of the camera path. `start` binds one PUB socket per lidar from `env.lidars` (same `socks` dict as cameras; names are unique across both) and each loop does `for name, buf in env.lidar_frames(): socks[name].send(buf)`. **`env.lidar_frames()` mirrors `camera_frames()`**: same `fps`-vs-`env.cnt` rate-gating and an inline `type`→encoder dispatch over the ray pipeline (`_ray_grid` + `tact_raycast_frame`; the `raymap`/`raycloud` wrappers were inlined 2026-06-06) — the lidar wire is **raw float32, no compression** (zstd removed 2026-06-06; depth cameras still compress C-side): `2d` → depth map, range-along-ray with `-1` for no-hit; `3d` → **sensor-frame point cloud** `(N, 3)`, `N` varying per frame; decode `np.frombuffer(buf, '<f4').reshape(-1, 3)` — the consumer composes extrinsic + its own pose estimate, so a hardware lidar driver publishing the same format is a drop-in.
+- PUB `ipc:///dev/shm/proprio` (CONFLATE) — float32 packed proprioceptive vector `y`. Generic `start` publishes every 33 sim ticks and every 16 real-HW ticks.
+- PUB `ipc:///dev/shm/<camera-name>` for each camera in `env.cameras`. The runner binds one PUB socket per camera and sends frames from `env.camera_frames()`. `camera_frames()` owns rate-gating and type-to-encoder dispatch: `rgb` → JPEG bytes, `depth` → zstd-compressed float32 metric depth via EGL render. The sim core has no zmq dependency; sockets/send stay in the runner. `kida.run`/`single.run` also bind LAN `tcp://0.0.0.0:<port>` for cameras declaring a `port`.
+- PUB `ipc:///dev/shm/<lidar-name>` for each lidar in `env.lidars`. `env.lidar_frames()` owns fps-vs-step gating and ray dispatch. Lidar wire is raw float32, no compression: `2d` → range-along-ray depth map with `-1` no-hit pixels; `3d` → sensor-frame point cloud `(N, 3)`, `N` varying per frame; decode with `np.frombuffer(buf, '<f4').reshape(-1, 3)`.
+- Sensor publishing is capability-based. tact `Env` exposes cameras/lidars. MuJoCo `CEnv` can publish lidar when `start -m` resolves lidar specs from the project YAML. Real hardware has no sim sensors; external drivers publish compatible topics.
 - Without `-d`, every received command is logged to `/dev/shm/out.txt` with the step counter.
 
 The cartpole subdir has its own (identical) `start`; new projects typically copy this script.

@@ -263,7 +263,7 @@ New validation scenes:
    the current and any future PGS-edit noise — strictly better than re-capturing this
    compiler's noise as exact. Friction physics promoted to `tests/test_joint_friction.py`
    (analytic static-hold/break-away/monotonic + rev/lin + C↔Python A/B + ctx-purity,
-   7/7) — a baseline-free correctness test that never goes stale. CLAUDE.md (joint
+   7/7) — a baseline-free correctness test that never goes stale. AGENTS.md (joint
    `frictionloss` schema, lcp.c row-table + Contact-solver friction-row sections,
    per-DoF array list, ctx hidden-state) and `docs/design-lcp-perf.md` forward-compat
    ("first instance landed") updated.

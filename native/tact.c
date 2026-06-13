@@ -8,7 +8,7 @@
  *
  * Public surface declared in tact.h. Struct definition is private to this
  * file — Python only sees an opaque void* handle. */
-#include "tact_internal.h"
+#include "model.h"
 
 
 tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, double *Ti, double *ff, double *sk, double *floss, double *armature, double *jnt_lo, double *jnt_hi, double *g, double dt, int integrator, int n_shape, int n_pair, int *ctype, int *cbody, double *cshape, double *ctran, double *cparam, int *craycast, int *cpair, double erp, double slop, double cfm_scale, double v_rest_thresh, int iters, double tol)

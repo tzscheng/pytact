@@ -95,7 +95,7 @@ check(not missing_symbols, 'libtact.so exports standalone bin C API',
       ', '.join(missing_symbols))
 
 print('\n[headless physics]')
-headless_scene = (os.path.join(tact.pkg_dir, 'demos', 'box_wall')
+headless_scene = (os.path.join(tact.pkg_dir, 'demos', 'box-wall', 'box_wall')
                   if INSTALLED_MODE else
                   os.path.join(TACT, 'tests/scenes/box_wall'))
 env = tact.Env(headless_scene, render=False)
@@ -105,7 +105,7 @@ check(y0.shape == y1.shape, 'Env(render=False) reset/step works', f'y shape={y1.
 
 print('\n[bin]')
 bin_path = os.path.join(tempfile.gettempdir(), 'packaging_arm2.bin')
-src = os.path.join(tact.pkg_dir, 'demos', 'arm2.yml')
+src = os.path.join(tact.pkg_dir, 'demos', 'basic', 'arm2.yml')
 compile_cmd = cmd([sys.executable, '-m', 'tact.compile', src, '-o', bin_path])
 check(compile_cmd.returncode == 0 and os.path.exists(bin_path),
       'python -m tact.compile writes bin',
@@ -151,6 +151,10 @@ try:
         ctypes.POINTER(ctypes.c_double),
         ctypes.POINTER(ctypes.c_double),
         ctypes.POINTER(ctypes.c_double),
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.POINTER(ctypes.c_double),
         ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_double),
         ctypes.POINTER(ctypes.c_double),
@@ -179,10 +183,18 @@ try:
     qd_next = np.zeros(info.nq, dtype=np.float64)
     y = np.zeros(max(info.y_size, 1), dtype=np.float64)
     tau = np.zeros(info.nq, dtype=np.float64)
+    q_ref = np.zeros(info.nq, dtype=np.float64)
+    qd_ref = np.zeros(info.nq, dtype=np.float64)
+    kp = np.full(info.nq, 10.0, dtype=np.float64)
+    kd = np.full(info.nq, 0.1, dtype=np.float64)
     rc_step = (clib.tact_step(m,
                               q.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                               qd.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                               tau.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                              q_ref.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                              qd_ref.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                              kp.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                              kd.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                               ctx0,
                               q_next.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
                               qd_next.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
@@ -198,7 +210,11 @@ try:
 
     py_model = tact.Model(os.path.splitext(src)[0])
     q_py, qd_py, _y, _ctx = py_model.step(py_model.q0, py_model.qd0,
-                                          np.zeros_like(py_model.q0))
+                                          np.zeros_like(py_model.q0),
+                                          q_ref=np.zeros_like(py_model.q0),
+                                          qd_ref=np.zeros_like(py_model.qd0),
+                                          kp=np.full_like(py_model.q0, 10.0),
+                                          kd=np.full_like(py_model.qd0, 0.1))
     check(rc_load == 0 and rc_info == 0 and rc_ctx0 == 0 and rc_ctx1 == 0 and rc_step == 0 and
           info.nb == 2 and info.nq == 2 and
           frame_count > 0 and root_id == 0 and root_name == b'root' and missing_id == -1 and

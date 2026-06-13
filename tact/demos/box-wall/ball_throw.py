@@ -4,14 +4,14 @@
 Loads the brick-wall scene, runs the sim in a window, and launches a ball at the
 wall every time you press SPACE.
 
-    uv run python demos/ball_throw.py        # (run from the tact/ dir)
+    uv run python tact/demos/box-wall/ball_throw.py
 
 Controls (focus the render window):
   SPACE  — launch a ball at the wall
   ESC    — quit
   mouse  — orbit (drag left), pan (drag right), zoom (scroll)
 
-How it works: the ball is a free-flying sphere (demos/ball.yml) added to the
+How it works: the ball is a free-flying sphere (ball.yml) added to the
 live scene with env.add(), placed in front of the wall and given an initial
 velocity toward it. At most MAX_BALLS balls are kept — older ones are removed
 with env.delete() so the scene (and the renderer's mesh slots) don't fill up.
@@ -20,10 +20,10 @@ return 1 once per press (ESC returns -1).
 """
 import sys, os, random
 
-HERE = os.path.dirname(os.path.abspath(__file__))   # .../tact/demos
-ROOT = os.path.dirname(HERE)                         # .../tact
-sys.path.insert(0, os.path.dirname(ROOT))            # .../fg   (so `import tact` works)
-os.chdir(ROOT)                                       # so 'demos/...' paths resolve
+HERE = os.path.dirname(os.path.abspath(__file__))    # .../tact/tact/demos/box-wall
+PKG_ROOT = os.path.dirname(os.path.dirname(HERE))    # .../tact/tact
+PROJECT_ROOT = os.path.dirname(PKG_ROOT)             # .../tact
+sys.path.insert(0, PROJECT_ROOT)                     # so `import tact` works
 
 import numpy as np
 import tact
@@ -34,7 +34,7 @@ SPEED     = 5.5      # launch speed (m/s) toward the wall
 
 # render=False: we call _win_render() ourselves so we can read its return code
 # (1 = SPACE pressed, -1 = ESC) — Env.step()'s built-in render swallows it.
-env = tact.Env('demos/box_wall', render=False)   # dt=0.001 from box_wall.yml (stable for this scene)
+env = tact.Env(os.path.join(HERE, 'box_wall'), render=False)  # dt=0.001 from box_wall.yml
 
 balls = []           # live ball group names, oldest first
 n_thrown = 0
@@ -45,7 +45,7 @@ def throw():
     global n_thrown
     n_thrown += 1
     name = f'ball{n_thrown}'
-    env.add('demos/ball', name=name)          # appended → its 6 DoF are q[-6:]
+    env.add(os.path.join(HERE, 'ball'), name=name)  # appended → its 6 DoF are q[-6:]
     balls.append(name)
 
     x = random.uniform(-0.25, 0.25)              # vary the aim across the wall
