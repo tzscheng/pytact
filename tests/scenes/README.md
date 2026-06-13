@@ -14,7 +14,6 @@ Consumers (all load from here, not `demos/`/`envs/`):
 - `tests/regression/capture_baseline.py` + `test_traj.py` — bit-identical golden
   regression over `SCENARIOS`.
 - `tests/test_pure_step.py` — Model.step pure-function invariants.
-- `tests/box_wall_stability.py` — box_wall stability analysis.
 
 ## Rules
 

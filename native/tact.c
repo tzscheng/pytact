@@ -176,6 +176,7 @@ void tact_destroy(tact_t *h)
     free(h->crgba);
     free(h->view);
     free(h->light0);
+    free(h->frame_names);
     free(h);
 }
 
@@ -874,7 +875,7 @@ static double raycast_cached(const rc_shape *cache, int n, const double *R0, con
  * and the per-shape bounding-sphere broad test inside raycast_cached is the
  * broad phase. (Replaced the single-ray tact_raycast_query 2026-06-06 —
  * height_scan's G+1-query loop re-ran _fk + cache per ray, 36x the fixed
- * cost per scan; see tests/_prof_height_scan.py.) */
+ * cost per scan.) */
 void tact_raycast_world(tact_t *h, double *q, double *R0s, double *Rds, int n, double *t_out)
 {
     _fk(h->T, h->nb, h->Ti, h->parent, h->jtype, q);

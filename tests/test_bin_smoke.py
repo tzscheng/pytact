@@ -70,6 +70,9 @@ def check_parity(exe: str, bin_path: str, model: tact.Model, *, pd: bool,
     if expected is not None and expected not in ctest.stdout:
         print("unexpected bin-test output")
         return 1
+    if "frames=" not in ctest.stdout or "root_id=0" not in ctest.stdout or "missing_id=-1" not in ctest.stdout:
+        print("unexpected frame id output")
+        return 1
 
     q_py, qd_py, y_py = _step_python(model, steps=steps, pd=pd)
     q_c = parse_vector(ctest.stdout, "q")

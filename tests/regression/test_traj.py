@@ -25,7 +25,7 @@ scenes at bit-level would test the compiler, not the solver, so they get a
 loose enough to ignore reassociation noise.
 
 (The durable fix — decoupling the bit-exact reference from the -ffast-math
-release build, and growing analytic/correctness tests like tests/joint_friction.py
+release build, and growing analytic/correctness tests like tests/test_joint_friction.py
 — is deferred to the next test-infra forcing function, e.g. a compiler bump.)
 """
 import os, sys

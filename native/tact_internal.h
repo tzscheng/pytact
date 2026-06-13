@@ -73,6 +73,7 @@ struct tact_t {
     double *crgba;
     double *view;
     double *light0;
+    char   *frame_names;
 };
 
 #endif /* TACT_INTERNAL_H */

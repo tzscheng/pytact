@@ -18,8 +18,8 @@ Coverage:
   7. referential transparency   double-step from the same (q,qd,ctx) is identical and
                                 ctx is immutable — on BOTH paths — with friction λ carried.
 
-Pytest-runnable:  uv run pytest tests/joint_friction.py -v
-or standalone:    uv run python tests/joint_friction.py
+Pytest-runnable:  uv run pytest tests/test_joint_friction.py -v
+or standalone:    uv run python tests/test_joint_friction.py
 """
 import os, sys, tempfile
 import numpy as np

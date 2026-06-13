@@ -79,6 +79,9 @@ required_symbols = [
     'tact_info',
     'tact_q0',
     'tact_qd0',
+    'tact_frame_count',
+    'tact_frame_name',
+    'tact_frame_id',
     'tact_create_ctx',
     'tact_destroy_ctx',
     'tact_step',
@@ -134,6 +137,12 @@ try:
     clib.tact_q0.restype = ctypes.POINTER(ctypes.c_double)
     clib.tact_qd0.argtypes = [ctypes.c_void_p]
     clib.tact_qd0.restype = ctypes.POINTER(ctypes.c_double)
+    clib.tact_frame_count.argtypes = [ctypes.c_void_p]
+    clib.tact_frame_count.restype = ctypes.c_int
+    clib.tact_frame_name.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    clib.tact_frame_name.restype = ctypes.c_char_p
+    clib.tact_frame_id.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    clib.tact_frame_id.restype = ctypes.c_int
     clib.tact_create_ctx.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
     clib.tact_create_ctx.restype = ctypes.c_int
     clib.tact_destroy_ctx.argtypes = [ctypes.c_void_p]
@@ -156,6 +165,10 @@ try:
     rc_load = clib.tact_load(bin_path.encode(), ctypes.byref(m))
     info = ModelInfo()
     rc_info = clib.tact_info(m, ctypes.byref(info)) if rc_load == 0 else -1
+    frame_count = clib.tact_frame_count(m) if rc_info == 0 else -1
+    root_id = clib.tact_frame_id(m, b'root') if rc_info == 0 else -1
+    root_name = clib.tact_frame_name(m, 0) if rc_info == 0 else None
+    missing_id = clib.tact_frame_id(m, b'__missing__') if rc_info == 0 else 0
     rc_ctx0 = clib.tact_create_ctx(m, ctypes.byref(ctx0)) if rc_info == 0 else -1
     rc_ctx1 = clib.tact_create_ctx(m, ctypes.byref(ctx1)) if rc_ctx0 == 0 else -1
     q = (np.ctypeslib.as_array(clib.tact_q0(m), shape=(info.nq,)).copy()
@@ -188,6 +201,7 @@ try:
                                           np.zeros_like(py_model.q0))
     check(rc_load == 0 and rc_info == 0 and rc_ctx0 == 0 and rc_ctx1 == 0 and rc_step == 0 and
           info.nb == 2 and info.nq == 2 and
+          frame_count > 0 and root_id == 0 and root_name == b'root' and missing_id == -1 and
           np.allclose(q_next, q_py, rtol=0.0, atol=1e-12) and
           np.allclose(qd_next, qd_py, rtol=0.0, atol=1e-12),
           'ctypes-loaded bin C API steps with Python parity',

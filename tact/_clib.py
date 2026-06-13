@@ -102,6 +102,13 @@ clib.tact_q_next.argtypes   = [ctypes.c_void_p]; clib.tact_q_next.restype   = _D
 clib.tact_qd_next.argtypes  = [ctypes.c_void_p]; clib.tact_qd_next.restype  = _DBL
 clib.tact_y.argtypes        = [ctypes.c_void_p]; clib.tact_y.restype        = _DBL
 
+clib.tact_frame_count.argtypes = [ctypes.c_void_p]
+clib.tact_frame_count.restype  = ctypes.c_int
+clib.tact_frame_name.argtypes  = [ctypes.c_void_p, ctypes.c_int]
+clib.tact_frame_name.restype   = ctypes.c_char_p
+clib.tact_frame_id.argtypes    = [ctypes.c_void_p, ctypes.c_char_p]
+clib.tact_frame_id.restype     = ctypes.c_int
+
 # Register filesystem path for a mesh slot. Python resolves relative paths
 # against the YAML file's directory before calling this.
 clib.set_mesh_path.argtypes = [ctypes.c_int, ctypes.c_char_p]

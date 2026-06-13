@@ -1950,9 +1950,8 @@ class Env:
         wy = float(base_xy[1]) + s * off[:, 0] + c * off[:, 1]
         # G+1 vertical rays (last = under-base reference) in ONE tact_raycast_world
         # call — one _fk + shape cache for the whole scan. The per-point
-        # query loop this replaced re-ran that fixed cost G+1 times and was
-        # 22.8% of a StairsPolicy oracle tick (tests/_prof_height_scan.py);
-        # same rays, so results are bit-identical.
+        # query loop this replaced re-ran that fixed cost G+1 times; same rays,
+        # so results are bit-identical.
         G = len(off)
         R0s = np.empty((G + 1, 3))
         R0s[:G, 0], R0s[:G, 1] = wx, wy

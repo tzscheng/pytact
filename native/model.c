@@ -37,6 +37,7 @@ typedef struct bin_model_t {
     double *q0, *qd0;
     int *feed_kinds, *feed_offsets, *feed_idx, *fbody;
     double *ftran, *ftran_inv;
+    char *frame_names;
     int n_mesh;
     int *mesh_slots;
     char *mesh_paths;
@@ -130,6 +131,18 @@ static int take_chunk(bin_model_t *m, const char *tag,
         s[nbytes] = '\0';
         free(buf);
         m->mesh_paths = s;
+        return 0;
+    }
+    if (strcmp(tag, "frame_names") == 0) {
+        if (m->frame_names || dtype != BIN_DTYPE_UTF8 ||
+            !shape_is(ch, 1, ch->shape[0], 0, 0, 0) ||
+            nbytes != ch->shape[0]) return -1;
+        char *s = (char*)malloc((size_t)nbytes + 1);
+        if (!s) return -1;
+        if (nbytes > 0) memcpy(s, buf, (size_t)nbytes);
+        s[nbytes] = '\0';
+        free(buf);
+        m->frame_names = s;
         return 0;
     }
     if (strcmp(tag, "hfield_meta_i32") == 0) {
@@ -322,6 +335,7 @@ static void destroy_bin_model(bin_model_t *m)
     free_ptr((void**)&m->feed_kinds); free_ptr((void**)&m->feed_offsets);
     free_ptr((void**)&m->feed_idx); free_ptr((void**)&m->fbody);
     free_ptr((void**)&m->ftran); free_ptr((void**)&m->ftran_inv);
+    free_ptr((void**)&m->frame_names);
     free_ptr((void**)&m->mesh_slots); free_ptr((void**)&m->mesh_paths);
     free_ptr((void**)&m->hfield_meta); free_ptr((void**)&m->hfield_offsets);
     free_ptr((void**)&m->hfield_size); free_ptr((void**)&m->hfield_data);
@@ -345,6 +359,7 @@ static int create_handle(bin_model_t *m)
     m->h->crgba = m->crgba; m->crgba = NULL;
     m->h->view = m->view; m->view = NULL;
     m->h->light0 = m->light0; m->light0 = NULL;
+    m->h->frame_names = m->frame_names; m->frame_names = NULL;
     return 0;
 }
 
@@ -426,6 +441,30 @@ int tact_info(const tact_t *h, tact_info_t *out)
     out->n_frame = h->n_frames; out->n_feed = h->n_feeds; out->y_size = h->y_size;
     out->lam_size = h->lam_size; out->dt = h->dt;
     return 0;
+}
+
+int tact_frame_count(const tact_t *h)
+{
+    return (h && h->frame_names) ? h->n_frames : 0;
+}
+
+const char *tact_frame_name(const tact_t *h, int frame_id)
+{
+    if (!h || !h->frame_names || frame_id < 0 || frame_id >= h->n_frames) return NULL;
+    const char *p = h->frame_names;
+    for (int i = 0; i < frame_id; ++i) p += strlen(p) + 1;
+    return *p ? p : NULL;
+}
+
+int tact_frame_id(const tact_t *h, const char *name)
+{
+    if (!h || !h->frame_names || !name) return -1;
+    const char *p = h->frame_names;
+    for (int i = 0; i < h->n_frames; ++i) {
+        if (strcmp(p, name) == 0) return i;
+        p += strlen(p) + 1;
+    }
+    return -1;
 }
 
 const double *tact_q0(const tact_t *h)

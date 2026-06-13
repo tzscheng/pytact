@@ -12,8 +12,8 @@ Analytic / cross-check tests (no captured baseline, never go stale):
   2. armature=0 no-op   — adding armature plumbing must not change a zero-armature model.
   3. C vs Python A/B    — both solver paths agree exactly with armature active.
 
-Pytest-runnable:  uv run pytest tests/joint_armature.py -v
-or standalone:    uv run python tests/joint_armature.py
+Pytest-runnable:  uv run pytest tests/test_joint_armature.py -v
+or standalone:    uv run python tests/test_joint_armature.py
 """
 import os, sys, tempfile
 import numpy as np

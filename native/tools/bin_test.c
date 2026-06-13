@@ -144,6 +144,9 @@ int main(int argc, char **argv)
 
     printf("nb=%d nq=%d n_shape=%d n_pair=%d dt=%.6f steps=%d\n",
            info.nb, info.nq, info.n_shape, info.n_pair, info.dt, ran_steps);
+    printf("frames=%d root_id=%d missing_id=%d\n",
+           tact_frame_count(model), tact_frame_id(model, "root"),
+           tact_frame_id(model, "__missing__"));
     if (info.nq > 0) {
         printf("q0=%.9f qd0=%.9f\n", q[0], qd[0]);
     }

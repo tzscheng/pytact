@@ -14,8 +14,8 @@ Analytic / cross-check tests (no captured baseline, never go stale):
   4. C vs Python A/B      — both solver paths agree to ~machine ε with a limit active.
   5. referential transparency — double-step at the stop is identical; ctx carries limit λ.
 
-Pytest-runnable:  uv run pytest tests/joint_limit.py -v
-or standalone:    uv run python tests/joint_limit.py
+Pytest-runnable:  uv run pytest tests/test_joint_limit.py -v
+or standalone:    uv run python tests/test_joint_limit.py
 
 NOTE: `limit` in YAML is DEGREES (rev) / m (lin), same convention as `q0`; internally
 stored as rad/m. These tests use a rev joint, so the bound is checked in radians.

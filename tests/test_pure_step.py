@@ -9,7 +9,7 @@ fixpoint agreement — so they are self-validating: no golden baseline, no
 re-capture. They guard the pure contract against future refactors (workspace
 externalization, sparse-A, etc.) that could silently break it.
 
-Run:  uv run python /home/ubuntu/uv/fg/tact/tests/test_pure_step.py
+Run:  uv run python tests/test_pure_step.py
 """
 import os, sys
 import numpy as np

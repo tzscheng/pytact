@@ -261,7 +261,7 @@ New validation scenes:
    (box_wall, wall5_box) get a per-scene 0.1 mm atol in `test_traj.py` (their
    bit-exactness is `-ffast-math` reassociation, proven benign), which absorbs both
    the current and any future PGS-edit noise — strictly better than re-capturing this
-   compiler's noise as exact. Friction physics promoted to `tests/joint_friction.py`
+   compiler's noise as exact. Friction physics promoted to `tests/test_joint_friction.py`
    (analytic static-hold/break-away/monotonic + rev/lin + C↔Python A/B + ctx-purity,
    7/7) — a baseline-free correctness test that never goes stale. CLAUDE.md (joint
    `frictionloss` schema, lcp.c row-table + Contact-solver friction-row sections,
@@ -273,7 +273,7 @@ suite still bit-tests the `-ffast-math` release build, which conflates physics w
 compiler/flag/CPU incidentals (Phase 3 was an early symptom). The durable fix is
 structural, not another re-capture: decouple the bit-exact reference from the release
 build (pin toolchain + strict-math for the golden, run release separately) and shift
-weight toward analytic/correctness tests like `tests/joint_friction.py`. Do this at
+weight toward analytic/correctness tests like `tests/test_joint_friction.py`. Do this at
 the next moment the test infra is touched anyway (a compiler upgrade forcing a mass
 re-capture is the natural trigger) — not as a speculative refactor now. Option C
 (strict-build just `lcp.c`) is the alternative if a robust bit-level gate is wanted on
@@ -328,7 +328,7 @@ A latent sizing bug surfaced and was fixed: the row buffers used `M2 = 6·Pm`, w
 overflows when frictive/limited DoFs outnumber the contact-row capacity. Now
 `M2 = 6·Pm + 2·nq` (6 per contact-point + 1 friction + 1 limit per DoF).
 
-Verified analytically (`tests/joint_limit.py`): holds at the stop, unlimited passes,
+Verified analytically (`tests/test_joint_limit.py`): holds at the stop, unlimited passes,
 inactive in interior, C↔Python A/B to machine ε, referential transparency. **Open**
 (both deferred until observed): (a) v1 activates at `depth≥0` (joint can transiently
 cross by up to `v·dt` before Baumgarte pulls it back, ~5e-3 rad in tests) — a

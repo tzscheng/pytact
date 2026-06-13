@@ -42,4 +42,4 @@ Height-field shape/raycast/contact + the contact-fidelity roadmap (Tier 2 → 2.
 | `solver: lcp`, single-point MPR (Phase 1 baseline) | ~12 mm (bottom row spreads outward) | 33 s |
 | `solver: lcp`, 4-point box-box manifold (Phase 2) | ~0.001 mm | 230 s |
 
-The 7× LCP slowdown comes from the larger A matrix (`6·MAX_PTS_PER_PAIR·n_pair` upper bound); narrowphase itself got faster (SAT is 1.5–2× faster than MPR per call). See `tests/box_wall_stability.py` for the harness.
+The 7× LCP slowdown came from the larger A matrix (`6·MAX_PTS_PER_PAIR·n_pair` upper bound); narrowphase itself got faster (SAT is 1.5–2× faster than MPR per call). The current guard for this scene is the frozen `box_wall` trajectory in `tests/regression/test_traj.py`.

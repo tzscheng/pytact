@@ -143,6 +143,11 @@ def compile(src: str | os.PathLike[str], out: str | os.PathLike[str]) -> None:
     add_i32("fbody", model._build_fbody[:n_frame])
     add_f64("ftran", model._build_ftran[:n_frame].reshape(n_frame, 4, 4))
     add_f64("ftran_inv", model._build_ftran_inv[:n_frame].reshape(n_frame, 4, 4))
+    frame_names = [""] * n_frame
+    for name, idx in model.fdict.items():
+        if 0 <= idx < n_frame:
+            frame_names[idx] = name
+    chunks.append(_chunk_text("frame_names", "\0".join(frame_names)))
 
     meta = {
         "format": "bin",

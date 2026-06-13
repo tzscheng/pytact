@@ -247,15 +247,10 @@ hit. Weld / loop-closure rows follow the same path. See `docs/design-joint-frict
 ```bash
 # stage timers (off by default, zero-cost when off)
 make CFLAGS="-W -Wall -O3 -fPIC -ffast-math -funroll-loops -DLCP_PROF"
-TACT_LCP_PROF=1 uv run python tests/_prof_box_wall.py 2000
-TACT_LCP_PROF=1 uv run python tests/_prof_multizen.py   # multi-robot scaling
 
 # bit-identical guard (must stay 10/10 for any algorithm-preserving change)
 uv run python tests/regression/test_traj.py
 ```
-
-`/tmp/bigfloor.yml` is the large floor used by the multi-robot harnesses. uv root
-is `/home/ubuntu/uv` (`cd /home/ubuntu/uv && uv run python ...`).
 
 ## 5. Related decisions
 

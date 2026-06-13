@@ -58,6 +58,8 @@ The main accessors are:
 | --- | --- |
 | `tact_info(h, &info)` | fills counts and `dt`; no ownership transfer |
 | `tact_q0(h)`, `tact_qd0(h)` | borrowed default-state pointers owned by `h` |
+| `tact_frame_id(h, name)` | resolves a frame name to the integer id used by query APIs |
+| `tact_frame_count(h)`, `tact_frame_name(h, id)` | enumerate loaded frame names |
 | `tact_create_ctx(h, &ctx)` | allocates one warm-start lambda buffer |
 | `tact_ctx_lam(ctx)` | borrowed lambda pointer owned by `ctx` |
 | `tact_step(h, q, qd, tau, ctx_in, q_out, qd_out, y_out, ctx_out)` | one zero-PD step; `tau == NULL` means zero torque |
@@ -142,6 +144,7 @@ Optional chunks:
 | Chunk | Type | Meaning |
 | --- | --- | --- |
 | `meta_json` | utf8 | debug metadata and name maps; a minimal C loader may ignore it |
+| `frame_names` | utf8 | NUL-separated frame names in frame-id order; enables `tact_frame_id`/`tact_frame_name` |
 | `mesh_slots_i32` | int32 | mesh slot ids in the same order as `mesh_paths` |
 | `mesh_paths` | utf8 | NUL-separated absolute mesh paths; C loader calls `set_mesh_path(slot, path)` |
 | `hfield_meta_i32` | int32 | `(n_hfield, 3)` rows `[slot, nrow, ncol]` |

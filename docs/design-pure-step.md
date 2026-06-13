@@ -41,7 +41,7 @@ class SolverState(NamedTuple):
                       #    | joint-friction(nq) | joint-limit(nq)]
     nq: int           # layout metadata — 아래 view 용
     # lam_contact / lam_fric / lam_limit: read-only block view properties (디버그/검사용;
-    # tests/joint_{friction,limit}.py 가 그대로 소비). 미래 constraint-row 타입은
+    # tests/test_joint_{friction,limit}.py 가 그대로 소비). 미래 constraint-row 타입은
     # 여기 layout 블록을 append (필드/시그니처 불변).
 ```
 - 처음(2026-05-25)에는 row 타입마다 필드를 추가하는 설계였다 (`lam`, `lam_fric`, `lam_limit`
