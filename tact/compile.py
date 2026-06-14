@@ -149,6 +149,18 @@ def compile(src: str | os.PathLike[str], out: str | os.PathLike[str]) -> None:
             frame_names[idx] = name
     chunks.append(_chunk_text("frame_names", "\0".join(frame_names)))
 
+    tactiles_meta = []
+    for t in model.tactiles:
+        tm = {k: v for k, v in t.items() if not k.startswith('_')}
+        for k in ('pos', 'normal', 'tangent_u', 'tangent_v', 'area', 'cell'):
+            if k in tm:
+                tm[k] = np.asarray(tm[k]).tolist()
+        if 'body_idx' in tm:
+            tm['body_idx'] = int(tm['body_idx'])
+        if 'n' in tm:
+            tm['n'] = int(tm['n'])
+        tactiles_meta.append(tm)
+
     meta = {
         "format": "bin",
         "version": VERSION,
@@ -157,6 +169,7 @@ def compile(src: str | os.PathLike[str], out: str | os.PathLike[str]) -> None:
         "groups": [g["name"] for g in model.groups],
         "cameras": model.cameras,
         "lidars": model.lidars,
+        "tactiles": tactiles_meta,
         "note": "meta_json is optional; core C loading uses binary chunks.",
     }
     chunks.append(_chunk_text("meta_json", json.dumps(meta, sort_keys=True, separators=(",", ":"))))

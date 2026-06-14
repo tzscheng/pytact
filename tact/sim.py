@@ -118,6 +118,186 @@ def _normalize_lidar(spec):
     spec.setdefault('max_range', None)     # 3d only: drop hits beyond this (m)
 
 
+def _unit_vec(v, *, name):
+    a = np.asarray(v, dtype=np.float64).reshape(3)
+    n = np.linalg.norm(a)
+    if n <= 1e-12:
+        raise ValueError(f"{name} must be nonzero")
+    return a / n
+
+
+def _sample_rows_from_file(path):
+    rows = []
+    with open(path, 'r') as f:
+        for line in f:
+            line = line.split('#', 1)[0].strip()
+            if not line:
+                continue
+            parts = line.replace(',', ' ').split()
+            try:
+                vals = [float(x) for x in parts]
+            except ValueError:
+                continue              # header row
+            rows.append(vals)
+    return rows
+
+
+def _normalize_tactile_samples(spec, yml_dir):
+    rows = []
+    if 'samples_file' in spec:
+        rel = spec['samples_file']
+        path = rel if os.path.isabs(rel) else os.path.normpath(os.path.join(yml_dir, rel))
+        if not os.path.exists(path):
+            raise ValueError(f"tactile {spec['name']!r}: samples_file not found: {path}")
+        rows.extend(_sample_rows_from_file(path))
+    if 'samples' in spec:
+        for s in spec['samples']:
+            if isinstance(s, dict):
+                row = list(s['pos']) + list(s['normal']) + list(s['tangent_u'])
+                if 'area' in s: row.append(s['area'])
+            else:
+                row = list(s)
+            rows.append(row)
+    if not rows:
+        raise ValueError(f"tactile {spec['name']!r}: provide `samples` or `samples_file`")
+
+    pos, normal, tangent_u, tangent_v, area = [], [], [], [], []
+    for k, row in enumerate(rows):
+        if len(row) not in (9, 10):
+            raise ValueError(f"tactile {spec['name']!r} sample #{k}: expected 9 or 10 values "
+                             f"(x y z nx ny nz ux uy uz [area]), got {len(row)}")
+        p = np.asarray(row[0:3], dtype=np.float64)
+        n = _unit_vec(row[3:6], name=f"tactile {spec['name']!r} sample #{k} normal")
+        u0 = np.asarray(row[6:9], dtype=np.float64)
+        u0 = u0 - np.dot(u0, n) * n
+        u = _unit_vec(u0, name=f"tactile {spec['name']!r} sample #{k} tangent_u")
+        v = np.cross(n, u)
+        pos.append(p); normal.append(n); tangent_u.append(u); tangent_v.append(v)
+        area.append(float(row[9]) if len(row) == 10 else 1.0)
+
+    spec['pos'] = np.ascontiguousarray(np.stack(pos), dtype=np.float64)
+    spec['normal'] = np.ascontiguousarray(np.stack(normal), dtype=np.float64)
+    spec['tangent_u'] = np.ascontiguousarray(np.stack(tangent_u), dtype=np.float64)
+    spec['tangent_v'] = np.ascontiguousarray(np.stack(tangent_v), dtype=np.float64)
+    spec['area'] = np.ascontiguousarray(np.asarray(area), dtype=np.float64)
+    spec['n'] = len(rows)
+    spec.setdefault('fps', 500)
+    spec.setdefault('channels', ['normal', 'shear_u', 'shear_v'])
+    spec.setdefault('radius', 0.003)
+    spec.setdefault('kernel', 'gaussian')
+    spec.setdefault('sigma', float(spec['radius']) * 0.5)
+    spec.setdefault('filter_tau', 0.0)
+    spec['filter_tau'] = float(spec['filter_tau'])
+    if spec['filter_tau'] < 0:
+        raise ValueError(f"tactile {spec['name']!r}: filter_tau must be non-negative")
+    if 'cell' in spec:
+        cell = np.asarray(spec['cell'], dtype=np.float64).reshape(-1)
+        if cell.shape != (2,) or np.any(cell <= 0):
+            raise ValueError(f"tactile {spec['name']!r}: cell must be [du, dv] with positive lengths")
+        spec['cell'] = np.ascontiguousarray(cell, dtype=np.float64)
+    allowed = {'normal', 'shear_u', 'shear_v', 'pressure'}
+    bad = [c for c in spec['channels'] if c not in allowed]
+    if bad:
+        raise ValueError(f"tactile {spec['name']!r}: unsupported channels {bad} "
+                         f"(allowed: {sorted(allowed)})")
+    if spec['kernel'] not in ('gaussian', 'linear', 'nearest'):
+        raise ValueError(f"tactile {spec['name']!r}: unsupported kernel {spec['kernel']!r}")
+
+
+def _convex_hull_2d(points, eps=1e-12):
+    pts = sorted({(float(p[0]), float(p[1])) for p in points})
+    if len(pts) <= 1:
+        return np.asarray(pts, dtype=np.float64)
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= eps:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= eps:
+            upper.pop()
+        upper.append(p)
+    return np.asarray(lower[:-1] + upper[:-1], dtype=np.float64)
+
+
+def _poly_area_2d(poly):
+    if len(poly) < 3:
+        return 0.0
+    x = poly[:, 0]; y = poly[:, 1]
+    return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _clip_poly_halfplane(poly, inside, intersect):
+    if len(poly) == 0:
+        return poly
+    out = []
+    prev = poly[-1]
+    prev_in = inside(prev)
+    for cur in poly:
+        cur_in = inside(cur)
+        if cur_in:
+            if not prev_in:
+                out.append(intersect(prev, cur))
+            out.append(cur)
+        elif prev_in:
+            out.append(intersect(prev, cur))
+        prev = cur
+        prev_in = cur_in
+    return np.asarray(out, dtype=np.float64)
+
+
+def _clip_poly_rect(poly, xmin, xmax, ymin, ymax, eps=1e-12):
+    def ix_x(x):
+        return lambda a, b: a + (b - a) * ((x - a[0]) / (b[0] - a[0] + eps))
+    def ix_y(y):
+        return lambda a, b: a + (b - a) * ((y - a[1]) / (b[1] - a[1] + eps))
+
+    p = _clip_poly_halfplane(poly, lambda q: q[0] >= xmin - eps, ix_x(xmin))
+    p = _clip_poly_halfplane(p,    lambda q: q[0] <= xmax + eps, ix_x(xmax))
+    p = _clip_poly_halfplane(p,    lambda q: q[1] >= ymin - eps, ix_y(ymin))
+    p = _clip_poly_halfplane(p,    lambda q: q[1] <= ymax + eps, ix_y(ymax))
+    return p
+
+
+def _segment_rect_length(a, b, xmin, xmax, ymin, ymax, eps=1e-12):
+    """Length of 2D segment a-b inside an axis-aligned rectangle."""
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    d = b - a
+    t0, t1 = 0.0, 1.0
+
+    for p, q in (
+        (-d[0], a[0] - xmin),
+        ( d[0], xmax - a[0]),
+        (-d[1], a[1] - ymin),
+        ( d[1], ymax - a[1]),
+    ):
+        if abs(p) <= eps:
+            if q < -eps:
+                return 0.0
+            continue
+        r = q / p
+        if p < 0.0:
+            if r > t1:
+                return 0.0
+            if r > t0:
+                t0 = r
+        else:
+            if r < t0:
+                return 0.0
+            if r < t1:
+                t1 = r
+
+    if t1 <= t0:
+        return 0.0
+    return float(np.linalg.norm(d) * (t1 - t0))
+
+
 def _ray_grid_dirs(width, height, dth, pinhole):
     """Pure per-pixel ray-direction grid — the computation behind Env._ray_grid
     (which adds the per-Env cache) and CEnv._lidar_frames (own cache). ONE
@@ -264,6 +444,11 @@ class Model:
         # ZMQ PUB per sensor and publish at each sensor's own rate.
         self.cameras = []
         self.lidars = []
+        # Point-taxel tactile sensors. Unlike camera/lidar, samples are body-local
+        # points with their own normal/tangent basis, so no frame registration is
+        # needed. Env.tactile_frames() maps last-step contact reports to fixed
+        # (N, C) float32 payloads.
+        self.tactiles = []
 
         # Per-add() group ledger for delete(name). Each entry records the
         # half-open [lo, hi) ranges this add inserted into each parallel array,
@@ -292,6 +477,7 @@ class Model:
             'nfeeds': len(self.feeds),
             'ncameras': len(self.cameras),
             'nlidars': len(self.lidars),
+            'ntactiles': len(self.tactiles),
             'nfixed': len(self.fixed),
         }
 
@@ -587,6 +773,7 @@ class Model:
                 config['bodies'].insert(0, {'name': 'root', 'frames': base_frames})
 
         self.build(config, prefix, modelname)
+        self._register_tactiles(config.get('tactiles', []) or [], prefix, yml_dir)
 
         after = self._snapshot_sizes()
         self.groups.append({
@@ -598,9 +785,28 @@ class Model:
             'nfeeds':     (before['nfeeds'], after['nfeeds']),
             'ncameras':   (before['ncameras'], after['ncameras']),
             'nlidars':    (before['nlidars'], after['nlidars']),
+            'ntactiles':  (before['ntactiles'], after['ntactiles']),
             'nfixed':     (before['nfixed'], after['nfixed']),
             'fdict_keys': list(set(self.fdict.keys()) - fdict_before),
         })
+
+    def _register_tactiles(self, specs, prefix, yml_dir):
+        for raw in specs:
+            if 'name' not in raw:
+                raise ValueError("tactile entry missing required `name`")
+            spec = copy.deepcopy(raw)
+            spec['name'] = (prefix + spec['name']) if prefix else spec['name']
+            bname = spec.get('body', 'root')
+            candidates = [bname]
+            if prefix and bname != 'root':
+                candidates.insert(0, prefix + bname)
+            body_key = next((x for x in candidates if x in self.fdict), None)
+            if body_key is None:
+                raise ValueError(f"tactile {spec['name']!r} references unknown body {bname!r}")
+            spec['body'] = body_key
+            spec['body_idx'] = self.fbody[self.fdict[body_key]]
+            _normalize_tactile_samples(spec, yml_dir)
+            self.tactiles.append(spec)
 
     def reset(self):
         # State restoration lives in Env.reset (q/qd/ctx); Model itself is
@@ -1026,6 +1232,16 @@ class Model:
         self.cameras = self.cameras[:cam_lo] + self.cameras[cam_hi:]
         lid_lo, lid_hi = g['nlidars']
         self.lidars = self.lidars[:lid_lo] + self.lidars[lid_hi:]
+        tac_lo, tac_hi = g['ntactiles']
+        self.tactiles = self.tactiles[:tac_lo] + self.tactiles[tac_hi:]
+        for t in self.tactiles:
+            b = t['body_idx']
+            if nb_lo <= b < nb_hi:
+                raise RuntimeError(
+                    f"cannot delete {name!r}: tactile {t['name']!r} in surviving group "
+                    f"references body {b}")
+            if b >= nb_hi:
+                t['body_idx'] = b - db
 
         # 7. Shift fdict values (frame indices) past the deleted frame range
         for k, v in list(self.fdict.items()):
@@ -1035,6 +1251,7 @@ class Model:
         nfeeds_d = feed_hi - feed_lo
         ncam_d   = cam_hi - cam_lo
         nlid_d   = lid_hi - lid_lo
+        ntac_d   = tac_hi - tac_lo
         nfixed_d = g['nfixed'][1] - g['nfixed'][0]
         for g2 in self.groups[gi+1:]:
             g2['nb']     = (g2['nb'][0]     - db, g2['nb'][1]     - db)
@@ -1044,6 +1261,7 @@ class Model:
             g2['nfeeds'] = (g2['nfeeds'][0] - nfeeds_d, g2['nfeeds'][1] - nfeeds_d)
             g2['ncameras'] = (g2['ncameras'][0] - ncam_d, g2['ncameras'][1] - ncam_d)
             g2['nlidars'] = (g2['nlidars'][0] - nlid_d, g2['nlidars'][1] - nlid_d)
+            g2['ntactiles'] = (g2['ntactiles'][0] - ntac_d, g2['ntactiles'][1] - ntac_d)
             g2['nfixed'] = (g2['nfixed'][0] - nfixed_d, g2['nfixed'][1] - nfixed_d)
         self.groups.pop(gi)
 
@@ -1222,6 +1440,24 @@ class Model:
             out[kind] = slice(off, off + w)
             off += w
         return out
+
+    def contact_reports(self):
+        """Last tact_step_lcp contact reports as flat numpy arrays.
+
+        `idx` rows are [shape_i, shape_j, body_i, body_j].
+        `data` rows are [p_world(3), n_world(3), force_on_j_world(3), depth].
+        Empty arrays are returned before the first step or when no contact is active."""
+        if not self.use_c or getattr(self, '_h', None) is None:
+            return (np.zeros((0, 4), dtype=np.int32),
+                    np.zeros((0, 10), dtype=np.float64))
+        n = int(clib.tact_contact_count(self._h))
+        if n <= 0:
+            return (np.zeros((0, 4), dtype=np.int32),
+                    np.zeros((0, 10), dtype=np.float64))
+        idx = np.empty((n, 4), dtype=np.int32)
+        data = np.empty((n, 10), dtype=np.float64)
+        clib.tact_contact_reports(self._h, idx.ctypes.data_as(_INT), data.ctypes.data_as(_DBL))
+        return idx, data
 
     def feedback(self, q, qd, tau, T, f, a, v, f_ext):
         y = []
@@ -1832,6 +2068,11 @@ class Env:
         `start` iterates this to set up per-lidar PUB sockets, mirroring cameras."""
         return self.m.lidars
 
+    @property
+    def tactiles(self):
+        """Point-taxel tactile publish specs from YAML `tactiles:`."""
+        return self.m.tactiles
+
     def edit(self, index, **kw):
         # Thin passthrough to Model.edit — body-property editor (m, c, I, Ti).
         self.m.edit(index, **kw)
@@ -2191,6 +2432,149 @@ class Env:
                 pts = t[hit, None] * dirs[hit]
                 yield l['name'], pts.astype('<f4').tobytes()
 
+    def tactile_frames(self):
+        """Yield (name, payload_bytes) for each surface-taxel tactile sensor due now.
+
+        Wire format: RAW little-endian float32, shape (N, C), where N is the
+        configured sample count and C=len(channels). Contact reports come from
+        the most recent tact step; no-contact frames are all zeros."""
+        if not self.m.tactiles:
+            return
+        cidx, cdat = self.m.contact_reports()
+        T = _fk(self.m.Ti, self.m.parent, self.m.jtype, self.q)
+        for t in self.m.tactiles:
+            cyc = t.get('_cycle')
+            if cyc is None:
+                cyc = t['_cycle'] = max(1, round((1.0/self.m.dt)/t['fps'])) if t.get('fps') else 1
+            if self.cnt % cyc:
+                continue
+
+            channels = t['channels']
+            out = np.zeros((t['n'], len(channels)), dtype=np.float64)
+            body = int(t['body_idx'])
+            if len(cidx):
+                if body >= 0:
+                    Tb = T[body]
+                    Rwb = Tb[:3, :3]
+                    xwb = Tb[:3, 3]
+                else:
+                    Rwb = np.eye(3)
+                    xwb = np.zeros(3)
+                Rbw = Rwb.T
+                pos = t['pos']
+                normal = t['normal']
+                tangent_u = t['tangent_u']
+                tangent_v = t['tangent_v']
+                radius = float(t['radius'])
+                sigma = max(float(t.get('sigma', radius * 0.5)), 1e-12)
+                area = t['area']
+                contacts = []
+                for k, (ci, cd) in enumerate(zip(cidx, cdat)):
+                    if body == ci[3]:
+                        f_w = cd[6:9]
+                    elif body == ci[2]:
+                        f_w = -cd[6:9]
+                    else:
+                        continue
+                    contacts.append((k, ci, Rbw @ (cd[0:3] - xwb), Rbw @ f_w))
+
+                handled = set()
+                if 'cell' in t:
+                    groups = {}
+                    for item in contacts:
+                        k, ci, _, _ = item
+                        key = tuple(sorted((int(ci[0]), int(ci[1]))))
+                        groups.setdefault(key, []).append(item)
+
+                    du, dv = float(t['cell'][0]), float(t['cell'][1])
+                    rect = (-0.5 * du - radius, 0.5 * du + radius,
+                            -0.5 * dv - radius, 0.5 * dv + radius)
+                    for items in groups.values():
+                        if len(items) < 2:
+                            continue
+
+                        p_all = np.asarray([x[2] for x in items], dtype=np.float64)
+                        f_total = np.sum([x[3] for x in items], axis=0)
+                        weights = np.zeros(t['n'], dtype=np.float64)
+                        if len(items) == 2:
+                            for i in range(t['n']):
+                                rel = p_all - pos[i]
+                                uv = np.column_stack((rel @ tangent_u[i], rel @ tangent_v[i]))
+                                weights[i] = _segment_rect_length(uv[0], uv[1], *rect)
+                        else:
+                            for i in range(t['n']):
+                                rel = p_all - pos[i]
+                                uv = np.column_stack((rel @ tangent_u[i], rel @ tangent_v[i]))
+                                hull = _convex_hull_2d(uv)
+                                if len(hull) < 3:
+                                    continue
+                                clipped = _clip_poly_rect(hull, *rect)
+                                weights[i] = _poly_area_2d(clipped)
+
+                        wsum = float(weights.sum())
+                        if wsum <= 1e-12:
+                            continue
+                        weights /= wsum
+                        handled.update(x[0] for x in items)
+
+                        fn = np.abs(normal @ f_total)
+                        fu = tangent_u @ f_total
+                        fv = tangent_v @ f_total
+                        for c, ch in enumerate(channels):
+                            if ch == 'normal':
+                                out[:, c] += weights * fn
+                            elif ch == 'shear_u':
+                                out[:, c] += weights * fu
+                            elif ch == 'shear_v':
+                                out[:, c] += weights * fv
+                            elif ch == 'pressure':
+                                out[:, c] += weights * fn / area
+
+                for k, ci, p_b, f_b in contacts:
+                    if k in handled:
+                        continue
+                    d = np.linalg.norm(pos - p_b, axis=1)
+                    hit = d <= radius
+                    if not np.any(hit):
+                        continue
+                    if t['kernel'] == 'nearest':
+                        k = int(np.argmin(d))
+                        if d[k] > radius:
+                            continue
+                        idxs = np.array([k])
+                        w = np.array([1.0])
+                    elif t['kernel'] == 'linear':
+                        idxs = np.nonzero(hit)[0]
+                        w = 1.0 - d[idxs] / radius
+                    else:
+                        idxs = np.nonzero(hit)[0]
+                        w = np.exp(-0.5 * (d[idxs] / sigma) ** 2)
+
+                    fn = -normal[idxs] @ f_b
+                    fu = tangent_u[idxs] @ f_b
+                    fv = tangent_v[idxs] @ f_b
+                    for c, ch in enumerate(channels):
+                        if ch == 'normal':
+                            out[idxs, c] += w * np.maximum(0.0, fn)
+                        elif ch == 'shear_u':
+                            out[idxs, c] += w * fu
+                        elif ch == 'shear_v':
+                            out[idxs, c] += w * fv
+                        elif ch == 'pressure':
+                            out[idxs, c] += w * np.maximum(0.0, fn) / area[idxs]
+            tau = float(t.get('filter_tau', 0.0))
+            if tau > 0.0:
+                prev = t.get('_filtered')
+                if prev is None or prev.shape != out.shape:
+                    filt = out.copy()
+                else:
+                    dt_pub = cyc * self.m.dt
+                    alpha = 1.0 - math.exp(-dt_pub / tau)
+                    filt = prev + alpha * (out - prev)
+                t['_filtered'] = filt
+                out = filt
+            yield t['name'], out.astype('<f4').tobytes()
+
 
 class CEnv:
     """Thin adapter that gives a ctypes.CDLL (extras/mjenv.so / chenv.so / eio.so)
@@ -2439,7 +2823,8 @@ class CEnv:
     # in some future backend .so would otherwise become a silent wrong call
     # (ctypes hands out argtypes-less _FuncPtrs for whatever dlsym resolves).
     _NO_FORWARD = ('add', 'delete', 'groups',
-                   'cameras', 'lidars', 'camera_frames', 'lidar_frames')
+                   'cameras', 'lidars', 'tactiles',
+                   'camera_frames', 'lidar_frames', 'tactile_frames')
 
     def __getattr__(self, name):
         if name in CEnv._NO_FORWARD:

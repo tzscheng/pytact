@@ -49,6 +49,10 @@ struct tact_t {
     double *qd_free_buf;
     double *M_buf;
     double *lcp_ws;
+    int     contact_capacity;
+    int     contact_count;
+    int    *contact_i;
+    double *contact_d;
 
     void   *arena;
 

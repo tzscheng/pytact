@@ -26,7 +26,7 @@ def check(cond, label, detail=''):
     if not cond: fails += 1
 
 CORE = ['step', 'reset', 'finish', 'backend', 'has_pd', 'dt']
-SENSOR_NAMES = ['cameras', 'lidars', 'camera_frames', 'lidar_frames']
+SENSOR_NAMES = ['cameras', 'lidars', 'tactiles', 'camera_frames', 'lidar_frames', 'tactile_frames']
 TACT_ONLY = SENSOR_NAMES + ['add', 'delete', 'groups']   # CEnv: absent AND blocked from cdll forwarding
 
 # 1) doc <-> code: the ledger doc's CORE marker is the single source of truth

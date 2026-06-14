@@ -55,10 +55,12 @@ static int load_shared(const char* const* names, char* err, size_t err_sz){
     X(EGLBoolean, eglInitialize,              (EGLDisplay dpy, EGLint *major, EGLint *minor)) \
     X(__eglMustCastToProperFunctionPointerType, eglGetProcAddress, (const char *procname)) \
     X(EGLBoolean, eglChooseConfig,            (EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs, EGLint config_size, EGLint *num_config)) \
+    X(EGLint,    eglGetError,                 (void)) \
     X(EGLBoolean, eglBindAPI,                 (EGLenum api)) \
     X(EGLContext, eglCreateContext,           (EGLDisplay dpy, EGLConfig config, EGLContext share_context, const EGLint *attrib_list)) \
     X(EGLSurface, eglCreatePbufferSurface,    (EGLDisplay dpy, EGLConfig config, const EGLint *attrib_list)) \
     X(EGLBoolean, eglMakeCurrent,             (EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx)) \
+    X(EGLBoolean, eglDestroyContext,          (EGLDisplay dpy, EGLContext ctx)) \
     X(EGLBoolean, eglDestroySurface,          (EGLDisplay dpy, EGLSurface surface))
 
 #define TACT_TJ_PROCS(X) \
@@ -337,10 +339,12 @@ static int render_load_gl_procs(int use_glfw){
 #define eglInitialize p_eglInitialize
 #define eglGetProcAddress p_eglGetProcAddress
 #define eglChooseConfig p_eglChooseConfig
+#define eglGetError p_eglGetError
 #define eglBindAPI p_eglBindAPI
 #define eglCreateContext p_eglCreateContext
 #define eglCreatePbufferSurface p_eglCreatePbufferSurface
 #define eglMakeCurrent p_eglMakeCurrent
+#define eglDestroyContext p_eglDestroyContext
 #define eglDestroySurface p_eglDestroySurface
 
 #define tjInitCompress p_tjInitCompress
@@ -362,6 +366,50 @@ static EGLDisplay try_init_egl_display(EGLDisplay d, const char* label){
         return d;
     }
     return EGL_NO_DISPLAY;
+}
+
+static const char* egl_error_name(EGLint e)
+{
+    switch(e){
+    case EGL_SUCCESS: return "EGL_SUCCESS";
+    case EGL_NOT_INITIALIZED: return "EGL_NOT_INITIALIZED";
+    case EGL_BAD_ACCESS: return "EGL_BAD_ACCESS";
+    case EGL_BAD_ALLOC: return "EGL_BAD_ALLOC";
+    case EGL_BAD_ATTRIBUTE: return "EGL_BAD_ATTRIBUTE";
+    case EGL_BAD_CONFIG: return "EGL_BAD_CONFIG";
+    case EGL_BAD_CONTEXT: return "EGL_BAD_CONTEXT";
+    case EGL_BAD_CURRENT_SURFACE: return "EGL_BAD_CURRENT_SURFACE";
+    case EGL_BAD_DISPLAY: return "EGL_BAD_DISPLAY";
+    case EGL_BAD_MATCH: return "EGL_BAD_MATCH";
+    case EGL_BAD_NATIVE_PIXMAP: return "EGL_BAD_NATIVE_PIXMAP";
+    case EGL_BAD_NATIVE_WINDOW: return "EGL_BAD_NATIVE_WINDOW";
+    case EGL_BAD_PARAMETER: return "EGL_BAD_PARAMETER";
+    case EGL_BAD_SURFACE: return "EGL_BAD_SURFACE";
+    default: return "EGL_UNKNOWN";
+    }
+}
+
+static void egl_log_error(const char *where)
+{
+    EGLint e = eglGetError ? eglGetError() : 0;
+    fprintf(stderr, "egl_render: %s failed (%s / 0x%04x)\n", where, egl_error_name(e), e);
+}
+
+static int egl_choose_config(EGLDisplay dpy, int samples, EGLConfig *cfg_out)
+{
+    EGLint attribs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_BLUE_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_RED_SIZE, 8,
+        EGL_DEPTH_SIZE, 24,
+        EGL_SAMPLE_BUFFERS, samples > 0 ? 1 : 0,
+        EGL_SAMPLES, samples,
+        EGL_NONE
+    };
+    EGLint num_configs = 0;
+    return eglChooseConfig(dpy, attribs, cfg_out, 1, &num_configs) && num_configs > 0;
 }
 
 static EGLDisplay choose_egl_display(void){
@@ -393,7 +441,15 @@ static EGLDisplay choose_egl_display(void){
         unsetenv("__EGL_VENDOR_LIBRARY_FILENAMES");
     }
 
-    // Best match for headless machines without DISPLAY: Mesa surfaceless EGL.
+    // If a GUI session is available, prefer the default EGL display first.
+    // Some GLVND/vendor combinations initialize surfaceless EGL but fail later
+    // at eglMakeCurrent(EGL_BAD_ACCESS), while the default display works.
+    if(getenv("DISPLAY") || getenv("WAYLAND_DISPLAY")){
+        EGLDisplay d = try_init_egl_display(eglGetDisplay(EGL_DEFAULT_DISPLAY), "default");
+        if(d != EGL_NO_DISPLAY) return d;
+    }
+
+    // Best match for genuinely headless machines without DISPLAY: surfaceless EGL.
     if(gpd){
 #ifdef EGL_PLATFORM_SURFACELESS_MESA
         EGLDisplay d = try_init_egl_display(gpd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL), "surfaceless");
@@ -414,7 +470,8 @@ static EGLDisplay choose_egl_display(void){
     }
 
     // Last: legacy default display, usually requires DISPLAY or vendor-specific
-    // default-device support.
+    // default-device support. Kept for vendor stacks that expose a useful
+    // default display even without DISPLAY/WAYLAND_DISPLAY.
     return try_init_egl_display(eglGetDisplay(EGL_DEFAULT_DISPLAY), "default");
 }
 
@@ -1575,6 +1632,8 @@ int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	g_cam.draggingR = 0;
 	g_cam.lastX = 0.0;
 	g_cam.lastY = 0.0;
+    } else {
+	glfwMakeContextCurrent(window);
     }
 
     // Sync mesh table to current (type, shape) per slot. Handles Env.add()
@@ -1768,6 +1827,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
     static EGLContext egl_ctx;
     static EGLSurface egl_surf = EGL_NO_SURFACE;
     static EGLConfig  egl_cfg;   // kept to recreate the pbuffer on a resolution grow
+    static int egl_samples = 4;  // 4x MSAA by default, fallback to 0 for picky EGL pbuffers
 
     static GLuint program;
     static GLint locMVP, locModel, locNMat, locColor, locLPos, locVPos;
@@ -1844,27 +1904,20 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
             return -2;
         }
 
-	//Set configuration
-	EGLint config_attribs[] = {
-	    EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-	    EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-	    EGL_BLUE_SIZE, 8,
-	    EGL_GREEN_SIZE, 8,
-	    EGL_RED_SIZE, 8,
-	    EGL_DEPTH_SIZE, 24,
-	    EGL_SAMPLE_BUFFERS, 1,
-	    EGL_SAMPLES, 4,
-	    EGL_NONE
-	};
-	EGLint num_configs;
-	if(!eglChooseConfig(egl_dpy, config_attribs, &egl_cfg, 1, &num_configs) || num_configs <= 0){
-            fprintf(stderr, "egl_render: eglChooseConfig failed\n");
-            return -2;
+	egl_samples = 4;
+	if(!egl_choose_config(egl_dpy, egl_samples, &egl_cfg)){
+            egl_log_error("eglChooseConfig(4x MSAA)");
+            egl_samples = 0;
+            if(!egl_choose_config(egl_dpy, egl_samples, &egl_cfg)){
+                egl_log_error("eglChooseConfig(no MSAA)");
+                return -2;
+            }
+            fprintf(stderr, "egl_render: disabled MSAA; using single-sample EGL pbuffer\n");
         }
 
 	//OpenGL API bind
 	if(!eglBindAPI(EGL_OPENGL_API)){
-            fprintf(stderr, "egl_render: eglBindAPI(EGL_OPENGL_API) failed\n");
+            egl_log_error("eglBindAPI(EGL_OPENGL_API)");
             return -2;
         }
 
@@ -1877,7 +1930,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	};
 	egl_ctx = eglCreateContext(egl_dpy, egl_cfg, EGL_NO_CONTEXT, context_attribs);
         if (egl_ctx == EGL_NO_CONTEXT) {
-            fprintf(stderr, "egl_render: eglCreateContext failed\n");
+            egl_log_error("eglCreateContext");
             return -2;
         }
     }
@@ -1896,14 +1949,58 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	};
 	egl_surf = eglCreatePbufferSurface(egl_dpy, egl_cfg, pbuffer_attribs);
         if (egl_surf == EGL_NO_SURFACE) {
-            fprintf(stderr, "egl_render: eglCreatePbufferSurface failed\n");
+            egl_log_error("eglCreatePbufferSurface");
             return -2;
         }
+	if(p_glfwMakeContextCurrent) p_glfwMakeContextCurrent(NULL);
 	if(!eglMakeCurrent(egl_dpy, egl_surf, egl_surf, egl_ctx)){
-            fprintf(stderr, "egl_render: eglMakeCurrent failed\n");
+            egl_log_error("eglMakeCurrent");
+            if (egl_samples > 0) {
+                if (egl_surf != EGL_NO_SURFACE) {
+                    eglDestroySurface(egl_dpy, egl_surf);
+                    egl_surf = EGL_NO_SURFACE;
+                }
+                if (egl_ctx != EGL_NO_CONTEXT) {
+                    eglDestroyContext(egl_dpy, egl_ctx);
+                    egl_ctx = EGL_NO_CONTEXT;
+                }
+                egl_samples = 0;
+                if(!egl_choose_config(egl_dpy, egl_samples, &egl_cfg)){
+                    egl_log_error("eglChooseConfig(no MSAA fallback)");
+                    return -2;
+                }
+                EGLint fallback_context_attribs[] = {
+                    EGL_CONTEXT_MAJOR_VERSION, 3,
+                    EGL_CONTEXT_MINOR_VERSION, 3,
+                    EGL_NONE
+                };
+                egl_ctx = eglCreateContext(egl_dpy, egl_cfg, EGL_NO_CONTEXT, fallback_context_attribs);
+                if (egl_ctx == EGL_NO_CONTEXT) {
+                    egl_log_error("eglCreateContext(no MSAA fallback)");
+                    return -2;
+                }
+                egl_surf = eglCreatePbufferSurface(egl_dpy, egl_cfg, pbuffer_attribs);
+                if (egl_surf == EGL_NO_SURFACE) {
+                    egl_log_error("eglCreatePbufferSurface(no MSAA fallback)");
+                    return -2;
+                }
+                if(p_glfwMakeContextCurrent) p_glfwMakeContextCurrent(NULL);
+                if(!eglMakeCurrent(egl_dpy, egl_surf, egl_surf, egl_ctx)){
+                    egl_log_error("eglMakeCurrent(no MSAA fallback)");
+                    return -2;
+                }
+                fprintf(stderr, "egl_render: disabled MSAA after eglMakeCurrent failure\n");
+            } else {
+                return -2;
+            }
+	}
+	if(!render_load_gl_procs(0)) return -2;
+    } else {
+	if(p_glfwMakeContextCurrent) p_glfwMakeContextCurrent(NULL);
+	if(!eglMakeCurrent(egl_dpy, egl_surf, egl_surf, egl_ctx)){
+            egl_log_error("eglMakeCurrent");
             return -2;
         }
-	if(!render_load_gl_procs(0)) return -2;
     }
 
     if(cnt == 0) {
@@ -2150,6 +2247,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 
 	if (ZSTD_isError(zstd_len)){
 	    fprintf(stderr, "egl_render depth: zstd error: %s\n", ZSTD_getErrorName(zstd_len));
+	    eglMakeCurrent(egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	    return 0;
 	}
 
@@ -2158,6 +2256,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
     }
 
     cnt++;
+    eglMakeCurrent(egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     return imglen;
 }
 

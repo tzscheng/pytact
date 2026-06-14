@@ -137,9 +137,9 @@ proprio_update_cycle = 16 if arg.x else 33  # real HW ~120Hz vs sim ~30Hz
 # registries (real HW: device drivers publish to the same topics from outside).
 # One ZMQ PUB per declared sensor; rate-gating + type dispatch live in
 # env.camera_frames()/lidar_frames(), here we only own the sockets, keyed by
-# sensor name (names are unique across cameras and lidars).
+# sensor name (names are unique across cameras, lidars, and tactiles).
 socks = {}
-for c in list(getattr(env, 'cameras', [])) + list(getattr(env, 'lidars', [])):
+for c in list(getattr(env, 'cameras', [])) + list(getattr(env, 'lidars', [])) + list(getattr(env, 'tactiles', [])):
     s = ctx.socket(zmq.PUB)
     s.setsockopt(zmq.CONFLATE, 1)
     s.bind('ipc:///dev/shm/%s' %c['name'])
@@ -202,7 +202,7 @@ while True:
         proprio = y.astype(np.float32).tobytes() #proprioceptive data
         ppub.send(proprio) 
 
-    #update camera/lidar feedback — capability-based: the socket table is empty
+    #update camera/lidar/tactile feedback — capability-based: the socket table is empty
     #when the backend declared no sensors, and each frames() generator exists
     #iff its registry is non-empty (mujoco CEnv: lidar_frames only, no cameras);
     #rate-gating + type dispatch live in env.*_frames()
@@ -212,6 +212,9 @@ while True:
                 socks[name].send(buf)
         if hasattr(env, 'lidar_frames'):
             for name, buf in env.lidar_frames():
+                socks[name].send(buf)
+        if hasattr(env, 'tactile_frames'):
+            for name, buf in env.tactile_frames():
                 socks[name].send(buf)
 
     cnt += 1

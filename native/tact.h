@@ -259,6 +259,7 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
                  double *q, double *jnt_lo, double *jnt_hi, double *lam_limit,
                  double *dqd_out, double *lam_contact_out, double *f_ext_out,
                  int *nc_out, int *iters_out, double *residual_out,
+                 int *contact_count_out, int *contact_i_out, double *contact_d_out,
                  double *workspace);
 
 
@@ -379,6 +380,14 @@ double *tact_v       (tact_t *h);
 double *tact_q_next  (tact_t *h);
 double *tact_qd_next (tact_t *h);
 double *tact_y       (tact_t *h);
+
+/* Last-step active contact reports for sensor post-processing.
+ * contact_i rows are [shape_i, shape_j, body_i, body_j].
+ * contact_d rows are [p_world(3), n_world(3), force_on_j_world(3), depth].
+ * The normal points shape_i → shape_j; force_on_j_world is the solved contact
+ * force applied to body_j's shape, so body_i receives its negative. */
+int     tact_contact_count   (tact_t *h);
+void    tact_contact_reports (tact_t *h, int *contact_i_out, double *contact_d_out);
 
 /* bin/load + explicit-state C API.
  *

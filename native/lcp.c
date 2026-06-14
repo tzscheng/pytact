@@ -206,6 +206,7 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
                  double *q, double *jnt_lo, double *jnt_hi, double *lam_limit,
                  double *dqd_out, double *lam_contact_out, double *f_ext_out,
                  int *nc_out, int *iters_out, double *residual_out,
+                 int *contact_count_out, int *contact_i_out, double *contact_d_out,
                  double *workspace)
 {
     int P  = n_pair > 0 ? n_pair : 1;
@@ -279,6 +280,7 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
     /* ---- defaults / scalar init -------------------------------------------- */
     memset(f_ext_out, 0, 6*nb*sizeof(double));
     memset(dqd_out,   0,    nq*sizeof(double));
+    if (contact_count_out) *contact_count_out = 0;
     /* lam_contact_out carries previous values forward on inactive (cpair, sub_id) slots, so
        initialize from lam_contact_prev (zero if NULL). lam_contact_prev and lam_contact_out may alias —
        when they do, the seed copy is already done (and a self-memcpy would be UB).
@@ -858,6 +860,23 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
         m0[1]  = Rk[3]*m_loc[0] + Rk[4]*m_loc[1] + Rk[5]*m_loc[2];
         m0[2]  = Rk[6]*m_loc[0] + Rk[7]*m_loc[1] + Rk[8]*m_loc[2];
 
+        if (contact_i_out && contact_d_out) {
+            contact_i_out[4*k + 0] = si;
+            contact_i_out[4*k + 1] = sj;
+            contact_i_out[4*k + 2] = cbody[si];
+            contact_i_out[4*k + 3] = cbody[sj];
+            contact_d_out[10*k + 0] = pw[0];
+            contact_d_out[10*k + 1] = pw[1];
+            contact_d_out[10*k + 2] = pw[2];
+            contact_d_out[10*k + 3] = Rk[2];
+            contact_d_out[10*k + 4] = Rk[5];
+            contact_d_out[10*k + 5] = Rk[8];
+            contact_d_out[10*k + 6] = cf0[0];
+            contact_d_out[10*k + 7] = cf0[1];
+            contact_d_out[10*k + 8] = cf0[2];
+            contact_d_out[10*k + 9] = depth[k];
+        }
+
         for (int side = 0; side < 2; side++) {
             int body = (side == 0) ? cbody[si] : cbody[sj];
             if (body < 0) continue;
@@ -889,6 +908,7 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
             f_ext_out[6*body + 5] += ef[2];
         }
     }
+    if (contact_count_out) *contact_count_out = nc;
 #ifdef LCP_PROF
     {
         PROF_TS(t_p6);

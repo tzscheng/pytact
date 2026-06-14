@@ -64,17 +64,21 @@ tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, doub
       + aba_ws_size                         /* workspace (sized for aba/crb/rne incl. free) */
       + nq                                  /* qd_free_buf (LCP predictor, per-DoF) */
       + nq*nq                               /* M_buf (joint-space mass matrix) */
+      + 10*Pm_max                           /* contact_d reports: p,n,f,depth */
       + lcp_ws_doubles                      /* lcp_ws (contact_lcp workspace) */
     );
     /* ints: parent, jtype, q_base, v_base, nq_per_body, nv_per_body (6*nb)
-     *     + ctype, cbody, craycast (3*n_shape) + cpair (2*n_pair) */
-    size_t bytes_int = sizeof(int) * (6*nb + 3*n_shape + 2*n_pair);
+     *     + ctype, cbody, craycast (3*n_shape) + cpair (2*n_pair)
+     *     + contact_i reports (4*Pm_max) */
+    size_t bytes_int = sizeof(int) * (6*nb + 3*n_shape + 2*n_pair + 4*Pm_max);
 
     tact_t *h = (tact_t*)calloc(1, sizeof(tact_t));
     h->arena = malloc(bytes_dbl + bytes_int);
 
     h->nb = nb; h->nq = nq; h->nv = nv_total;
     h->n_shape = n_shape; h->n_pair = n_pair;
+    h->contact_capacity = (int)Pm_max;
+    h->contact_count = 0;
     h->integrator = integrator; h->dt = dt;
     h->erp = erp; h->slop = slop; h->cfm_scale = cfm_scale;
     h->v_rest_thresh = v_rest_thresh; h->iters = iters; h->tol = tol;
@@ -109,6 +113,7 @@ tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, doub
     CARVE_DBL(workspace, aba_ws_size);
     CARVE_DBL(qd_free_buf, nq);
     CARVE_DBL(M_buf,       nq*nq);
+    CARVE_DBL(contact_d,   10*Pm_max);
     CARVE_DBL(lcp_ws,      lcp_ws_doubles);
     #undef CARVE_DBL
     #define CARVE_INT(field, n) do { h->field = (int*)p; p += (size_t)(n)*sizeof(int); } while (0)
@@ -122,6 +127,7 @@ tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, doub
     CARVE_INT(cbody,        n_shape);
     CARVE_INT(craycast,     n_shape);
     CARVE_INT(cpair,        2*n_pair);
+    CARVE_INT(contact_i,    4*Pm_max);
     #undef CARVE_INT
 
     /* copy static data */
@@ -190,6 +196,19 @@ double tact_dt(const tact_t *h)    { return h ? h->dt : 0.0; }
 int tact_lam_size(const tact_t *h)
 {
     return h ? h->lam_size : 0;
+}
+
+int tact_contact_count(tact_t *h)
+{
+    return h ? h->contact_count : 0;
+}
+
+void tact_contact_reports(tact_t *h, int *contact_i_out, double *contact_d_out)
+{
+    if (!h) return;
+    int n = h->contact_count;
+    if (contact_i_out && n > 0) memcpy(contact_i_out, h->contact_i, 4*n*sizeof(int));
+    if (contact_d_out && n > 0) memcpy(contact_d_out, h->contact_d, 10*n*sizeof(double));
 }
 
 /* Phase 2: pre-marshal feedback descriptors into the handle. Allocates a separate
@@ -489,6 +508,7 @@ void tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, 
                 lout,                       /* out: λ_full (next warm-start) */
                 h->f_ext,                   /* out: per-body contact wrench */
                 &nc_out, &iters_out, &residual_out,
+                &h->contact_count, h->contact_i, h->contact_d,
                 h->lcp_ws);
 
     /* semi-implicit Euler: qd_next = qd_free + dqd; q_next = q_step(q, qd_next, dt).

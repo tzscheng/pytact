@@ -102,6 +102,11 @@ clib.tact_q_next.argtypes   = [ctypes.c_void_p]; clib.tact_q_next.restype   = _D
 clib.tact_qd_next.argtypes  = [ctypes.c_void_p]; clib.tact_qd_next.restype  = _DBL
 clib.tact_y.argtypes        = [ctypes.c_void_p]; clib.tact_y.restype        = _DBL
 
+clib.tact_contact_count.argtypes = [ctypes.c_void_p]
+clib.tact_contact_count.restype  = ctypes.c_int
+clib.tact_contact_reports.argtypes = [ctypes.c_void_p, _INT, _DBL]
+clib.tact_contact_reports.restype  = None
+
 clib.tact_frame_count.argtypes = [ctypes.c_void_p]
 clib.tact_frame_count.restype  = ctypes.c_int
 clib.tact_frame_name.argtypes  = [ctypes.c_void_p, ctypes.c_int]
