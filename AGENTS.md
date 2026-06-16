@@ -14,7 +14,7 @@ Layout:
 
 - outer `tact/`: dev/build/test/docs and package metadata
 - inner `tact/tact/`: import package, runtime assets, `bin/libtact.so`
-- `native/`: C sources/headers built to `tact/bin/libtact.so`
+- `native/`: C sources/headers built by `make` to `native/lib/libtact.so`
 - `extras/`: repo-local launchers/tools and MuJoCo backend assets that are not
   part of the Python package (`start`, `mjenv.cpp`, `mjcf/`, `envs/`)
 
@@ -41,7 +41,7 @@ sim, MuJoCo, real hardware CEnv/eio. Chrono `-c` is removed.
 ## Build / run
 
 ```bash
-make                         # tact/bin/libtact.so + native/demos/basic/bin-test
+make                         # native/lib/libtact.so + native/demos/basic/bin-test
 make debug                   # no-opt/gdb-friendly build
 extras/build.sh              # extras/mjenv.so for start -m
 tact/demos/basic/runner.py arm2
@@ -125,7 +125,8 @@ Runtime assets are addressed via `tact.pkg_dir/<asset>`.
 
 ## Code Routing
 
-- Native engine: `native/`; build output `tact/bin/libtact.so`.
+- Native engine: `native/`; make output `native/lib/libtact.so`; Python
+  packaging separately builds package-local `tact/bin/libtact.so`.
 - Contact/narrowphase details: `docs/design-contact.md`,
   `docs/design-hfield.md`, `docs/design-lcp-perf.md`,
   `docs/design-joint-friction.md`.

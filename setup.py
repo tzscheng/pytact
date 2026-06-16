@@ -3,7 +3,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from setuptools import setup
+from setuptools import Distribution, setup
 from setuptools.command.build_py import build_py as _build_py
 from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
 
@@ -55,5 +55,17 @@ class bdist_wheel(_bdist_wheel):
         super().finalize_options()
         self.root_is_pure = False
 
+    def get_tag(self):
+        _python, _abi, platform = super().get_tag()
+        return "py3", "none", platform
 
-setup(cmdclass={"build_py": build_py, "bdist_wheel": bdist_wheel})
+
+class BinaryDistribution(Distribution):
+    def has_ext_modules(self):
+        return True
+
+
+setup(
+    cmdclass={"build_py": build_py, "bdist_wheel": bdist_wheel},
+    distclass=BinaryDistribution,
+)

@@ -89,12 +89,14 @@ For the full binary model format and C API contract, see
 
 ```text
 native/              C engine sources and public header tact.h
+native/lib/          native C shared library output from make
 native/demos/basic/  minimal standalone C demo using compiled .bin models
-tact/                Python package, including packaged demos and libtact.so
+tact/                Python package and packaged demos
 docs/                design notes and API contracts
 extras/              repo-local tools/assets not included in the Python package
 tests/               regression and packaging smoke tests
 ```
 
-From a checkout, `make` builds `tact/bin/libtact.so` and the native demo. Python
-packaging also builds and ships `libtact.so` inside `pytact`.
+From a checkout, `make` builds the native C library at `native/lib/libtact.so`
+and the native demo. Python packaging separately builds and ships the
+package-local `tact/bin/libtact.so` inside `pytact`.

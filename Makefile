@@ -6,9 +6,7 @@ CXX ?= g++
 AR ?= ar
 INSTALL ?= install
 
-BUILD_DIR ?= build/native
-LIB_DIR ?= build/lib
-PKG_LIB_DIR ?= tact/bin
+LIB_DIR ?= native/lib
 
 CFLAGS ?= -W -Wall -O3 -fPIC -ffast-math -funroll-loops
 LDFLAGS ?=
@@ -28,30 +26,27 @@ TACT_SRC := \
 
 TACT_HEADERS := native/tact.h native/shape.h native/model.h
 TACT_LIB := $(LIB_DIR)/libtact.so
-PKG_TACT_LIB := $(PKG_LIB_DIR)/libtact.so
 BIN_TEST := native/demos/basic/bin-test
 
 .PHONY: all clean install uninstall package-lib demos debug
 
-all: package-lib demos
+all: $(TACT_LIB) demos
 
 $(TACT_LIB): $(TACT_SRC) $(TACT_HEADERS) | $(LIB_DIR)
 	$(CC) $(CFLAGS) -shared -o $@ $(TACT_SRC) $(LDFLAGS) $(LDLIBS)
 
-package-lib: $(PKG_TACT_LIB)
-
-$(PKG_TACT_LIB): $(TACT_LIB) | $(PKG_LIB_DIR)
-	cp $< $@
+package-lib:
+	@echo "package-lib is built by Python packaging; use 'uv build --wheel'."
 
 demos: $(BIN_TEST)
 
 $(BIN_TEST): native/demos/basic/bin_test.c $(TACT_LIB) native/tact.h
-	$(CC) -W -Wall -O2 -Inative -o $@ native/demos/basic/bin_test.c -L$(LIB_DIR) -ltact -Wl,-rpath,'$$ORIGIN/../../../build/lib'
+	$(CC) -W -Wall -O2 -Inative -o $@ native/demos/basic/bin_test.c -L$(LIB_DIR) -ltact -Wl,-rpath,'$$ORIGIN/../../lib'
 
 debug:
-	$(MAKE) -B CFLAGS="-W -Wall -O0 -g -fPIC" package-lib demos
+	$(MAKE) -B CFLAGS="-W -Wall -O0 -g -fPIC" $(TACT_LIB) demos
 
-$(LIB_DIR) $(PKG_LIB_DIR):
+$(LIB_DIR):
 	mkdir -p $@
 
 install: $(TACT_LIB)
@@ -65,4 +60,4 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/lib/libtact.so
 
 clean:
-	rm -rf $(BUILD_DIR) $(LIB_DIR) $(BIN_TEST)
+	rm -rf $(LIB_DIR) $(BIN_TEST)
