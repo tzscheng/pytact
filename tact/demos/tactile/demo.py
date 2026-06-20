@@ -30,8 +30,8 @@ def main():
     ap.add_argument("--amp", type=float, default=18.0, help="pitch/roll amplitude in degrees")
     ap.add_argument("--freq", type=float, default=0.35, help="pitch/roll frequency in Hz")
     ap.add_argument("--phase", type=float, default=90.0, help="roll phase lead in degrees")
-    ap.add_argument("--kp", type=float, default=500.0, help="joint position gain")
-    ap.add_argument("--kd", type=float, default=20.0, help="joint velocity gain")
+    ap.add_argument("--kp", type=float, default=1000.0, help="joint position gain")
+    ap.add_argument("--kd", type=float, default=40.0, help="joint velocity gain")
     args = ap.parse_args()
 
     scene = args.scene

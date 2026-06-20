@@ -12,8 +12,9 @@ tactiles:
   - name: top_taxels
     body: pad
     fps: 1000
+    filter_tau: 0.01
     cell: [0.005, 0.005]
-    radius: 0.004
+    radius: 0.01
     kernel: gaussian
     channels: [normal, shear_u, shear_v, pressure]
     samples_file: taxels.csv

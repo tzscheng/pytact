@@ -16,12 +16,6 @@ dependencies = [
     "pyzmq>=25",
 ]
 
-[project.optional-dependencies]
-control = [
-    "scipy>=1.11",
-    "osqp>=1.0",
-]
-
 [project.urls]
 Repository = "https://github.com/tzscheng/fg"
 Issues = "https://github.com/tzscheng/fg/issues"
