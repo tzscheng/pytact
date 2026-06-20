@@ -255,6 +255,7 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "pyyaml" },
+    { name = "pyzmq" },
 ]
 
 [package.optional-dependencies]
@@ -262,19 +263,16 @@ control = [
     { name = "osqp" },
     { name = "scipy" },
 ]
-ipc = [
-    { name = "pyzmq" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "osqp", marker = "extra == 'control'", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "pyzmq", marker = "extra == 'ipc'", specifier = ">=25" },
+    { name = "pyzmq", specifier = ">=25" },
     { name = "scipy", marker = "extra == 'control'", specifier = ">=1.11" },
 ]
-provides-extras = ["control", "ipc"]
+provides-extras = ["control"]
 
 [[package]]
 name = "pyyaml"
