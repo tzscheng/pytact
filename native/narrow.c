@@ -1232,7 +1232,7 @@ static int mesh_hf_contact(double *mesh_param, double *hf_param, double *out, in
     int mesh_slot = (int)mesh_param[6];
     if (mesh_slot < 0 || mesh_slot >= MAX_MESH) return -1;
     if (num_vertex[mesh_slot] == 0) {
-        num_vertex[mesh_slot] = load_obj(mesh_slot);
+        num_vertex[mesh_slot] = load_mesh(mesh_slot);
         if (num_vertex[mesh_slot] <= 0) return -1;
     }
     int nv = num_vertex[mesh_slot];

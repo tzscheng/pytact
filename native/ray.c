@@ -45,7 +45,7 @@ double ray_intersects_triangle(const double *R0, const double *Rd,
 double ray_intersects_mesh_slot(const double *R0, const double *Rd, int mesh_idx)
 {
     if (mesh_idx < 0 || mesh_idx >= MAX_MESH) return -1.0;
-    if (num_vertex[mesh_idx] == 0) num_vertex[mesh_idx] = load_obj(mesh_idx);
+    if (num_vertex[mesh_idx] == 0) num_vertex[mesh_idx] = load_mesh(mesh_idx);
     int nf = num_face[mesh_idx];
     if (nf == 0) return -1.0;
     double best = -1.0;

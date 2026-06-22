@@ -108,6 +108,31 @@ def write_scene(stem: str, text: str) -> str:
     return path
 
 
+def write_binary_stl(stem: str) -> str:
+    path = os.path.join(tempfile.gettempdir(), f"{stem}.stl")
+    verts = [
+        (0.0, 0.0, 0.08),
+        (0.08, 0.0, -0.04),
+        (-0.04, 0.0692820323, -0.04),
+        (-0.04, -0.0692820323, -0.04),
+    ]
+    tris = [
+        (0, 2, 1),
+        (0, 1, 3),
+        (0, 3, 2),
+        (1, 2, 3),
+    ]
+    with open(path, "wb") as f:
+        f.write(b"TACT binary STL smoke".ljust(80, b"\0"))
+        f.write(struct.pack("<I", len(tris)))
+        for tri in tris:
+            f.write(struct.pack("<3f", 0.0, 0.0, 0.0))
+            for idx in tri:
+                f.write(struct.pack("<3f", *verts[idx]))
+            f.write(struct.pack("<H", 0))
+    return path
+
+
 def read_bin(path: str):
     chunks = []
     with open(path, "rb") as f:
@@ -364,6 +389,31 @@ bodies:
         return mesh_run.returncode
     if "n_shape=4" not in mesh_run.stdout:
         print("unexpected mesh bin-test output")
+        return 1
+
+    stl_path = write_binary_stl("tiny_tetra_mesh")
+    stl_src = write_scene("stl_mesh_smoke", f"""
+sim: {{solver: lcp, dt: 0.001, g: [0, 0, -9.81]}}
+materials:
+    ground: {{normal: [30000, 10], tangent: [20000, 10, 0.8], spin: [100, 1, 0.02], roll: [100, 1, 0.005]}}
+bodies:
+  - name: root
+    shapes:
+      - {{type: box, param: [0.5, 0.5, 0.02], contact: [1, ground], rgba: [0.9, 0.9, 0.9, 1]}}
+  - name: object
+    joint: {{type: free, q0: [0, 0, 0.18, 0, 0, 0]}}
+    inertial: {{mass: 1, tensor: [sphere, 0.05]}}
+    shapes:
+      - {{type: mesh, file: {stl_path}, contact: [1, ground], rgba: [0.3, 0.7, 0.9, 1]}}
+""")
+    stl_out = os.path.join(tempfile.gettempdir(), "stl_mesh_smoke.bin")
+    compile(stl_src, stl_out)
+    stl_run = run([exe, stl_out, "--headless"])
+    print(stl_run.stdout, end="")
+    if stl_run.returncode != 0:
+        return stl_run.returncode
+    if "n_shape=2" not in stl_run.stdout or "n_pair=1" not in stl_run.stdout:
+        print("unexpected STL mesh bin-test output")
         return 1
 
     hfield_out = os.path.join(tempfile.gettempdir(), "hf1_hfield_smoke.bin")

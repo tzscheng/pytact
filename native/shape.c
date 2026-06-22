@@ -4,11 +4,12 @@
  * (hfield contact), ray.c (ray casts), render.c. (Split out of ccd.c.) */
 #include "tact.h"
 #include "shape.h"
+#include <limits.h>
 
 // Per-slot vertex + face storage. `vertex[idx]` is a malloc'd array of
 // `num_vertex[idx]` vec3s; `face[idx]` is a malloc'd array of `num_face[idx]`
 // integer triangles (0-indexed into vertex[idx]). Both populated lazily on
-// first collision/raycast query by load_obj(). BSS-zero-initialized.
+// first collision/raycast query by load_mesh(). BSS-zero-initialized.
 //
 // Vertices feed CCD support functions; faces feed ray_intersects_mesh().
 int       num_vertex[MAX_MESH];
@@ -94,7 +95,7 @@ double mesh_local_radius(int slot)
 {
     if (slot < 0 || slot >= MAX_MESH) return -1.0;
     if (mesh_radius[slot] > 0.0) return mesh_radius[slot];
-    if (num_vertex[slot] == 0) num_vertex[slot] = load_obj(slot);
+    if (num_vertex[slot] == 0) num_vertex[slot] = load_mesh(slot);
     int nv = num_vertex[slot];
     if (nv == 0) return -1.0;
     double r2 = 0.0;
@@ -104,6 +105,74 @@ double mesh_local_radius(int slot)
         if (n2 > r2) r2 = n2;
     }
     return (mesh_radius[slot] = sqrt(r2));
+}
+
+typedef struct {
+    double (*v)[3];
+    int n;
+    int cap;
+} ObjVerts;
+
+typedef struct {
+    int (*f)[3];
+    int n;
+    int cap;
+} ObjFaces;
+
+static void obj_push_vert(ObjVerts *a, double x, double y, double z)
+{
+    if (a->n >= a->cap) {
+        int new_cap = (a->cap == 0) ? 4096 : a->cap * 2;
+        double (*nv)[3] = (double (*)[3])realloc(a->v, (size_t)new_cap * sizeof(*a->v));
+        if (!nv) {
+            fprintf(stderr, "load_obj: malloc failed while growing vertex array\n");
+            free(a->v);
+            exit(0);
+        }
+        a->v = nv;
+        a->cap = new_cap;
+    }
+    a->v[a->n][0] = x;
+    a->v[a->n][1] = y;
+    a->v[a->n][2] = z;
+    a->n++;
+}
+
+static void obj_push_face(ObjFaces *a, int i0, int i1, int i2)
+{
+    if (a->n >= a->cap) {
+        int new_cap = (a->cap == 0) ? 4096 : a->cap * 2;
+        int (*nf)[3] = (int (*)[3])realloc(a->f, (size_t)new_cap * sizeof(*a->f));
+        if (!nf) {
+            fprintf(stderr, "load_obj: malloc failed while growing face array\n");
+            free(a->f);
+            exit(0);
+        }
+        a->f = nf;
+        a->cap = new_cap;
+    }
+    a->f[a->n][0] = i0;
+    a->f[a->n][1] = i1;
+    a->f[a->n][2] = i2;
+    a->n++;
+}
+
+static int obj_parse_vertex_index(const char *tok, int vcount)
+{
+    char buf[64];
+    int k = 0;
+    while (tok[k] && tok[k] != '/' && k < (int)sizeof(buf) - 1) {
+        buf[k] = tok[k];
+        k++;
+    }
+    buf[k] = '\0';
+
+    int idx = atoi(buf);
+    if (idx == 0) return -1;
+    if (idx < 0) idx = vcount + idx;
+    else         idx = idx - 1;
+    if (idx < 0 || idx >= vcount) return -1;
+    return idx;
 }
 
 int load_obj(int mesh_idx) {
@@ -123,57 +192,153 @@ int load_obj(int mesh_idx) {
         exit(0);
     }
 
-    // Two-pass: count `v ` and `f ` lines first to size both allocs exactly,
-    // then re-read and fill. Avoids realloc growth.
-    char line[256];
-    int nv = 0, nf = 0;
-    while (fgets(line, sizeof(line), file)) {
-        if      (strncmp(line, "v ", 2) == 0) nv++;
-        else if (strncmp(line, "f ", 2) == 0) nf++;
-    }
-    rewind(file);
-
     if (vertex[mesh_idx]) free(vertex[mesh_idx]);
     if (face  [mesh_idx]) free(face  [mesh_idx]);
-    vertex[mesh_idx] = (double (*)[3]) malloc((size_t)nv * 3 * sizeof(double));
-    face  [mesh_idx] = (nf > 0) ? (int (*)[3]) malloc((size_t)nf * 3 * sizeof(int)) : NULL;
-    if (!vertex[mesh_idx] || (nf > 0 && !face[mesh_idx])) {
-        fprintf(stderr, "load_obj: malloc failed for %d verts / %d faces (slot %d)\n",
-                nv, nf, mesh_idx);
-        fclose(file);
-        exit(0);
-    }
+    vertex[mesh_idx] = NULL;
+    face[mesh_idx] = NULL;
+    num_face[mesh_idx] = 0;
 
-    double tmp[3];
-    int vi[3];
-    int vcount = 0, fcount = 0;
+    ObjVerts verts = {0};
+    ObjFaces faces = {0};
+    char line[4096];
     while (fgets(line, sizeof(line), file)) {
-        if (strncmp(line, "v ", 2) == 0) {
-            if (sscanf(line + 2, "%lf %lf %lf", &tmp[0], &tmp[1], &tmp[2]) == 3) {
-                vertex[mesh_idx][vcount][0] = tmp[0];
-                vertex[mesh_idx][vcount][1] = tmp[1];
-                vertex[mesh_idx][vcount][2] = tmp[2];
-                vcount++;
+        char *s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        if (*s == '#' || *s == '\r' || *s == '\n' || *s == '\0') continue;
+
+        if (s[0] == 'v' && (s[1] == ' ' || s[1] == '\t')) {
+            double x, y, z;
+            if (sscanf(s + 1, "%lf %lf %lf", &x, &y, &z) == 3) {
+                obj_push_vert(&verts, x, y, z);
             }
-        } else if (strncmp(line, "f ", 2) == 0) {
-            /* Accept both `f a b c` and `f a/vt/vn ...`: split on whitespace and take the
-             * leading vertex index of each of the first 3 tokens (atoi stops at '/').
-             * The old sscanf("%d%*[/0-9] ...") failed on plain `f a b c` — the suppressed
-             * scanset needs >=1 char but hit the space, so plain-format OBJs parsed 0 faces
-             * and were invisible to mesh raycast. Convert 1-indexed → 0-indexed. */
-            char *tok = strtok(line + 2, " \t\r\n");
-            int got = 0;
-            for (; tok && got < 3; tok = strtok(NULL, " \t\r\n"))
-                vi[got++] = atoi(tok) - 1;
-            if (got == 3) {
-                face[mesh_idx][fcount][0] = vi[0];
-                face[mesh_idx][fcount][1] = vi[1];
-                face[mesh_idx][fcount][2] = vi[2];
-                fcount++;
+        } else if (s[0] == 'f' && (s[1] == ' ' || s[1] == '\t')) {
+            int idx[128];
+            int n = 0;
+            char *tok = strtok(s + 1, " \t\r\n");
+            for (; tok && n < (int)(sizeof(idx) / sizeof(idx[0])); tok = strtok(NULL, " \t\r\n")) {
+                int vi = obj_parse_vertex_index(tok, verts.n);
+                if (vi >= 0) idx[n++] = vi;
+            }
+            if (n >= 3) {
+                for (int i = 1; i + 1 < n; i++) {
+                    obj_push_face(&faces, idx[0], idx[i], idx[i + 1]);
+                }
             }
         }
     }
     fclose(file);
-    num_face[mesh_idx] = fcount;
-    return vcount;
+
+    vertex[mesh_idx] = verts.v;
+    face[mesh_idx] = faces.f;
+    num_face[mesh_idx] = faces.n;
+    return verts.n;
+}
+
+static int load_stl(int mesh_idx) {
+    if (mesh_idx < 0 || mesh_idx >= MAX_MESH || mesh_path[mesh_idx][0] == '\0') {
+        fprintf(stderr, "load_stl: no path registered for mesh slot %d\n", mesh_idx);
+        exit(0);
+    }
+    FILE* file = fopen(mesh_path[mesh_idx], "rb");
+    if (!file) {
+        fprintf(stderr, "load_stl: cannot open %s (mesh slot %d)\n",
+                mesh_path[mesh_idx], mesh_idx);
+        exit(0);
+    }
+
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fprintf(stderr, "load_stl: cannot seek %s\n", mesh_path[mesh_idx]);
+        fclose(file);
+        exit(0);
+    }
+    long fsize = ftell(file);
+    if (fsize < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "load_stl: cannot measure %s\n", mesh_path[mesh_idx]);
+        fclose(file);
+        exit(0);
+    }
+
+    unsigned char header[84];
+    if (fread(header, 1, sizeof(header), file) != sizeof(header)) {
+        fprintf(stderr, "load_stl: truncated header in %s\n", mesh_path[mesh_idx]);
+        fclose(file);
+        exit(0);
+    }
+    uint32_t ntri = ((uint32_t)header[80]) |
+                    ((uint32_t)header[81] << 8) |
+                    ((uint32_t)header[82] << 16) |
+                    ((uint32_t)header[83] << 24);
+    if ((uint64_t)fsize != 84ull + 50ull * (uint64_t)ntri) {
+        fprintf(stderr, "load_stl: unsupported or malformed STL %s "
+                        "(only binary STL is supported)\n", mesh_path[mesh_idx]);
+        fclose(file);
+        exit(0);
+    }
+    if (ntri > (uint32_t)(INT_MAX / 3)) {
+        fprintf(stderr, "load_stl: too many triangles in %s\n", mesh_path[mesh_idx]);
+        fclose(file);
+        exit(0);
+    }
+
+    if (vertex[mesh_idx]) free(vertex[mesh_idx]);
+    if (face  [mesh_idx]) free(face  [mesh_idx]);
+    vertex[mesh_idx] = (double (*)[3])malloc((size_t)ntri * 3 * sizeof(*vertex[mesh_idx]));
+    face[mesh_idx]   = (int    (*)[3])malloc((size_t)ntri * sizeof(*face[mesh_idx]));
+    if (!vertex[mesh_idx] || !face[mesh_idx]) {
+        fprintf(stderr, "load_stl: malloc failed for %u triangles (slot %d)\n", ntri, mesh_idx);
+        fclose(file);
+        exit(0);
+    }
+
+    for (uint32_t t = 0; t < ntri; t++) {
+        unsigned char rec[50];
+        if (fread(rec, 1, sizeof(rec), file) != sizeof(rec)) {
+            fprintf(stderr, "load_stl: truncated triangle data in %s\n", mesh_path[mesh_idx]);
+            fclose(file);
+            exit(0);
+        }
+        for (int j = 0; j < 3; j++) {
+            for (int k = 0; k < 3; k++) {
+                uint32_t u = ((uint32_t)rec[12 + 12*j + 4*k]) |
+                             ((uint32_t)rec[13 + 12*j + 4*k] << 8) |
+                             ((uint32_t)rec[14 + 12*j + 4*k] << 16) |
+                             ((uint32_t)rec[15 + 12*j + 4*k] << 24);
+                float x;
+                memcpy(&x, &u, sizeof(x));
+                vertex[mesh_idx][3*t + j][k] = (double)x;
+            }
+        }
+        face[mesh_idx][t][0] = (int)(3*t + 0);
+        face[mesh_idx][t][1] = (int)(3*t + 1);
+        face[mesh_idx][t][2] = (int)(3*t + 2);
+    }
+
+    fclose(file);
+    num_face[mesh_idx] = (int)ntri;
+    return (int)(3 * ntri);
+}
+
+static int has_ext(const char *path, const char *ext)
+{
+    const char *dot = strrchr(path, '.');
+    if (!dot) return 0;
+    while (*dot && *ext) {
+        char a = *dot++;
+        char b = *ext++;
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return *dot == '\0' && *ext == '\0';
+}
+
+int load_mesh(int mesh_idx) {
+    if (mesh_idx < 0 || mesh_idx >= MAX_MESH || mesh_path[mesh_idx][0] == '\0') {
+        fprintf(stderr, "load_mesh: no path registered for mesh slot %d\n", mesh_idx);
+        exit(0);
+    }
+    if (has_ext(mesh_path[mesh_idx], ".obj")) return load_obj(mesh_idx);
+    if (has_ext(mesh_path[mesh_idx], ".stl")) return load_stl(mesh_idx);
+    fprintf(stderr, "load_mesh: unsupported mesh extension in %s\n", mesh_path[mesh_idx]);
+    exit(0);
 }

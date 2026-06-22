@@ -181,6 +181,7 @@ int  collision_check_mpr(int type1, double *param1, int type2, double *param2, d
  * sub-id'd 0..n-1 by polar angle around manifold centroid in tangent plane. */
 int  box_box_manifold(const double *param1, const double *param2,
                       double *out, int max_pts);
+int  load_mesh(int mesh_idx);
 int  load_obj(int mesh_idx);
 /* Ray intersection primitives (ray.c) — sphere needs |Rd|=1, box returns -1 when
  * origin inside, triangle/mesh are double-sided. All return forward distance t along

@@ -741,7 +741,7 @@ void ccd_support(const void *_obj, const ccd_vec3_t *_dir, ccd_vec3_t *v) {
 	int mesh_idx = (int)obj->param[0];
 	
 	if (num_vertex[mesh_idx] == 0) {
-	    num_vertex[mesh_idx] = load_obj(mesh_idx);
+	    num_vertex[mesh_idx] = load_mesh(mesh_idx);
 	}
 	
 	for (int i = 0; i < num_vertex[mesh_idx]; i++) {

@@ -14,6 +14,7 @@
 #include <turbojpeg.h>
 #include <zstd.h>
 
+#include "tact.h"
 // Shared shape-asset slot storage (mesh_path, hf_* grids) — defined in shape.c.
 #include "shape.h"
 
@@ -1244,204 +1245,58 @@ static Mesh make_capsule(float r, float hh, int stacks, int slices){
     return m;
 }
 
-// -------------------- OBJ loader: supports only "v" and "f", faces may be polygons. no normals in file. --------------------
-typedef struct {
-    float* v;
-    int vcount;
-    int vcap;
-} Verts;
-
-typedef struct {
-    int*   idx;
-    int icount;
-    int icap;
-} Inds;
-
-static void verts_push(Verts* a, float x,float y,float z){
-    if(a->vcount+3 > a->vcap){
-        a->vcap = (a->vcap==0)? (3*4096) : (a->vcap*2);
-        a->v = (float*)realloc(a->v, (size_t)a->vcap*sizeof(float));
-        if(!a->v){ fprintf(stderr,"OBJ OOM (verts)\n"); exit(1); }
-    }
-    a->v[a->vcount++] = x; a->v[a->vcount++] = y; a->v[a->vcount++] = z;
-}
-
-static void inds_push(Inds* a, int i){
-    if(a->icount+1 > a->icap){
-        a->icap = (a->icap==0)? 4096 : (a->icap*2);
-        a->idx = (int*)realloc(a->idx, (size_t)a->icap*sizeof(int));
-        if(!a->idx){ fprintf(stderr,"OBJ OOM (inds)\n"); exit(1); }
-    }
-    a->idx[a->icount++] = i;
-}
-
-// parse face token: "i" or "i/..." or "i//..." etc. return vertex index (0-based), supports negative indices.
-static int parse_obj_index(const char* tok, int vtx_count){
-    // copy until '/' or end
-    char buf[64];
-    int k=0;
-    while(tok[k] && tok[k] != '/' && k < (int)sizeof(buf)-1){
-        buf[k]=tok[k]; k++;
-    }
-    buf[k]=0;
-    int idx = atoi(buf);
-    if(idx == 0) return -1; // invalid
-    if(idx < 0) idx = vtx_count + idx;      // -1 means last
-    else        idx = idx - 1;              // OBJ is 1-based
-    return idx;
-}
-
-static Mesh load_obj_as_mesh(const char* path){
-    FILE* f = fopen(path, "rb");
-    if(!f){
-        fprintf(stderr, "OBJ: cannot open %s\n", path);
+// Build a render mesh from the shared mesh slot populated by shape.c::load_mesh().
+static Mesh make_mesh_slot(int slot){
+    if(slot < 0 || slot >= MAX_MESH || mesh_path[slot][0] == '\0'){
+        fprintf(stderr, "render: no path registered for mesh slot %d\n", slot);
         Mesh empty={0};
         return empty;
     }
+    if(num_vertex[slot] == 0) num_vertex[slot] = load_mesh(slot);
 
-    Verts verts={0};
-    Inds tris={0};
-    char line[4096];
-    
-    while(fgets(line, sizeof(line), f)){
-        // skip leading spaces
-        char* s=line;
-        while(*s && isspace((unsigned char)*s)) s++;
-        if(*s=='#' || *s==0) continue;
-
-        if(s[0]=='v' && isspace((unsigned char)s[1])){
-            float x,y,z;
-            if(sscanf(s+1, "%f %f %f", &x,&y,&z)==3){
-                verts_push(&verts,x,y,z);
-            }
-        } else if(s[0]=='f' && isspace((unsigned char)s[1])){
-            // read all tokens after 'f'
-            int face_idx[64];
-            int n=0;
-
-            char* p = s+1;
-            while(*p){
-                while(*p && isspace((unsigned char)*p)) p++;
-                if(!*p || *p=='\n' || *p=='\r') break;
-
-                char tok[128];
-                int tlen=0;
-                while(*p && !isspace((unsigned char)*p) && tlen < (int)sizeof(tok)-1){
-                    tok[tlen++] = *p++;
-                }
-                tok[tlen]=0;
-
-                int vcount = verts.vcount/3;
-                int idx = parse_obj_index(tok, vcount);
-                if(idx >= 0 && n < (int)(sizeof(face_idx)/sizeof(face_idx[0]))){
-                    face_idx[n++] = idx;
-                }
-            }
-
-            // triangulate polygon fan: (0, i, i+1)
-            if(n >= 3){
-                for(int i=1;i+1<n;i++){
-                    inds_push(&tris, face_idx[0]);
-                    inds_push(&tris, face_idx[i]);
-                    inds_push(&tris, face_idx[i+1]);
-                }
-            }
-        }
-    }
-    
-    fclose(f);
-    int vcount = verts.vcount/3;
-    int tcount = tris.icount/3;
-
+    int vcount = num_vertex[slot];
+    int tcount = num_face[slot];
     if(vcount == 0 || tcount == 0){
-        fprintf(stderr, "OBJ: no vertices or faces in %s\n", path);
-        free(verts.v); free(tris.idx);
+        fprintf(stderr, "render: no vertices or faces in %s\n", mesh_path[slot]);
         Mesh empty={0};
         return empty;
     }
 
-    // compute smooth vertex normals: sum face normals
-    float* vN = (float*)calloc((size_t)vcount*3, sizeof(float));
-    if(!vN){ fprintf(stderr,"OBJ OOM (normals)\n"); exit(1); }
-
-    for(int ti=0; ti<tcount; ti++){
-        int i0 = tris.idx[ti*3+0];
-        int i1 = tris.idx[ti*3+1];
-        int i2 = tris.idx[ti*3+2];
-
-        float p0[3]={ verts.v[i0*3+0], verts.v[i0*3+1], verts.v[i0*3+2] };
-        float p1[3]={ verts.v[i1*3+0], verts.v[i1*3+1], verts.v[i1*3+2] };
-        float p2[3]={ verts.v[i2*3+0], verts.v[i2*3+1], verts.v[i2*3+2] };
-
-        float e1[3], e2[3], fn[3];
-        v3_sub(e1,p1,p0);
-        v3_sub(e2,p2,p0);
-        v3_cross(fn,e1,e2);
-        // area-weighted normal (no normalize here)
-        vN[i0*3+0] += fn[0]; vN[i0*3+1] += fn[1]; vN[i0*3+2] += fn[2];
-        vN[i1*3+0] += fn[0]; vN[i1*3+1] += fn[1]; vN[i1*3+2] += fn[2];
-        vN[i2*3+0] += fn[0]; vN[i2*3+1] += fn[1]; vN[i2*3+2] += fn[2];
-    }
-
-    for(int i=0;i<vcount;i++){
-        float n[3]={ vN[i*3+0], vN[i*3+1], vN[i*3+2] };
-        v3_norm(n,n);
-        vN[i*3+0]=n[0]; vN[i*3+1]=n[1]; vN[i*3+2]=n[2];
-    }
-
-    // build interleaved triangle list (pos+normal) for glDrawArrays
     FloatArr out; fa_init(&out);
-    out.cap = 6 * (tris.icount); // rough reserve
+    out.cap = 18 * tcount;
     out.data = (float*)malloc((size_t)out.cap * sizeof(float));
-    if(!out.data){ fprintf(stderr,"OBJ OOM (out)\n"); exit(1); }
+    if(!out.data){ fprintf(stderr,"mesh OOM (out)\n"); exit(1); }
     out.count = 0;
 
-    //full smooth
-    /*for(int k=0;k<tris.icount;k++){
-        int vi = tris.idx[k];
-        float px = verts.v[vi*3+0], py=verts.v[vi*3+1], pz=verts.v[vi*3+2];
-        float nx = vN[vi*3+0], ny=vN[vi*3+1], nz=vN[vi*3+2];
-        fa_push6(&out, px,py,pz, nx,ny,nz);
-	}*/
+    for(int ti = 0; ti < tcount; ti++){
+        int i0 = face[slot][ti][0];
+        int i1 = face[slot][ti][1];
+        int i2 = face[slot][ti][2];
+        if(i0 < 0 || i0 >= vcount || i1 < 0 || i1 >= vcount || i2 < 0 || i2 >= vcount) continue;
 
+        float p0[3] = { (float)vertex[slot][i0][0], (float)vertex[slot][i0][1], (float)vertex[slot][i0][2] };
+        float p1[3] = { (float)vertex[slot][i1][0], (float)vertex[slot][i1][1], (float)vertex[slot][i1][2] };
+        float p2[3] = { (float)vertex[slot][i2][0], (float)vertex[slot][i2][1], (float)vertex[slot][i2][2] };
 
-    //flat shading
-    for(int ti=0; ti<tcount; ti++){
-	int i0 = tris.idx[ti*3+0];
-	int i1 = tris.idx[ti*3+1];
-	int i2 = tris.idx[ti*3+2];
+        float e1[3], e2[3], n[3];
+        v3_sub(e1, p1, p0);
+        v3_sub(e2, p2, p0);
+        v3_cross(n, e1, e2);
+        v3_norm(n, n);
 
-	float p0[3]={ verts.v[i0*3+0], verts.v[i0*3+1], verts.v[i0*3+2] };
-	float p1[3]={ verts.v[i1*3+0], verts.v[i1*3+1], verts.v[i1*3+2] };
-	float p2[3]={ verts.v[i2*3+0], verts.v[i2*3+1], verts.v[i2*3+2] };
-
-	float e1[3], e2[3], n[3];
-	v3_sub(e1,p1,p0);
-	v3_sub(e2,p2,p0);
-	v3_cross(n,e1,e2);
-	v3_norm(n,n);
-	
-	// (선택) 카메라쪽으로 뒤집기: winding 섞인 모델 디버그에 도움
-	// float triCenter[3]={(p0[0]+p1[0]+p2[0])/3, (p0[1]+p1[1]+p2[1])/3, (p0[2]+p1[2]+p2[2])/3};
-	// float toEye[3]={ eye[0]-triCenter[0], eye[1]-triCenter[1], eye[2]-triCenter[2] };
-	// if(v3_dot(n,toEye) < 0) { n[0]=-n[0]; n[1]=-n[1]; n[2]=-n[2]; }
-
-	fa_push6(&out, p0[0],p0[1],p0[2], n[0],n[1],n[2]);
-	fa_push6(&out, p1[0],p1[1],p1[2], n[0],n[1],n[2]);
-	fa_push6(&out, p2[0],p2[1],p2[2], n[0],n[1],n[2]);
+        fa_push6(&out, p0[0],p0[1],p0[2], n[0],n[1],n[2]);
+        fa_push6(&out, p1[0],p1[1],p1[2], n[0],n[1],n[2]);
+        fa_push6(&out, p2[0],p2[1],p2[2], n[0],n[1],n[2]);
     }
 
     Mesh m = mesh_from_pos_nrm(out.data, out.count/6);
-    free(verts.v);
-    free(tris.idx);
-    free(vN);
     fa_free(&out);
     return m;
 }
 
 // Build a triangulated surface mesh for height-field slot `slot`. The grid spans
 // local [-sx, sx] × [-sy, sy] in XY with the height along +Z; each cell is two
-// flat-shaded triangles (matching load_obj_as_mesh's active shading path).
+// flat-shaded triangles (matching make_mesh_slot's active shading path).
 static Mesh make_hfield(int slot){
     int nr = hf_nrow[slot], nc = hf_ncol[slot];
     const double *H = hf_data[slot];
@@ -1659,11 +1514,7 @@ int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	    else if (obj_type[i] == 104) mesh[i] = make_capsule(s[0], s[1], 26, 44);
 	    else if (obj_type[i] == 100){
 		int idx = (int)s[0];
-		if (mesh_path[idx][0] == '\0') {
-		    fprintf(stderr, "win_render: no path registered for mesh slot %d\n", idx);
-		    exit(0);
-		}
-		mesh[i] = load_obj_as_mesh(mesh_path[idx]);
+		mesh[i] = make_mesh_slot(idx);
 	    }
 	    else if (obj_type[i] == 105) mesh[i] = make_hfield((int)s[0]);
 
@@ -2101,11 +1952,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	    else if (obj_type[i] == 104) mesh[i] = make_capsule(s[0], s[1], 26, 44);
 	    else if (obj_type[i] == 100){
 		int idx = (int)s[0];
-		if (mesh_path[idx][0] == '\0') {
-		    fprintf(stderr, "egl_render: no path registered for mesh slot %d\n", idx);
-		    exit(0);
-		}
-		mesh[i] = load_obj_as_mesh(mesh_path[idx]);
+		mesh[i] = make_mesh_slot(idx);
 	    }
 	    else if (obj_type[i] == 105) mesh[i] = make_hfield((int)s[0]);
 

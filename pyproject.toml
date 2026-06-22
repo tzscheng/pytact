@@ -41,4 +41,5 @@ tact = [
     "demos/**/*.yml",
     "demos/**/*.py",
     "demos/**/*.obj",
+    "demos/**/*.stl",
 ]

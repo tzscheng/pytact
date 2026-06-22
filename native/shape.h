@@ -11,7 +11,7 @@
 #define MAX_HFIELD      16
 #define MAX_PATH_LEN    256
 
-/* Per-slot mesh storage. `vertex[idx]`/`face[idx]` are malloc'd by load_obj() on
+/* Per-slot mesh storage. `vertex[idx]`/`face[idx]` are malloc'd by load_mesh() on
  * first use; `mesh_path[idx]` is set by set_mesh_path() from Python at build time. */
 extern int      num_vertex[MAX_MESH];
 extern double (*vertex[MAX_MESH])[3];
