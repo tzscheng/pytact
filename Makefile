@@ -8,7 +8,7 @@ INSTALL ?= install
 
 LIB_DIR ?= native/lib
 
-CFLAGS ?= -W -Wall -O3 -fPIC -ffast-math -funroll-loops
+CFLAGS ?= -D_GNU_SOURCE -W -Wall -O3 -fPIC -ffast-math -funroll-loops
 LDFLAGS ?=
 LDLIBS ?= -lm -ldl
 

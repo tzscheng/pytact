@@ -12,10 +12,30 @@ This directory contains two faces of the same simulator:
 
 ## Python API
 
-Install:
+Install the published package:
 
 ```bash
 pip install pytact
+```
+
+For editable development from this checkout, use the repository `uv`
+environment instead of the system `pip`. The package requires Python 3.12 or
+newer, and the root workspace at `~/fg` owns that environment:
+
+```bash
+cd ~/fg/tact
+uv pip install -e .
+```
+
+The editable install builds the package-local native library at
+`tact/bin/libtact.so`, so source edits under `tact/` are used immediately while
+the compiled C library remains colocated with the Python package.
+
+Verify the install:
+
+```bash
+cd ~/fg
+uv run python -c "import tact; print(tact.__file__)"
 ```
 
 Use:

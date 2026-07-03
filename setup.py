@@ -5,7 +5,8 @@ from pathlib import Path
 
 from setuptools import Distribution, setup
 from setuptools.command.build_py import build_py as _build_py
-from setuptools.command.bdist_wheel import bdist_wheel as _bdist_wheel
+from setuptools.command.editable_wheel import editable_wheel as _editable_wheel
+from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 
 ROOT = Path(__file__).resolve().parent
@@ -34,7 +35,7 @@ def build_libtact():
     internal cross-check/dev path and is not part of the installable package.
     """
     LIB.parent.mkdir(parents=True, exist_ok=True)
-    cflags = os.environ.get("TACT_CFLAGS", "-W -Wall -O3 -ffast-math -funroll-loops")
+    cflags = os.environ.get("TACT_CFLAGS", "-D_GNU_SOURCE -W -Wall -O3 -ffast-math -funroll-loops")
     cmd = ["gcc", *cflags.split(), "-shared", "-fPIC", "-o", str(LIB)]
     cmd += [str(NATIVE / src) for src in TACT_SRC]
     cmd += ["-lm", "-ldl"]
@@ -60,12 +61,22 @@ class bdist_wheel(_bdist_wheel):
         return "py3", "none", platform
 
 
+class editable_wheel(_editable_wheel):
+    def run(self):
+        build_libtact()
+        super().run()
+
+
 class BinaryDistribution(Distribution):
     def has_ext_modules(self):
         return True
 
 
 setup(
-    cmdclass={"build_py": build_py, "bdist_wheel": bdist_wheel},
+    cmdclass={
+        "build_py": build_py,
+        "bdist_wheel": bdist_wheel,
+        "editable_wheel": editable_wheel,
+    },
     distclass=BinaryDistribution,
 )
