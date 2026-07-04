@@ -23,13 +23,25 @@ environment instead of the system `pip`. The package requires Python 3.12 or
 newer, and the root workspace at `~/fg` owns that environment:
 
 ```bash
-cd ~/fg/tact
-uv pip install -e .
+cd ~/fg
+uv pip install -e ./tact
 ```
 
-The editable install builds the package-local native library at
-`tact/bin/libtact.so`, so source edits under `tact/` are used immediately while
-the compiled C library remains colocated with the Python package.
+The editable install calls `make package-lib` inside `tact/`. That builds the
+canonical native library at `native/lib/libtact.so` and copies the same file to
+the package-local `tact/bin/libtact.so`, which is what `import tact` loads.
+
+After the editable install, Python source edits under `tact/tact/` are used on
+the next run without reinstalling. After C source edits under `native/`, rebuild
+the shared library:
+
+```bash
+cd ~/fg/tact
+make
+```
+
+The default `make` target also refreshes `tact/bin/libtact.so`, so the Python
+package and native C output stay in sync.
 
 Verify the install:
 
@@ -97,7 +109,7 @@ Build and run the minimal C demo from the repository checkout:
 
 ```bash
 cd tact
-make demos
+make
 python -m tact.compile tact/demos/basic/arm2.yml -o /tmp/arm2.bin
 native/demos/basic/bin-test /tmp/arm2.bin --headless
 ```
@@ -118,5 +130,8 @@ tests/               regression and packaging smoke tests
 ```
 
 From a checkout, `make` builds the native C library at `native/lib/libtact.so`
-and the native demo. Python packaging separately builds and ships the
-package-local `tact/bin/libtact.so` inside `pytact`.
+and copies that same library to the package-local `tact/bin/libtact.so` used by
+Python, then builds the native demo. `make package-lib` performs only the native
+library build plus package-local copy, without building demos. Python packaging
+uses that same `make package-lib` path, so editable installs and normal local
+builds share one C build recipe.

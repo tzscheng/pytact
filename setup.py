@@ -1,4 +1,3 @@
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,35 +10,12 @@ from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 ROOT = Path(__file__).resolve().parent
 PKG = ROOT / "tact"
-NATIVE = ROOT / "native"
 LIB = PKG / "bin" / "libtact.so"
-
-TACT_SRC = [
-    "rbd.c",
-    "shape.c",
-    "mpr.c",
-    "narrow.c",
-    "box_box.c",
-    "ray.c",
-    "lcp.c",
-    "tact.c",
-    "model.c",
-    "render.c",
-]
 
 
 def build_libtact():
-    """Build the package-local libtact.so.
-
-    This intentionally excludes extras/mjenv.cpp. The MuJoCo backend is an
-    internal cross-check/dev path and is not part of the installable package.
-    """
-    LIB.parent.mkdir(parents=True, exist_ok=True)
-    cflags = os.environ.get("TACT_CFLAGS", "-D_GNU_SOURCE -W -Wall -O3 -ffast-math -funroll-loops")
-    cmd = ["gcc", *cflags.split(), "-shared", "-fPIC", "-o", str(LIB)]
-    cmd += [str(NATIVE / src) for src in TACT_SRC]
-    cmd += ["-lm", "-ldl"]
-    subprocess.check_call(cmd, cwd=ROOT)
+    """Build the package-local libtact.so from the Makefile recipe."""
+    subprocess.check_call(["make", "package-lib"], cwd=ROOT)
 
 
 class build_py(_build_py):

@@ -30,13 +30,14 @@ BIN_TEST := native/demos/basic/bin-test
 
 .PHONY: all clean install uninstall package-lib demos debug
 
-all: $(TACT_LIB) demos
+all: package-lib demos
 
 $(TACT_LIB): $(TACT_SRC) $(TACT_HEADERS) | $(LIB_DIR)
 	$(CC) $(CFLAGS) -shared -o $@ $(TACT_SRC) $(LDFLAGS) $(LDLIBS)
 
-package-lib:
-	@echo "package-lib is built by Python packaging; use 'uv build --wheel'."
+package-lib: $(TACT_LIB)
+	mkdir -p tact/bin
+	cp $(TACT_LIB) tact/bin/libtact.so
 
 demos: $(BIN_TEST)
 
