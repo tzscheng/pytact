@@ -1,0 +1,65 @@
+# ============================================================
+#  .gitignore  —  project root: /home/ubuntu/tact
+#  원칙: 소스/설정/자산은 추적, 대용량 생성물·환경은 제외
+# ============================================================
+
+# ── 파이썬 가상환경 (수 GB, 절대 커밋 금지) ──
+.venv/
+venv/
+env/
+
+# ── 파이썬 캐시 / 빌드 ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ── 컴파일된 네이티브 바이너리 (소스에서 재빌드됨) ──
+#    mjenv.so, libtact.so 등
+#    특정 .so를 꼭 추적하려면:  git add -f 경로/파일.so
+*.so
+*.o
+*.a
+*.dylib
+*.dll
+native/lib/
+native/demos/basic/bin-test
+
+# ── 모델 가중치 / 체크포인트 (대용량 바이너리) ──
+*.pkl
+*.npz
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.zip
+checkpoints/
+**/runs/
+**/output/
+
+# ── 렌더링 영상 / 미디어 출력 ──
+*.mp4
+*.avi
+*.gif
+
+# ── 로그 ──
+*.log
+*.pid
+*.json
+
+# ── archive/scratch 디렉터리 ──
+**/_/
+
+# ── Agent/assistant 로컬 메타데이터 (컴퓨터마다 다름) ──
+.agents/
+.codex/
+.claude/
+
+# ── OS / 에디터 잡파일 ──
+.DS_Store
+*.swp
+*~
