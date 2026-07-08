@@ -63,6 +63,9 @@ checkpoints/
 AGENTS.md
 CLAUDE.md
 
+# ── 로컬 문서 디렉터리 ──
+docs/
+
 # ── OS / 에디터 잡파일 ──
 .DS_Store
 *.swp
