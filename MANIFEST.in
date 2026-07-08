@@ -1,5 +1,6 @@
 include README.md
 include LICENSE
+include Makefile
 include setup.py
 include tact/bin/.gitkeep
 recursive-include native *.c *.h

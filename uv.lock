@@ -131,11 +131,18 @@ wheels = [
 
 [[package]]
 name = "pytact"
-version = "0.1.0"
+version = "0.1.0a1"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+demos = [
+    { name = "pyzmq" },
+]
+ipc = [
     { name = "pyzmq" },
 ]
 
@@ -143,8 +150,10 @@ dependencies = [
 requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "pyzmq", specifier = ">=25" },
+    { name = "pyzmq", marker = "extra == 'demos'", specifier = ">=25" },
+    { name = "pyzmq", marker = "extra == 'ipc'", specifier = ">=25" },
 ]
+provides-extras = ["ipc", "demos"]
 
 [[package]]
 name = "pyyaml"

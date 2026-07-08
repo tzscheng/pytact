@@ -21,6 +21,7 @@ def build_libtact():
 class build_py(_build_py):
     def run(self):
         build_libtact()
+        shutil.rmtree(Path(self.build_lib) / "tact", ignore_errors=True)
         super().run()
         out = Path(self.build_lib) / "tact" / "bin" / "libtact.so"
         out.parent.mkdir(parents=True, exist_ok=True)
