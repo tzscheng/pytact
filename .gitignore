@@ -59,11 +59,9 @@ checkpoints/
 .codex/
 .claude/
 
-# ── 문서: 신규 docs/·*.md는 로컬 전용 ──
-#    (이미 추적 중인 AGENTS.md/README.md/docs/* 등은 계속 추적됨 —
-#     gitignore는 untracked 파일에만 적용)
-docs/
-*.md
+# ── Agent/assistant 문서 ──
+AGENTS.md
+CLAUDE.md
 
 # ── OS / 에디터 잡파일 ──
 .DS_Store
