@@ -8,7 +8,10 @@ INSTALL ?= install
 
 LIB_DIR ?= native/lib
 
-CFLAGS ?= -D_GNU_SOURCE -W -Wall -O3 -fPIC -ffast-math -funroll-loops
+# no -D_GNU_SOURCE: on glibc >=2.38 it redirects sscanf/strtol to __isoc23_*,
+# raising the wheel's glibc floor to 2.38 (manylinux_2_38); without it the
+# floor is 2.35 (libmvec atan2 from -ffast-math) -> manylinux_2_35 wheels
+CFLAGS ?= -W -Wall -O3 -fPIC -ffast-math -funroll-loops
 LDFLAGS ?=
 LDLIBS ?= -lm -ldl
 

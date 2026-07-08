@@ -10,6 +10,18 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "numpy>=2.0",
     "pyyaml>=6.0",
@@ -20,8 +32,8 @@ ipc = ["pyzmq>=25"]
 demos = ["pyzmq>=25"]
 
 [project.urls]
-Repository = "https://github.com/tzscheng/fg"
-Issues = "https://github.com/tzscheng/fg/issues"
+Repository = "https://github.com/tzscheng/pytact"
+Issues = "https://github.com/tzscheng/pytact/issues"
 
 [tool.setuptools]
 packages = [
