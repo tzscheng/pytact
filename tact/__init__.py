@@ -16,11 +16,8 @@ Package layout (sibling assets):
     tact.pkg_dir                         → '/.../fg/pytact/tact' or '/.../fg/tact/tact'
                                             (the import package itself)
     tact.pkg_dir/bin/libtact.so          → installable native library (output of make package-lib)
-    ../extras/mjenv.so                   → internal MuJoCo backend for start -m (not packaged)
-    ../extras/mjcf/                      → repo-local MuJoCo environment XMLs
-    ../extras/envs/                       → repo-local background scene YAMLs
-                                            (1.yml–5.yml, d3, hf1, stairs, box1, desk1).
-                                            Loaded by the consumer-repo launcher (fg/start) via -e; not packaged.
+    (MuJoCo backend mjenv.so + mjcf/ scenes + env YAMLs are NOT part of this repo:
+     they live in the consumer repo, e.g. fg/extras/, and are loaded by fg/start -e.)
     tact.pkg_dir/demos/                   → tact feature/physics demos grouped by topic:
                                             basic/, box-wall/, cartpole/, raymap/,
                                             topology/.

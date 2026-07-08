@@ -11,8 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import os, tempfile
 import numpy as np, tact
 
-TACT_ROOT = os.path.dirname(tact.pkg_dir)
-EXTRA_ENVS = os.path.join(TACT_ROOT, 'extras', 'envs')
+# hfield fixtures (hf1.yml + hf1.bin) are vendored beside this test in scenes/,
+# resolved relative to this file so the suite owns its own fixtures.
+SCENES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scenes')
 
 PASS, FAIL = '\033[32mPASS\033[0m', '\033[31mFAIL\033[0m'
 fails = 0
@@ -113,9 +114,9 @@ check(set(m.last) >= {'valid', 'base_valid', 'ref'} and
 
 # ----- 7) hfield terrain (hf1) -----
 print('\n[7] hfield scan (hf1 vs grid bilinear)')
-env_h = tact.Env(os.path.join(EXTRA_ENVS, 'hf1'), render=False)
+env_h = tact.Env(os.path.join(SCENES, 'hf1'), render=False)
 env_h.reset()
-H = tact.load_hfield(os.path.join(EXTRA_ENVS, 'hf1.bin'))   # (101,101), 0.1 m, [-5,5]
+H = tact.load_hfield(os.path.join(SCENES, 'hf1.bin'))   # (101,101), 0.1 m, [-5,5]
 def npy_z(x, y):
     gx, gy = (np.asarray(x) + 5) / 0.1, (np.asarray(y) + 5) / 0.1
     i0, j0 = np.floor(gy).astype(int), np.floor(gx).astype(int)

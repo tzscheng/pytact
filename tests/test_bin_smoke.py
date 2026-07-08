@@ -240,7 +240,7 @@ def check_asset_malformed_rejected(exe: str) -> int:
     if rc != 0:
         return rc
 
-    hfield_src = os.path.join(TACT, "extras/envs/hf1.yml")
+    hfield_src = os.path.join(TACT, "tests/scenes/hf1.yml")
     hfield_out, _model = compile_case(hfield_src, "hf1_bad_hfield_base")
     magic, version, chunks = read_bin(hfield_out)
     bad_hfield_chunks = [[tag, dtype, ndim, shape.copy(), nbytes, bytearray(payload)]
@@ -417,7 +417,7 @@ bodies:
         return 1
 
     hfield_out = os.path.join(tempfile.gettempdir(), "hf1_hfield_smoke.bin")
-    hfield_src = os.path.join(TACT, "extras/envs/hf1.yml")
+    hfield_src = os.path.join(TACT, "tests/scenes/hf1.yml")
     compile(hfield_src, hfield_out)
     hfield_run = run([exe, hfield_out, "--headless"])
     print(hfield_run.stdout, end="")
