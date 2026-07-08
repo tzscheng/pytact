@@ -120,7 +120,8 @@ python minimal.py
 native/              C engine sources and public header tact.h
 native/lib/          native C shared library output from make
 native/demos/basic/  minimal standalone C demo using compiled .bin models
-tact/                Python package and packaged demos
+demos/               checkout-only examples for GitHub users
+tact/                Python package source
 tests/               regression and packaging smoke tests
 ```
 
@@ -130,3 +131,14 @@ Python, then builds the native demo. `make package-lib` performs only the native
 library build plus package-local copy, without building demos. Python packaging
 uses that same `make package-lib` path, so editable installs and normal local
 builds share one C build recipe.
+
+For PyPI release artifacts, build through the manylinux container path:
+
+```bash
+make dist-pypi
+```
+
+That target creates the sdist with `uv build --sdist`, then builds the wheel with
+`cibuildwheel` inside the configured manylinux image. Do not upload the local
+`linux_x86_64` wheel from `uv build --wheel`; PyPI accepts the repaired
+`manylinux_*_x86_64` wheel produced by `make dist-pypi`.

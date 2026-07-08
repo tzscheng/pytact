@@ -7,6 +7,9 @@ AR ?= ar
 INSTALL ?= install
 
 LIB_DIR ?= native/lib
+PYTHON ?= python3
+VERSION := $(shell $(PYTHON) -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+DIST_DIR ?= dist
 
 # no -D_GNU_SOURCE: on glibc >=2.38 it redirects sscanf/strtol to __isoc23_*,
 # raising the wheel's glibc floor to 2.38 (manylinux_2_38); without it the
@@ -31,7 +34,7 @@ TACT_HEADERS := native/tact.h native/shape.h native/model.h
 TACT_LIB := $(LIB_DIR)/libtact.so
 BIN_TEST := native/demos/basic/bin-test
 
-.PHONY: all clean install uninstall package-lib demos debug
+.PHONY: all clean clean-dist install uninstall package-lib demos debug sdist wheel-local wheel-manylinux dist-pypi
 
 all: package-lib demos
 
@@ -49,6 +52,24 @@ $(BIN_TEST): native/demos/basic/bin_test.c $(TACT_LIB) native/tact.h
 
 debug:
 	$(MAKE) -B CFLAGS="-W -Wall -O0 -g -fPIC" $(TACT_LIB) demos
+
+clean-dist:
+	rm -rf $(DIST_DIR) build
+
+sdist:
+	uv build --sdist
+
+wheel-local:
+	uv build --wheel
+
+wheel-manylinux:
+	uvx cibuildwheel --platform linux --output-dir $(DIST_DIR)
+
+dist-pypi: clean-dist sdist wheel-manylinux
+	@test -f $(DIST_DIR)/pytact-$(VERSION).tar.gz
+	@test -n "$$(ls $(DIST_DIR)/pytact-$(VERSION)-py3-none-manylinux_*_x86_64.whl 2>/dev/null)" || \
+		(echo "missing manylinux wheel for pytact $(VERSION)" >&2; exit 1)
+	ls -lh $(DIST_DIR)/pytact-$(VERSION).tar.gz $(DIST_DIR)/pytact-$(VERSION)-py3-none-manylinux_*_x86_64.whl
 
 $(LIB_DIR):
 	mkdir -p $@

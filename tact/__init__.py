@@ -13,16 +13,13 @@ For domain-explicit access:
     tact.control.PIDController(...)
 
 Package layout (sibling assets):
-    tact.pkg_dir                         → '/.../fg/pytact/tact' or '/.../fg/tact/tact'
+    tact.pkg_dir                         → '/.../pytact/tact'
                                             (the import package itself)
     tact.pkg_dir/bin/libtact.so          → installable native library (output of make package-lib)
     (MuJoCo backend mjenv.so + mjcf/ scenes + env YAMLs are NOT part of this repo:
-     they live in the consumer repo, e.g. fg/extras/, and are loaded by fg/start -e.)
-    tact.pkg_dir/demos/                   → tact feature/physics demos grouped by topic:
-                                            basic/, box-wall/, cartpole/, raymap/,
-                                            topology/.
-    tact.pkg_dir/demos/basic/meshes/      → mesh assets used by basic/ demos only.
-                                            Other demo folders carry their own assets.
+     they live in the consumer repo and are loaded by the consumer launcher.)
+    ../demos/                             → checkout-only examples for GitHub users;
+                                            not included in the Python package.
 """
 import os as _os
 pkg_dir = _os.path.dirname(_os.path.abspath(__file__))

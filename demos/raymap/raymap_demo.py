@@ -6,7 +6,7 @@ depth maps from two named camera frames, and saves the result as side-by-side
 images. Pass --show to also open the PNG in the system image viewer.
 
 Usage:
-    cd <repo>/fg/tact/tact/demos/raymap
+    cd <repo>/pytact/demos/raymap
     ./raymap_demo.py                  # angular projection, range output (LiDAR-like)
     ./raymap_demo.py --pinhole        # RGB-D camera style (lines stay straight)
     ./raymap_demo.py --perpendicular  # cos-corrected: flat surfaces stay flat
@@ -18,9 +18,9 @@ import matplotlib
 matplotlib.use('Agg')   # headless: write PNG, no GUI dependency
 import matplotlib.pyplot as plt
 
-# Resolve tact package: demos/raymap/ → demos/ → tact/ → outer tact/ on sys.path
+# Resolve tact package: demos/raymap/ → demos/ → checkout root on sys.path
 _here = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(_here))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(_here)))
 import tact
 import ctypes
 from tact._clib import clib, _DBL

@@ -10,14 +10,14 @@ the deleted body's DoF slots get spliced out of q/qd.
 
 Run from anywhere — the mesh asset is referenced by absolute path
 (`./pyramid.obj` next to this script), so no particular CWD is required:
-    uv run python /home/ubuntu/fg/tact/tact/demos/topology/demo_delete.py
+    uv run python /home/ubuntu/pytact/demos/topology/demo_delete.py
 """
 import os, sys, tempfile
 
-# Make `tact` importable without installing — script lives under fg/tact/tact/demos/
+# Make `tact` importable without installing — script lives under demos/topology/
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEMOS_ROOT = os.path.dirname(HERE)
-sys.path.insert(0, os.path.dirname(os.path.dirname(DEMOS_ROOT)))   # -> .../fg/tact
+sys.path.insert(0, os.path.dirname(DEMOS_ROOT))
 os.chdir(HERE)
 PYRAMID_OBJ = os.path.join(HERE, 'pyramid.obj')
 import numpy as np

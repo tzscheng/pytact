@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pytact"
-version = "0.1.0a1"
+version = "0.1.0a3"
 description = "Python package for tact, a high contact/tactile fidelity dynamics simulator"
 readme = "README.md"
 license = "MIT"
@@ -39,23 +39,17 @@ Issues = "https://github.com/tzscheng/pytact/issues"
 packages = [
     "tact",
     "tact.bin",
-    "tact.demos",
-    "tact.demos.basic",
-    "tact.demos.basic.meshes",
-    "tact.demos.cartpole",
-    "tact.demos.cartpole._",
-    "tact.demos.raymap",
-    "tact.demos.tactile",
-    "tact.demos.topology",
 ]
 
 [tool.setuptools.package-data]
 tact = [
     "bin/libtact.so",
-    "demos/*.yml",
-    "demos/*.py",
-    "demos/**/*.yml",
-    "demos/**/*.py",
-    "demos/**/*.obj",
-    "demos/**/*.stl",
 ]
+
+[tool.cibuildwheel]
+build = "cp312-manylinux_x86_64"
+archs = ["x86_64"]
+skip = "*musllinux*"
+manylinux-x86_64-image = "manylinux_2_28"
+before-all = "yum install -y glfw-devel turbojpeg-devel libzstd-devel"
+test-command = "python -c \"import os, tact; assert os.path.exists(os.path.join(tact.pkg_dir, 'bin', 'libtact.so'))\""

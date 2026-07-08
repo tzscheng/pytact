@@ -15,7 +15,7 @@ LIB = PKG / "bin" / "libtact.so"
 
 def build_libtact():
     """Build the package-local libtact.so from the Makefile recipe."""
-    subprocess.check_call(["make", "package-lib"], cwd=ROOT)
+    subprocess.check_call(["make", "-B", "package-lib"], cwd=ROOT)
 
 
 class build_py(_build_py):

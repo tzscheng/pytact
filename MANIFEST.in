@@ -4,5 +4,6 @@ include Makefile
 include setup.py
 include tact/bin/.gitkeep
 recursive-include native *.c *.h
+prune tests
 # build artifact — sdist consumers rebuild it via make; the wheel gets it from build_py
 exclude tact/bin/libtact.so

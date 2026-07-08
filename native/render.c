@@ -31,6 +31,12 @@ static int load_shared(const char* const* names, char* err, size_t err_sz){
     return 0;
 }
 
+static void* default_scope(void){
+    static void* h = NULL;
+    if(!h) h = dlopen(NULL, RTLD_LAZY);
+    return h;
+}
+
 #define TACT_GLFW_PROCS(X) \
     X(int,         glfwInit,                       (void)) \
     X(void,        glfwTerminate,                  (void)) \
@@ -86,7 +92,7 @@ TACT_ZSTD_PROCS(DECL_PROC)
 #undef DECL_PROC
 
 #define LOAD_PROC(ret, name, args) do { \
-    p_##name = (ret (*) args)dlsym(RTLD_DEFAULT, #name); \
+    p_##name = (ret (*) args)dlsym(default_scope(), #name); \
     if(!p_##name){ \
         snprintf(err, err_sz, "cannot resolve symbol: %s", #name); \
         return 0; \
@@ -235,7 +241,7 @@ static void* render_get_gl_proc(const char* name, int use_glfw){
     void* p = NULL;
     if(use_glfw) p = (void*)p_glfwGetProcAddress(name);
     else         p = (void*)p_eglGetProcAddress(name);
-    if(!p) p = dlsym(RTLD_DEFAULT, name);
+    if(!p) p = dlsym(default_scope(), name);
     return p;
 }
 

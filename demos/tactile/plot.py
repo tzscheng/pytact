@@ -11,7 +11,7 @@
 Run demo.py first so it publishes ipc:///dev/shm/top_taxels, then run this
 viewer:
 
-    cd <repo>/fg/tact/tact/demos/tactile
+    cd <repo>/pytact/demos/tactile
     uv run plot.py
 """
 import argparse

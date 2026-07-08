@@ -10,10 +10,10 @@ proprio y (feeds) = [cart_pos, pole_pos, cart_vel, pole_vel].
 """
 import os, sys, time, random
 import numpy as np
-# Run from anywhere: put fg on sys.path so `import tact` works, and chdir into
+# Run from anywhere: put the checkout root on sys.path so `import tact` works, and chdir into
 # this dir so tact.Env('cartpole') resolves cartpole.yml next to this script.
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(HERE))))   # outer tact/
+sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 os.chdir(HERE)
 import tact
 import stable_baselines3 as sb3, gymnasium as gym

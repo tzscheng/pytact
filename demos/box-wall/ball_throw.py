@@ -4,7 +4,7 @@
 Loads the brick-wall scene, runs the sim in a window, and launches a ball at the
 wall every time you press SPACE.
 
-    uv run python tact/demos/box-wall/ball_throw.py
+    uv run python demos/box-wall/ball_throw.py
 
 Controls (focus the render window):
   SPACE  — launch a ball at the wall
@@ -20,9 +20,8 @@ return 1 once per press (ESC returns -1).
 """
 import sys, os, random
 
-HERE = os.path.dirname(os.path.abspath(__file__))    # .../tact/tact/demos/box-wall
-PKG_ROOT = os.path.dirname(os.path.dirname(HERE))    # .../tact/tact
-PROJECT_ROOT = os.path.dirname(PKG_ROOT)             # .../tact
+HERE = os.path.dirname(os.path.abspath(__file__))    # .../pytact/demos/box-wall
+PROJECT_ROOT = os.path.dirname(os.path.dirname(HERE))  # .../pytact
 sys.path.insert(0, PROJECT_ROOT)                     # so `import tact` works
 
 import numpy as np

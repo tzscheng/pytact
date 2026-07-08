@@ -13,7 +13,7 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, PROJECT_ROOT)
 
 import numpy as np
