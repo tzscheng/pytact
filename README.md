@@ -175,8 +175,6 @@ native/              C engine sources and public header tact.h
 native/lib/          native C shared library output from make
 native/demos/basic/  minimal standalone C demo using compiled .bin models
 tact/                Python package and packaged demos
-docs/                design notes and API contracts
-extras/              repo-local tools/assets not included in the Python package
 tests/               regression and packaging smoke tests
 ```
 
