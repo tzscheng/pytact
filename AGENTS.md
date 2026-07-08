@@ -25,9 +25,12 @@ Python modules:
 - `sim.py`: `Model`, `Env`, `CEnv`
 - `control.py`: controllers, gait helpers, estimators
 
-Sibling robot projects provide `Controller` + YAML/XML and run through shared
-`start` symlinks that point at `extras/start`. Active backends: built-in tact
-sim, MuJoCo, real hardware CEnv/eio. Chrono `-c` is removed.
+Consumer robot projects (in `/home/ubuntu/fg`) provide `Controller` + YAML/XML
+and run through the shared `start` launcher, which lives at the consumer repo
+root (`fg/start`) — not here. It imports `tact` and locates this repo's assets
+(`extras/mjenv.so`, `extras/mjcf/`, `extras/envs/`) via `tact.pkg_dir`. Active
+backends: built-in tact sim, MuJoCo, real hardware CEnv/eio. Chrono `-c` is
+removed.
 
 ## Working Preferences
 
@@ -48,9 +51,12 @@ tact/demos/basic/runner.py arm2
 tests/perf/build.sh          # matmul microbenchmarks
 ```
 
-Run Python through `uv` from `/home/ubuntu/fg`. `start` uses
-`#!/usr/bin/env -S uv run python`, so project-local launchers discover the root
-workspace. After cache warmup, prefer:
+This repo is its own uv project (`pyproject.toml`/`uv.lock` here, packaged as
+`pytact`) — run Python through `uv` from `/home/ubuntu/tact`. `start` uses
+`#!/usr/bin/env -S uv run python`, so it discovers whichever workspace encloses
+the launch directory: this one when run from inside tact, or a consumer's (e.g.
+`/home/ubuntu/fg`, which reaches tact via its `fg/tact` symlink) when launched
+from a robot project there. After cache warmup, prefer:
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run --offline python ...
@@ -59,7 +65,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --offline python ...
 `_clib.py` should resolve `libtact.so` from inner-package
 `<package_dir>/bin/libtact.so`; no system install is expected in this checkout.
 
-## Shared `start`
+## Shared `start` (lives at `fg/start` in the consumer repo)
 
 Run from a project directory:
 

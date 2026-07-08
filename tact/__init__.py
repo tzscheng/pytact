@@ -20,7 +20,7 @@ Package layout (sibling assets):
     ../extras/mjcf/                      → repo-local MuJoCo environment XMLs
     ../extras/envs/                       → repo-local background scene YAMLs
                                             (1.yml–5.yml, d3, hf1, stairs, box1, desk1).
-                                            Loaded by extras/start -e; not packaged.
+                                            Loaded by the consumer-repo launcher (fg/start) via -e; not packaged.
     tact.pkg_dir/demos/                   → tact feature/physics demos grouped by topic:
                                             basic/, box-wall/, cartpole/, raymap/,
                                             topology/.
