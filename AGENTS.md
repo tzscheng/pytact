@@ -55,8 +55,8 @@ This repo is its own uv project (`pyproject.toml`/`uv.lock` here, packaged as
 `pytact`) — run Python through `uv` from `/home/ubuntu/tact`. `start` uses
 `#!/usr/bin/env -S uv run python`, so it discovers whichever workspace encloses
 the launch directory: this one when run from inside tact, or a consumer's (e.g.
-`/home/ubuntu/fg`, which reaches tact via its `fg/tact` symlink) when launched
-from a robot project there. After cache warmup, prefer:
+`/home/ubuntu/fg`, which declares `pytact` as an editable path dependency on
+`../tact`) when launched from a robot project there. After cache warmup, prefer:
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run --offline python ...
