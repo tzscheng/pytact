@@ -140,7 +140,7 @@ def main():
                     help="tactile IPC names to subscribe")
     ap.add_argument("--shape", default="20x20", help="taxel grid shape, e.g. 20x20")
     ap.add_argument("--channels", type=int, default=4,
-                    help="payload channel count; demo.yml uses 4")
+                    help="payload channel count; demo.yaml uses 4")
     ap.add_argument("--channel", default="normal",
                     help=f"channel to display: {', '.join(CHANNELS)} or numeric index")
     ap.add_argument("--hz", type=float, default=20.0, help="terminal refresh rate")

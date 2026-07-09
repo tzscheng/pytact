@@ -11,7 +11,7 @@ Controls (focus the render window):
   ESC    — quit
   mouse  — orbit (drag left), pan (drag right), zoom (scroll)
 
-How it works: the ball is a free-flying sphere (ball.yml) added to the
+How it works: the ball is a free-flying sphere (ball.yaml) added to the
 live scene with env.add(), placed in front of the wall and given an initial
 velocity toward it. At most MAX_BALLS balls are kept — older ones are removed
 with env.delete() so the scene (and the renderer's mesh slots) don't fill up.
@@ -33,7 +33,7 @@ SPEED     = 5.5      # launch speed (m/s) toward the wall
 
 # render=False: we call _win_render() ourselves so we can read its return code
 # (1 = SPACE pressed, -1 = ESC) — Env.step()'s built-in render swallows it.
-env = tact.Env(os.path.join(HERE, 'box_wall'), render=False)  # dt=0.001 from box_wall.yml
+env = tact.Env(os.path.join(HERE, 'box_wall'), render=False)  # dt=0.001 from box_wall.yaml
 
 balls = []           # live ball group names, oldest first
 n_thrown = 0

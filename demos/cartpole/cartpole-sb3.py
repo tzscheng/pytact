@@ -4,14 +4,14 @@
     uv run python cartpole-sb3.py            # train 10k steps -> saves out.zip
     uv run python cartpole-sb3.py play       # load out.zip, render a rollout
 
-The cartpole model (`cartpole.yml`) is cart (lin) + pole (rev), both active →
+The cartpole model (`cartpole.yaml`) is cart (lin) + pole (rev), both active →
 dof=2; only the cart is actuated (action drives u[0], pole gets 0 = underactuated).
 proprio y (feeds) = [cart_pos, pole_pos, cart_vel, pole_vel].
 """
 import os, sys, time, random
 import numpy as np
 # Run from anywhere: put the checkout root on sys.path so `import tact` works, and chdir into
-# this dir so tact.Env('cartpole') resolves cartpole.yml next to this script.
+# this dir so tact.Env('cartpole') resolves cartpole.yaml next to this script.
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 os.chdir(HERE)

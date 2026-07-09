@@ -67,7 +67,7 @@ package-local native library at `tact/bin/libtact.so`.
 
 ![Minimal 2-link manipulator](demos/minimal/minimal.png)
 
-Create `minimal.yml`:
+Create `minimal.yaml`:
 
 ```yaml
 sim: {solver: lcp, dt: 0.002, g: [0, 0, -9.81]}

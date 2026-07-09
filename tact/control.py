@@ -564,7 +564,7 @@ class GaitScheduler:
         swing   if  p_i >= duty_i,  with swing_phase = (p_i - duty_i) / (1 - duty_i)
 
     Foot index order is whatever the caller adopts (this project uses [FL, FR, RL, RR]
-    matching dog.yml's foot1..foot4). The class is robot-agnostic — works for any
+    matching dog.yaml's foot1..foot4). The class is robot-agnostic — works for any
     n-leg robot (biped, quadruped, hexapod).
 
     Convention: the cycle starts at stance (p=0 ⇒ touchdown). Standard parameters

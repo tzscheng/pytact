@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run python
 """raymap visualization demo.
 
-Loads raymap_demo.yml (a small scene with one of each shape type), shoots two
+Loads raymap_demo.yaml (a small scene with one of each shape type), shoots two
 depth maps from two named camera frames, and saves the result as side-by-side
 images. Pass --show to also open the PNG in the system image viewer.
 

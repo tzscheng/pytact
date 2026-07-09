@@ -27,7 +27,7 @@ import tact
 # ── Build a tiny YAML library in a temp dir ────────────────────────────────────
 TMP = tempfile.mkdtemp(prefix='tact_delete_demo_')
 
-FLOOR_YML = """
+FLOOR_YAML = """
 method: lcp
 dt: 0.001
 g: [0, 0, -9.81]
@@ -39,7 +39,7 @@ bodies:
     shapes: [{type: box, pos: [0, 0, -0.05], param: [0.8, 0.8, 0.05], contact: [1, floor], rgb: [0.85, 0.85, 0.85]}]
 """
 
-def obj_yml(shape, spec, rgb, q0):
+def obj_yaml(shape, spec, rgb, q0):
     """`spec` is the shape parameter — for primitives it's a list literal like
     `[0.07, 0.07, 0.07]` rendered as YAML `param: ...`; for mesh it's a path
     string rendered as YAML `file: ...`."""
@@ -57,14 +57,14 @@ bodies:
     shapes: [{{type: {shape}, {shape_spec}, contact: [1, obj], rgb: {rgb}}}]
 """
 
-def write_yml(name, content):
-    """Write <TMP>/<name>.yml and return the path-without-suffix so it can be
+def write_yaml(name, content):
+    """Write <TMP>/<name>.yaml and return the path-without-suffix so it can be
     passed directly to tact.Env() / env.add()."""
-    with open(os.path.join(TMP, name + '.yml'), 'w') as f:
+    with open(os.path.join(TMP, name + '.yaml'), 'w') as f:
         f.write(content)
     return os.path.join(TMP, name)
 
-floor_path = write_yml('floor', FLOOR_YML)
+floor_path = write_yaml('floor', FLOOR_YAML)
 
 # Object pool: each entry → unique YAML. (shape, param, rgb, drop_xy)
 # `mesh_teal` references the local pyramid.obj copy, keeping this demo self-contained.
@@ -80,7 +80,7 @@ POOL = {
     'mesh_teal':     ('mesh',     PYRAMID_OBJ, '[0.4, 0.9, 0.9]',  (-0.20,  0.20)),
 }
 for key, (shape, param, rgb, (x, y)) in POOL.items():
-    write_yml(key, obj_yml(shape, param, rgb, f'[{x}, {y}, 0.6, 0, 0, 0]'))
+    write_yaml(key, obj_yaml(shape, param, rgb, f'[{x}, {y}, 0.6, 0, 0, 0]'))
 
 
 # ── Event schedule (sim seconds == real seconds at dt=1ms + VSync redraw) ─────

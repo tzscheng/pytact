@@ -7,7 +7,7 @@ sys.path.insert(0, PROJECT_ROOT)
 import socket, numpy as np, tact
 
 def scene_path(name):
-    if os.path.isabs(name) or os.path.exists(name) or os.path.exists(name + '.yml'):
+    if os.path.isabs(name) or os.path.exists(name) or os.path.exists(name + '.yaml'):
         return name
     if os.path.sep in name or (os.path.altsep and os.path.altsep in name):
         return name

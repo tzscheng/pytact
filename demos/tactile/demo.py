@@ -35,7 +35,7 @@ def main():
     args = ap.parse_args()
 
     scene = args.scene
-    if not os.path.isabs(scene) and not os.path.exists(scene) and not os.path.exists(scene + ".yml"):
+    if not os.path.isabs(scene) and not os.path.exists(scene) and not os.path.exists(scene + ".yaml"):
         scene = os.path.join(HERE, scene)
 
     env = tact.Env(scene, render=not args.headless, redraw=args.redraw)

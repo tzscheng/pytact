@@ -499,8 +499,13 @@ class Model:
         before = self._snapshot_sizes()
         fdict_before = set(self.fdict.keys())
 
-        filename = modelname + '.yml'
-        if not os.path.exists(filename): filename = modelname + '.yaml'
+        _, ext = os.path.splitext(modelname)
+        if ext in ('.yaml', '.yml'):
+            filename = modelname
+        else:
+            filename = modelname + '.yaml'
+            if not os.path.exists(filename):
+                filename = modelname + '.yml'
         # Directory the YAML lives in — relative `file:` paths for mesh shapes
         # resolve against this so a model can ship its own meshes/ alongside.
         yml_dir = os.path.dirname(os.path.abspath(filename))
@@ -899,7 +904,7 @@ class Model:
             present = [k for k in SIM_KEYS + VIEW_KEYS + LIGHTS_KEYS if k in config]
             if present:
                 src = modelname or prefix or '?'
-                #print(f"[tact] warn: {src}.yml has top-level {present}; "
+                #print(f"[tact] warn: {src}.yaml has top-level {present}; "
                 #      f"globals only apply on the initial Model load — "
                 #      f"ignored on add().")
         
@@ -2659,7 +2664,7 @@ class CEnv:
         # frame-in-body 4x4 from Model.ftran — identical sensor placement on
         # both backends). The YAML body name resolves in the XML as a BODY
         # first, then a SITE: when the XML's body-frame origin differs from
-        # the YAML's (zen: xml body origin at the feet, yml `base` at the
+        # the YAML's (zen: xml body origin at the feet, yaml `base` at the
         # hip), the XML carries a site at the YAML body frame instead — the
         # same site that already anchors the proprio sensors. A spec matching
         # neither is WARNED and skipped (graceful degradation, like mjenv's
