@@ -65,10 +65,12 @@ package-local native library at `tact/bin/libtact.so`.
 
 ### Minimal 2-link manipulator
 
+![Minimal 2-link manipulator](demos/minimal/minimal.png)
+
 Create `minimal.yml`:
 
 ```yaml
-sim: {solver: lcp, dt: 0.001, g: [0, 0, -9.81]}
+sim: {solver: lcp, dt: 0.002, g: [0, 0, -9.81]}
 view: {target: [0, 0, -1], distance: 3, yaw: 0, pitch: 0}
 lights:
   - {pos: [7, 7, 7], target: [0, 0, 0], ortho: 5.0, shadow: true}
@@ -99,13 +101,17 @@ import numpy as np
 import tact
 
 
-env = tact.Env("minimal", render=True)
+env = tact.Env("minimal", render=True, redraw=8)
 tau = np.zeros(env.dof)
+i = 0
 
-for i in range(1000):
+while True:
     y = env.step(tau)
     if i % 100 == 0:
-        print(f"{i:04d} q={env.q.round(4)} qd={env.qd.round(4)} y={y.round(4)}")
+        q = y[: env.dof]
+        qd = y[env.dof :]
+        print(f"{i:04d} q={q.round(4)} qd={qd.round(4)} y={y.round(4)}")
+    i += 1
 ```
 
 Run it from the directory containing both files:
