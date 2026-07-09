@@ -1442,7 +1442,7 @@ int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	glfwWindowHint(GLFW_SAMPLES, 4);
 
-	window = glfwCreateWindow(win_width, win_height, "test", NULL, NULL);
+	window = glfwCreateWindow(win_width, win_height, "tact", NULL, NULL);
 	if(!window){ fprintf(stderr,"Window create failed\n"); glfwTerminate(); return -2; }
 
 	glfwMakeContextCurrent(window);
@@ -1640,7 +1640,7 @@ int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	    rec_request = 0;
 	} else {
 	    rec_active = 1;
-	    glfwSetWindowTitle(window, "test [REC]");
+	    glfwSetWindowTitle(window, "tact [REC]");
 	    fprintf(stderr, "[REC] start: %s (%dx%d, 50fps)\n", filename, rec_w, rec_h);
 	}
     }
@@ -1650,7 +1650,7 @@ int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	rec_pipe = NULL;
 	free(rec_buf); rec_buf = NULL;
 	rec_active = 0;
-	glfwSetWindowTitle(window, "test");
+	glfwSetWindowTitle(window, "tact");
 	fprintf(stderr, "[REC] stop\n");
     }
 

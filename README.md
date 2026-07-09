@@ -72,15 +72,13 @@ Create `minimal.yml`:
 ```yaml
 sim: {solver: lcp, dt: 0.002, g: [0, 0, -9.81]}
 view: {target: [0, 0, -1], distance: 3, yaw: 0, pitch: 0}
-lights:
-  - {pos: [7, 7, 7], target: [0, 0, 0], ortho: 5.0, shadow: true}
+lights: [{pos: [7, 7, 7], target: [0, 0, 0], ortho: 5.0, shadow: true}]
 
 bodies:
   - name: link1
     joint: {type: rev, parent: root, euler: [0, 90, 0], damping: 0.2, q0: 45}
     inertial: {mass: 1.0, tensor: [diag, 0.004, 0.004, 0.004], pos: [0.5, 0, 0]}
-    shapes:
-      - {type: capsule, pos: [0.5, 0, 0], euler: [0, 90, 0], param: [0.02, 0.5], rgba: [0.4, 0.4, 0.4, 1.0]}
+    shapes: [{type: capsule, pos: [0.5, 0, 0], euler: [0, 90, 0], param: [0.02, 0.5], rgba: [0.4, 0.4, 0.4, 1.0]}]
 
   - name: link2
     joint: {type: rev, parent: link1, pos: [1.0, 0, 0], damping: 0.2, q0: 45}
@@ -100,18 +98,17 @@ Create `minimal.py` in the same directory:
 import numpy as np
 import tact
 
-
 env = tact.Env("minimal", render=True, redraw=8)
 tau = np.zeros(env.dof)
-i = 0
+cnt = 0
 
 while True:
     y = env.step(tau)
-    if i % 100 == 0:
+    if cnt % 100 == 0:
         q = y[: env.dof]
         qd = y[env.dof :]
-        print(f"{i:04d} q={q.round(4)} qd={qd.round(4)} y={y.round(4)}")
-    i += 1
+        print(f"{cnt:04d} q={q.round(4)} qd={qd.round(4)} y={y.round(4)}")
+    cnt += 1
 ```
 
 Run it from the directory containing both files:
