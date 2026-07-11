@@ -348,12 +348,13 @@ static int create_handle(bin_model_t *m)
     if (rc != 0) return -1;
     tact_set_feedback(m->h, m->n_feed, m->feed_kinds, m->feed_offsets, m->feed_idx,
                       m->n_frame, m->fbody, m->ftran, m->ftran_inv, m->y_size);
+    tact_core_t *c = m->h->core;
     m->h->q0 = m->q0; m->q0 = NULL;
     m->h->qd0 = m->qd0; m->qd0 = NULL;
-    m->h->crgba = m->crgba; m->crgba = NULL;
-    m->h->view = m->view; m->view = NULL;
-    m->h->light0 = m->light0; m->light0 = NULL;
-    m->h->frame_names = m->frame_names; m->frame_names = NULL;
+    c->crgba = m->crgba; m->crgba = NULL;
+    c->view = m->view; m->view = NULL;
+    c->light0 = m->light0; m->light0 = NULL;
+    c->frame_names = m->frame_names; m->frame_names = NULL;
     return 0;
 }
 
@@ -430,21 +431,24 @@ int tact_create_from_bin(const char *path, tact_t **out)
 
 int tact_frame_count(const tact_t *h)
 {
-    return (h && h->frame_names) ? h->n_frames : 0;
+    tact_core_t *c = h ? h->core : NULL;
+    return (h && c->frame_names) ? h->n_frames : 0;
 }
 
 const char *tact_frame_name(const tact_t *h, int frame_id)
 {
-    if (!h || !h->frame_names || frame_id < 0 || frame_id >= h->n_frames) return NULL;
-    const char *p = h->frame_names;
+    tact_core_t *c = h ? h->core : NULL;
+    if (!h || !c->frame_names || frame_id < 0 || frame_id >= h->n_frames) return NULL;
+    const char *p = c->frame_names;
     for (int i = 0; i < frame_id; ++i) p += strlen(p) + 1;
     return *p ? p : NULL;
 }
 
 int tact_frame_id(const tact_t *h, const char *name)
 {
-    if (!h || !h->frame_names || !name) return -1;
-    const char *p = h->frame_names;
+    tact_core_t *c = h ? h->core : NULL;
+    if (!h || !c->frame_names || !name) return -1;
+    const char *p = c->frame_names;
     for (int i = 0; i < h->n_frames; ++i) {
         if (strcmp(p, name) == 0) return i;
         p += strlen(p) + 1;
@@ -452,18 +456,9 @@ int tact_frame_id(const tact_t *h, const char *name)
     return -1;
 }
 
-const double *tact_q0(const tact_t *h)
-{
-    return h ? h->q0 : NULL;
-}
-
-const double *tact_qd0(const tact_t *h)
-{
-    return h ? h->qd0 : NULL;
-}
-
 int tact_render(const tact_t *h, const double *q)
 {
+    tact_core_t *c = h ? h->core : NULL;
     if (!h || !q) return -1;
 
     int n_obj = h->n_shape;
@@ -477,13 +472,13 @@ int tact_render(const tact_t *h, const double *q)
         return -2;
     }
 
-    if (h->nb > 0) _fk(T, h->nb, h->Ti, h->parent, h->jtype, (double*)q);
+    if (h->nb > 0) _fk(T, h->nb, c->Ti, c->parent, c->jtype, (double*)q);
 
     for (int i = 0; i < n_obj; ++i) {
-        for (int k = 0; k < 3; ++k) shape[8*i + k] = (float)h->cshape[3*i + k];
+        for (int k = 0; k < 3; ++k) shape[8*i + k] = (float)c->cshape[3*i + k];
 
-        if (h->crgba) {
-            for (int k = 0; k < 4; ++k) objcolor[4*i + k] = (float)h->crgba[4*i + k];
+        if (c->crgba) {
+            for (int k = 0; k < 4; ++k) objcolor[4*i + k] = (float)c->crgba[4*i + k];
         } else {
             objcolor[4*i + 0] = 0.7f;
             objcolor[4*i + 1] = 0.7f;
@@ -492,32 +487,32 @@ int tact_render(const tact_t *h, const double *q)
         }
 
         double Tw[16];
-        if (h->cbody[i] < 0) memcpy(Tw, h->ctran + 16*i, 16 * sizeof(double));
-        else                matmul(Tw, T + 16*h->cbody[i], h->ctran + 16*i, 4, 4, 4);
+        if (c->cbody[i] < 0) memcpy(Tw, c->ctran + 16*i, 16 * sizeof(double));
+        else                matmul(Tw, T + 16*c->cbody[i], c->ctran + 16*i, 4, 4, 4);
         for (int r = 0; r < 4; ++r) {
-            for (int c = 0; c < 4; ++c) {
-                objpose[16*i + 4*c + r] = (float)Tw[4*r + c];
+            for (int col = 0; col < 4; ++col) {
+                objpose[16*i + 4*col + r] = (float)Tw[4*r + col];
             }
         }
     }
 
     float campose[6] = {0.0f, 0.0f, 0.0f, 3.0f, 45.0f, 20.0f};
-    if (h->view) {
-        for (int i = 0; i < 6; ++i) campose[i] = (float)h->view[i];
+    if (c->view) {
+        for (int i = 0; i < 6; ++i) campose[i] = (float)c->view[i];
     }
 
     float light_pos[3] = {7.0f, 7.0f, 7.0f};
     float light_target[3] = {0.0f, 0.0f, 0.0f};
     float light_ortho = 5.0f;
     int shadow_enabled = 1;
-    if (h->light0) {
-        for (int i = 0; i < 3; ++i) light_pos[i] = (float)h->light0[i];
-        for (int i = 0; i < 3; ++i) light_target[i] = (float)h->light0[3 + i];
-        light_ortho = (float)h->light0[6];
-        shadow_enabled = h->light0[7] != 0.0;
+    if (c->light0) {
+        for (int i = 0; i < 3; ++i) light_pos[i] = (float)c->light0[i];
+        for (int i = 0; i < 3; ++i) light_target[i] = (float)c->light0[3 + i];
+        light_ortho = (float)c->light0[6];
+        shadow_enabled = c->light0[7] != 0.0;
     }
     tact_render_set_light(light_pos, light_target, light_ortho, shadow_enabled);
-    int rc = win_render(n_obj, h->ctype, shape, objcolor, objpose, campose);
+    int rc = win_render(n_obj, c->ctype, shape, objcolor, objpose, campose);
 
     free(T);
     free(shape);

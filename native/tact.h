@@ -16,7 +16,41 @@
 #define CAPSULE 104
 #define HFIELD  105
 
-typedef struct tact_t tact_t;
+typedef struct tact_core_t tact_core_t;   /* private engine state, defined in core.h */
+
+/* Public handle. Always engine-allocated (tact_create_*); never allocate or
+ * copy it yourself. All fields are read-only for user code — mutate state only
+ * through tact_ functions. Pointer fields are views into engine-owned storage,
+ * valid until tact_destroy().
+ *
+ * ABI rule: new public fields are appended at the end of their section, before
+ * `core`, so field offsets compiled into consumers stay valid across releases. */
+typedef struct tact_t {
+    /* -- model dimensions / parameters: fixed after create -- */
+    int     nb;                 /* bodies */
+    int     nq;                 /* position/velocity DoF slots (fixed=0, rev/lin=1, free=6) */
+    int     n_shape, n_pair;    /* collision shapes / candidate pairs */
+    int     n_frames;           /* frames registered via tact_set_feedback (tact_fk index range) */
+    int     y_size;             /* feedback vector length (0 until tact_set_feedback) */
+    int     ctx_size;           /* solver ctx length for tact_step_lcp */
+    int     contact_count;      /* step output: active contacts after tact_step_lcp */
+    double  dt;
+
+    const double *q0, *qd0;     /* initial state, length nq (bin models; else NULL) */
+
+    /* -- engine-owned step outputs: read after tact_step_lcp -- */
+    double *f, *a, *v;          /* per-body spatial wrench / accel / vel, 6*nb */
+    double *q_next, *qd_next;   /* integrated next state, nq */
+    double *y;                  /* feedback vector, y_size (NULL until tact_set_feedback) */
+    double *ctx_next;           /* next warm-start ctx, ctx_size. Pass ctx_next itself
+                                 * as tact_step_lcp's ctx to continue from the engine's
+                                 * own last warm-start (stateful convenience), or copy
+                                 * it into your own ctx buffer and pass that (pure
+                                 * threading, the q/q_next idiom); NULL = cold start */
+
+    /* -- private engine state: do not access -- */
+    tact_core_t *core;
+} tact_t;
 
 /* Functions prefixed with tact_ are the supported public API. Other exported
  * symbols are internal/unstable and may change without notice. */
@@ -27,7 +61,7 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
 
 int  tact_create_from_bin(const char *path, tact_t **out);
 void tact_destroy(tact_t *h);
-int  tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref, double *ctx_in, double *ctx_out);
+int  tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref, double *ctx);
 void tact_set_feedback(tact_t *h, int n_feeds, int *kinds, int *offsets, int *idx, int n_frames, int *fbody, double *ftran, double *ftran_inv, int y_size);
 void tact_edit_model(tact_t *h, double *X, double *I6, double *Ti);
 
@@ -52,29 +86,11 @@ int  tact_collision_check_mpr(int type1, double *param1, int type2, double *para
 int  tact_box_box_manifold(const double *param1, const double *param2, double *out, int max_pts);
 void tact_set_mesh_path(int idx, const char *path);
 void tact_set_hfield_data(int slot, int nrow, int ncol, double sx, double sy, const double *data);
-int  tact_contact_count(tact_t *h);
 void tact_contact_reports (tact_t *h, int *contact_i_out, double *contact_d_out);
 
-int tact_nb(const tact_t *h);
-int tact_nq(const tact_t *h);
-int tact_n_shape(const tact_t *h);
-int tact_n_pair(const tact_t *h);
-int tact_y_size(const tact_t *h);
-int tact_ctx_size(const tact_t *h);
-double tact_dt(const tact_t *h);
-
-const double *tact_q0(const tact_t *h);
-const double *tact_qd0(const tact_t *h);
 int tact_frame_count(const tact_t *h);
 const char *tact_frame_name(const tact_t *h, int frame_id);
 int tact_frame_id(const tact_t *h, const char *name);
-
-double *tact_f(tact_t *h);
-double *tact_a(tact_t *h);
-double *tact_v(tact_t *h);
-double *tact_q_next(tact_t *h);
-double *tact_qd_next(tact_t *h);
-double *tact_y(tact_t *h);
 
 
 #endif /* TACT_H */

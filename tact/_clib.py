@@ -37,9 +37,12 @@ clib.tact_destroy.argtypes = [ctypes.c_void_p]
 clib.tact_destroy.restype = None
 
 #h, q, qd, tau (raw actuation -- C subtracts ff*qd + sk*q internally before the integrator),
-#Kp_j, Kd_j, q_ref, qd_ref (NULL ok), ctx_in, ctx_out (REQUIRED -- solver
-#context; currently the unified PGS warm-start vector [contact | fric | limit])
-clib.tact_step_lcp.argtypes     = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL]
+#Kp_j, Kd_j, q_ref, qd_ref (NULL ok), ctx (solver context, the unified PGS
+#warm-start vector [contact | fric | limit]; NULL = cold start). The next
+#warm-start lands in the engine-owned h->ctx_next (TactModel.ctx_next) —
+#copy it out and pass your copy (pure threading, the sim.py path), or pass
+#ctx_next itself to let the engine keep warm-start state internally.
+clib.tact_step_lcp.argtypes     = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL]
 clib.tact_step_lcp.restype      = ctypes.c_int
 
 #h, n_feeds, kinds, offsets, idx, n_frames, fbody, ftran, ftran_inv, y_size
@@ -98,12 +101,46 @@ clib.tact_raycast_world.restype  = None
 clib.tact_raycast_frame.argtypes = [ctypes.c_void_p, _DBL, ctypes.c_int, _DBL, ctypes.c_int, _DBL]
 clib.tact_raycast_frame.restype  = None
 
-clib.tact_q_next.argtypes   = [ctypes.c_void_p]; clib.tact_q_next.restype   = _DBL
-clib.tact_qd_next.argtypes  = [ctypes.c_void_p]; clib.tact_qd_next.restype  = _DBL
-clib.tact_y.argtypes        = [ctypes.c_void_p]; clib.tact_y.restype        = _DBL
+#Mirror of the public tact_t head (native/tact.h). Field order/types must match
+#the C struct exactly — a drift would read garbage, so sim.py cross-validates
+#the mirrored dims (nb/nq/n_shape/n_pair/dt) against its own build values right
+#after every handle creation and raises on mismatch. The private tail behind
+#`core` is opaque; only the head is mirrored.
+class TactModel(ctypes.Structure):
+    _fields_ = [
+        # model dimensions / parameters — fixed after create
+        ('nb',            ctypes.c_int),
+        ('nq',            ctypes.c_int),
+        ('n_shape',       ctypes.c_int),
+        ('n_pair',        ctypes.c_int),
+        ('n_frames',      ctypes.c_int),
+        ('y_size',        ctypes.c_int),
+        ('ctx_size',      ctypes.c_int),
+        ('contact_count', ctypes.c_int),   # step output: active contacts
+        ('dt',            ctypes.c_double),
+        ('q0',            _DBL),
+        ('qd0',           _DBL),
+        # engine-owned step outputs — read after tact_step_lcp
+        ('f',             _DBL),
+        ('a',             _DBL),
+        ('v',             _DBL),
+        ('q_next',        _DBL),
+        ('qd_next',       _DBL),
+        ('y',             _DBL),
+        ('ctx_next',      _DBL),   # next warm-start ctx (copy out, or pass back as ctx for engine-kept warm-start)
+        # private engine state — do not access
+        ('core',          ctypes.c_void_p),
+    ]
 
-clib.tact_contact_count.argtypes = [ctypes.c_void_p]
-clib.tact_contact_count.restype  = ctypes.c_int
+
+def model_view(h):
+    """Live read-only view of a tact_t handle's public head.
+
+    Attribute reads go straight to the C struct memory, so pointer fields
+    updated after creation (e.g. `y` set by tact_set_feedback) read current."""
+    return ctypes.cast(h, ctypes.POINTER(TactModel)).contents
+
+
 clib.tact_contact_reports.argtypes = [ctypes.c_void_p, _INT, _DBL]
 clib.tact_contact_reports.restype  = None
 

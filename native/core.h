@@ -230,26 +230,15 @@ int  win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* 
  *   *iters_out             actual PGS iterations consumed (≤ iters)
  *   *residual_out          max |Δλ| at last iteration
  * ============================================================================= */
-void contact_lcp(int nb, double *T, int *parent, int *jtype,
-                 int n_pair, int *cpair, int *ctype, int *cbody,
-                 double *ctran, double *cshape, double *cparam,
-                 double *qd_free, double *M_full, double dt,
-                 double erp, double slop, double cfm_scale,
-                 double v_rest_thresh,
-                 int iters, double tol,
-                 double *lam_contact_prev,
-                 double *floss, double *lam_fric,
-                 double *q, double *jnt_lo, double *jnt_hi, double *lam_limit,
-                 double *dqd_out, double *lam_contact_out, double *f_ext_out,
-                 int *nc_out, int *iters_out, double *residual_out,
-                 int *contact_count_out, int *contact_i_out, double *contact_d_out,
-                 double *workspace);
+void contact_lcp(int nb, double *T, int *parent, int *jtype, int n_pair, int *cpair, int *ctype, int *cbody, double *ctran, double *cshape, double *cparam,
+                 double *qd_free, double *M_full, double dt, double erp, double slop, double cfm_scale, double v_rest_thresh, int iters, double tol,
+                 double *lam_contact_prev, double *floss, double *lam_fric, double *q, double *jnt_lo, double *jnt_hi, double *lam_limit,
+                 double *dqd_out, double *lam_contact_out, double *f_ext_out, int *nc_out, int *iters_out, double *residual_out,
+		 int *contact_count_out, int *contact_i_out, double *contact_d_out, double *workspace);
 
-struct tact_t {
-    int     nb;
-    int     nq;
-    int     n_shape, n_pair;
-    double  dt;
+/* Private engine state behind tact_t.core (public head lives in tact.h).
+ * Allocated together with the public struct in tact_create_from_arrays. */
+struct tact_core_t {
     double  g[3];
 
     double  erp, slop, cfm_scale, v_rest_thresh, tol;
@@ -280,16 +269,14 @@ struct tact_t {
 
     double *T;
     double *f_ext;
-    double *f, *a, *v;
     double *qdd;
-    double *q_next, *qd_next;
     double *tau_p;
     double *workspace;
 
     double *qd_free_buf;
     double *M_buf;
     double *lcp_ws;
-    int     contact_count;
+    double *ctx_prev;      /* staging for the h->ctx_next-as-input mode */
     int    *contact_i;
     double *contact_d;
 
@@ -300,17 +287,11 @@ struct tact_t {
     int    *feed_kinds;
     int    *feed_offsets;
     int    *feed_idx;
-    int     n_frames;
     int    *fbody;
     double *ftran;
     double *ftran_inv;
-    int     y_size;
-    double *y_buf;
     void   *fb_arena;
 
-    int     ctx_size;
-    double *q0;
-    double *qd0;
     double *crgba;
     double *view;
     double *light0;

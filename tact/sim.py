@@ -6,7 +6,7 @@ import sys, os, ctypes, math, copy
 from typing import NamedTuple
 import numpy as np
 import yaml
-from ._clib import clib, _DBL, _INT
+from ._clib import clib, model_view, _DBL, _INT
 from .rbd import *
 from .rbd import _fk, _q_step, _build_qidx   # underscored names are not pulled in by `import *`
 
@@ -1376,12 +1376,24 @@ class Model:
             raise RuntimeError(f"tact_create_from_arrays failed: {rc}")
         self._h = h
 
+        #public-head view (ctypes mirror of native/tact.h). Cross-validate the
+        #mirrored dims against the build values we just passed in — a struct
+        #layout drift between _clib.TactModel and tact.h reads garbage here,
+        #so fail loudly at creation instead of corrupting silently.
+        nq = len(self.q0)
+        mv = model_view(self._h)
+        if (mv.nb, mv.nq, mv.n_shape, mv.n_pair) != (nb, nq, nshape, npair) or mv.dt != self.dt:
+            raise RuntimeError(
+                f"tact_t public-head mirror mismatch (tact.h vs _clib.TactModel): "
+                f"C=(nb={mv.nb}, nq={mv.nq}, n_shape={mv.n_shape}, n_pair={mv.n_pair}, dt={mv.dt}) "
+                f"py=(nb={nb}, nq={nq}, n_shape={nshape}, n_pair={npair}, dt={self.dt})")
+
         #wrap arena's dynamic buffers as numpy views — re-acquired on every recreate.
         # Buffers are per-DoF (length nq) — equals nb when no free6 joints, larger
         # by 5 per free6 body otherwise. self.q is already nq-long after build.
-        nq = len(self.q0)
-        self._h_q_next  = np.ctypeslib.as_array(clib.tact_q_next(self._h),  shape=(nq,))
-        self._h_qd_next = np.ctypeslib.as_array(clib.tact_qd_next(self._h), shape=(nq,))
+        self._h_q_next   = np.ctypeslib.as_array(mv.q_next,   shape=(nq,))
+        self._h_qd_next  = np.ctypeslib.as_array(mv.qd_next,  shape=(nq,))
+        self._h_ctx_next = np.ctypeslib.as_array(mv.ctx_next, shape=(mv.ctx_size,))
 
         #---- Phase 2: marshal feedback descriptors → handle ----
         # output size per feed kind: module-level _Y_PER (shared with feed_slices)
@@ -1416,7 +1428,11 @@ class Model:
             self._build_ftran_inv.ctypes.data_as(_DBL),
             y_size)
         self._y_size = y_size
-        self._h_y = np.ctypeslib.as_array(clib.tact_y(self._h), shape=(max(y_size, 1),))
+        #mv.y reads live memory, so it picks up the y buffer tact_set_feedback
+        #just allocated; mv.y_size doubles as a second mirror sanity check.
+        if mv.y_size != y_size:
+            raise RuntimeError(f"tact_t mirror mismatch: C y_size={mv.y_size}, py y_size={y_size}")
+        self._h_y = np.ctypeslib.as_array(mv.y, shape=(max(y_size, 1),))
 
     def __del__(self):
         h = getattr(self, '_h', None)
@@ -1460,7 +1476,7 @@ class Model:
         if not self.use_c or getattr(self, '_h', None) is None:
             return (np.zeros((0, 4), dtype=np.int32),
                     np.zeros((0, 10), dtype=np.float64))
-        n = int(clib.tact_contact_count(self._h))
+        n = int(model_view(self._h).contact_count)
         if n <= 0:
             return (np.zeros((0, 4), dtype=np.int32),
                     np.zeros((0, 10), dtype=np.float64))
@@ -1686,16 +1702,15 @@ class Model:
             qr_ptr  = q_ref.ctypes.data_as(_DBL)      if q_ref       is not None else None
             qdr_ptr = qd_ref.ctypes.data_as(_DBL)     if qd_ref      is not None else None
 
-            # Solver context carry: ctx.lam in, fresh output vector (= ctx_next)
-            # out. ctx=None → cold (zeros). Distinct in/out buffers keep ctx
-            # immutable. The current payload is one warm-start λ vector for all
-            # PGS row types — [contact | fric | limit], the SolverState layout.
+            # Solver context carry: ctx.lam in (caller-owned, read-only; None →
+            # NULL = cold start), next warm-start out via the engine-owned
+            # h->ctx_next buffer (same idiom as q_next/qd_next). The payload is
+            # one warm-start λ vector for all PGS row types — [contact | fric |
+            # limit], the SolverState layout.
             nq_dof  = len(self.floss)
-            ctx_len = 6 * MAX_PTS_PER_PAIR * max(len(self.cpair), 1) + 2 * nq_dof
-            ctx_in  = np.zeros(ctx_len) if ctx is None else np.ascontiguousarray(ctx.lam, dtype=np.float64)
-            ctx_out = np.zeros(ctx_len, dtype=np.float64)
+            ctx_in  = None if ctx is None else np.ascontiguousarray(ctx.lam, dtype=np.float64)
             rc = clib.tact_step_lcp(self._h, q_in.ctypes.data_as(_DBL), qd_in.ctypes.data_as(_DBL), tau_in.ctypes.data_as(_DBL), Kp_ptr, Kd_ptr, qr_ptr, qdr_ptr,
-                                    ctx_in.ctypes.data_as(_DBL), ctx_out.ctypes.data_as(_DBL))
+                                    ctx_in.ctypes.data_as(_DBL) if ctx_in is not None else None)
             if rc != 0:
                 raise RuntimeError(f"tact_step_lcp failed: {rc}")
 
@@ -1703,7 +1718,7 @@ class Model:
             q_next  = self._h_q_next.copy()
             qd_next = self._h_qd_next.copy()
             y       = self._h_y[:self._y_size].copy()
-            ctx_next = SolverState(lam=ctx_out, nq=nq_dof)
+            ctx_next = SolverState(lam=self._h_ctx_next.copy(), nq=nq_dof)
 
         elif not self.use_c and self.solver == 'lcp':
             #LCP path: ABA-with-joint-PD(f_ext=0) → qd_free, CRB → M, contact_lcp solves for
