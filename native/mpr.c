@@ -7,12 +7,12 @@
 #include "core.h"
 #include "shape.h"
 
-#define CCD_OBJ_MESH    MESH
-#define CCD_OBJ_BOX     BOX
-#define CCD_OBJ_SPHERE  SPHERE
-#define CCD_OBJ_CYL     CYL
-#define CCD_OBJ_CAPSULE CAPSULE
-#define CCD_OBJ_HFIELD  HFIELD
+#define CCD_OBJ_MESH    TACT_MESH
+#define CCD_OBJ_BOX     TACT_BOX
+#define CCD_OBJ_SPHERE  TACT_SPHERE
+#define CCD_OBJ_CYL     TACT_CYL
+#define CCD_OBJ_CAPSULE TACT_CAPSULE
+#define CCD_OBJ_HFIELD  TACT_HFIELD
 
 typedef struct {
     double v[3];

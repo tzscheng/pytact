@@ -520,7 +520,7 @@ class Model:
         # (default body = root) so it reuses the full frame machinery below — default-fill,
         # root-offset application, fdict/fbody/ftran registration, and add/delete group
         # handling — without a parallel code path. Env.camera_frames/lidar_frames then
-        # look the sensor up by frame name (cameras: egl_render;
+        # look the sensor up by frame name (cameras: tact_egl_render;
         # lidars: raymap/raycloud). Only the normalized publish metadata is kept, in
         # self.cameras / self.lidars. Extra keys (e.g. a transport `port` for a runner that
         # also binds a LAN socket) pass through untouched.
@@ -2302,7 +2302,7 @@ class Env:
         clib.tact_render_set_light(pos, tgt, ctypes.c_float(L['ortho']), ctypes.c_int(1 if L['shadow'] else 0))
 
     def _geom_arrays(self):
-        # Camera-invariant inputs to win_render/egl_render (object poses/shapes/types/
+        # Camera-invariant inputs to tact_win_render/tact_egl_render (object poses/shapes/types/
         # colors). These depend only on q + the model, not the camera, so when several
         # renders happen at the same tick (window redraw + per-camera get_rgb_image, or
         # kida.run's 3 cameras per cycle) they share one FK + pose-assembly pass.
@@ -2333,7 +2333,7 @@ class Env:
         campose = self.m.view
         _campose = (ctypes.c_float*len(campose))(*campose)
         self._push_light()
-        ret = clib.win_render(len(_type), _type, _shape, _objcolor,_objpose, _campose)
+        ret = clib.tact_win_render(len(_type), _type, _shape, _objcolor,_objpose, _campose)
         if ret == -2:
             raise RuntimeError("tact window rendering unavailable: missing GL/GLFW runtime libraries")
         return ret
@@ -2359,7 +2359,7 @@ class Env:
 
         Wire formats (per camera `type`):
           rgb   → JPEG bytes (decode with PIL/cv2/turbojpeg), encoded C-side in
-                  egl_render.
+                  tact_egl_render.
           depth → zstd-compressed little-endian float32, row-major top-to-bottom,
                   linear eye-space distance in meters (no-geometry pixels read the
                   far plane, 200 m). Decode:
@@ -2391,9 +2391,9 @@ class Env:
             _campose = (ctypes.c_float*len(campose))(*campose)
 
             self._push_light()
-            # vfov passed as c_float: egl_render has no declared argtypes, so a bare
+            # vfov passed as c_float: tact_egl_render has no declared argtypes, so a bare
             # Python float would be marshalled as c_double and misread by the C `float`.
-            imglen = clib.egl_render(len(_type), _type, _shape, _objcolor, _objpose,
+            imglen = clib.tact_egl_render(len(_type), _type, _shape, _objcolor, _objpose,
                                      _campose, self._imgbuf, opt, w, h,
                                      ctypes.c_float(c['vfov']))
             if imglen == -2:
@@ -2405,7 +2405,7 @@ class Env:
     # at ~0.5 ms/frame on the single-threaded sim loop, while /dev/shm IPC has
     # ~1000x bandwidth headroom (3d cloud raw ≈ 5.6 MB/s @ 30 fps) — and real
     # lidar drivers publish raw frames too. Depth CAMERAS still arrive
-    # zstd-compressed (C-side in egl_render, a separate path); rgb stays JPEG.
+    # zstd-compressed (C-side in tact_egl_render, a separate path); rgb stays JPEG.
 
     def lidar_frames(self):
         """Yield (name, payload_bytes) for each lidar due to publish at the current step.

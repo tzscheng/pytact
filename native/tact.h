@@ -4,17 +4,17 @@
 #include <stdint.h>
 
 /* Common public constants. */
-#define MAX_NB 256
-#define EPS 1e-12
-#define MAX_PTS_PER_PAIR 4
+#define TACT_MAX_NB 256
+#define TACT_EPS 1e-12
+#define TACT_MAX_PTS_PER_PAIR 4
 
 /* Shape type codes, kept in sync with the Python YAML loader. */
-#define MESH    100
-#define BOX     101
-#define SPHERE  102
-#define CYL     103
-#define CAPSULE 104
-#define HFIELD  105
+#define TACT_MESH    100
+#define TACT_BOX     101
+#define TACT_SPHERE  102
+#define TACT_CYL     103
+#define TACT_CAPSULE 104
+#define TACT_HFIELD  105
 
 typedef struct tact_core_t tact_core_t;   /* private engine state, defined in core.h */
 
@@ -80,6 +80,16 @@ void tact_raycast_frame(tact_t *h, double *q, int frame_idx, double *dirs, int n
 
 int  tact_render(const tact_t *h, const double *q);
 void tact_render_set_light(float pos[3], float target[3], float ortho, int shadow_enabled);
+
+/* Scene-array renderers (the Python Env render path binds these directly;
+ * tact_render is the handle-based convenience wrapper over tact_win_render).
+ * objpose is column-major 4x4 per object; campose = [target(3), dist, yaw, pitch].
+ * tact_win_render: GLFW window; returns -1 when the window is closed / ESC.
+ * tact_egl_render: headless EGL to out_buf (opt selects rgb-JPEG / depth-zstd);
+ * returns the encoded byte count. */
+int tact_win_render(int n_obj, int *obj_type, float *shape, float *objcolor, float *objpose, float *campose);
+int tact_egl_render(int n_obj, int *obj_type, float *shape, float *objcolor, float *objpose, float *campose,
+                    char *out_buf, int opt, int req_width, int req_height, float fovy_deg);
 
 int  tact_collision_check(int type1, double *param1, int type2, double *param2, double *out, int max_pts);
 int  tact_collision_check_mpr(int type1, double *param1, int type2, double *param2, double *out);

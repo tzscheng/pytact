@@ -162,7 +162,7 @@ static int render_load_egl_deps(void){
     if(!gl_ok   && !(gl_ok   = load_shared(gl,   err, sizeof(err)))) goto fail;
     if(!egl_ok  && !(egl_ok  = load_shared(egl,  err, sizeof(err)))) goto fail;
     if(!render_load_egl_procs(err, sizeof(err))) goto fail;
-    // egl_render currently initializes both encoder contexts on first use
+    // tact_egl_render currently initializes both encoder contexts on first use
     // (tjInitCompress + ZSTD_createCCtx), even though each frame uses only one
     // opt. Load both here to keep that existing lifecycle unchanged.
     if(!tj_ok   && !(tj_ok   = load_shared(tj,   err, sizeof(err)))) goto fail;
@@ -369,7 +369,7 @@ static int render_load_gl_procs(int use_glfw){
 static EGLDisplay try_init_egl_display(EGLDisplay d, const char* label){
     if(d == EGL_NO_DISPLAY) return EGL_NO_DISPLAY;
     if(eglInitialize(d, NULL, NULL)){
-        fprintf(stderr, "egl_render: EGL display = %s\n", label);
+        fprintf(stderr, "tact_egl_render: EGL display = %s\n", label);
         return d;
     }
     return EGL_NO_DISPLAY;
@@ -399,7 +399,7 @@ static const char* egl_error_name(EGLint e)
 static void egl_log_error(const char *where)
 {
     EGLint e = eglGetError ? eglGetError() : 0;
-    fprintf(stderr, "egl_render: %s failed (%s / 0x%04x)\n", where, egl_error_name(e), e);
+    fprintf(stderr, "tact_egl_render: %s failed (%s / 0x%04x)\n", where, egl_error_name(e), e);
 }
 
 static int egl_choose_config(EGLDisplay dpy, int samples, EGLConfig *cfg_out)
@@ -439,12 +439,12 @@ static EGLDisplay choose_egl_display(void){
                 if(!node) continue;
                 EGLDisplay d = try_init_egl_display(gpd(EGL_PLATFORM_DEVICE_EXT, devs[i], NULL), "device/iGPU");
                 if(d != EGL_NO_DISPLAY){
-                    fprintf(stderr, "egl_render: TACT_RENDER_IGPU -> device %d/%d node=%s\n", i, n_dev, node);
+                    fprintf(stderr, "tact_egl_render: TACT_RENDER_IGPU -> device %d/%d node=%s\n", i, n_dev, node);
                     return d;
                 }
             }
         }
-        fprintf(stderr, "egl_render: TACT_RENDER_IGPU set but no mesa HW device; using fallback display search\n");
+        fprintf(stderr, "tact_egl_render: TACT_RENDER_IGPU set but no mesa HW device; using fallback display search\n");
         unsetenv("__EGL_VENDOR_LIBRARY_FILENAMES");
     }
 
@@ -482,10 +482,10 @@ static EGLDisplay choose_egl_display(void){
     return try_init_egl_display(eglGetDisplay(EGL_DEFAULT_DISPLAY), "default");
 }
 
-//---- Stage R.1: in-window mp4 recording (toggled by Shift+R key in win_render) ----
-static int rec_request = 0;            //toggled by key_cb; win_render acts on transitions
-static int rec_active  = 0;            //actual state in win_render
-static int space_request = 0;          //set by key_cb on SPACE press; win_render returns 1 once per press (consumed)
+//---- Stage R.1: in-window mp4 recording (toggled by Shift+R key in tact_win_render) ----
+static int rec_request = 0;            //toggled by key_cb; tact_win_render acts on transitions
+static int rec_active  = 0;            //actual state in tact_win_render
+static int space_request = 0;          //set by key_cb on SPACE press; tact_win_render returns 1 once per press (consumed)
 static FILE* rec_pipe  = NULL;         //ffmpeg stdin
 static int rec_w = 0, rec_h = 0;       //locked dimensions
 static unsigned char* rec_buf = NULL;  //glReadPixels target
@@ -507,7 +507,7 @@ static const float g_light_zfar  = 30.0f;
 #define SHADOW_TEX_UNIT 1   // GL_TEXTURE1 — main pass binds the depth tex here
 
 // Called from Python before each render. No GL state touched here — just
-// stashes values; win_render/egl_render reads them per frame.
+// stashes values; tact_win_render/tact_egl_render reads them per frame.
 void tact_render_set_light(float pos[3], float target[3], float ortho, int shadow_enabled){
     g_light_pos[0]   = pos[0];    g_light_pos[1]   = pos[1];    g_light_pos[2]   = pos[2];
     g_light_target[0]= target[0]; g_light_target[1]= target[1]; g_light_target[2]= target[2];
@@ -1348,7 +1348,7 @@ static void flip_vertical(void* img, int width, int height, int bytes_per_pixel,
     }
 }
 
-// Draw object i's lit mesh. Shared by win_render/egl_render Pass 2. V/P are
+// Draw object i's lit mesh. Shared by tact_win_render/tact_egl_render Pass 2. V/P are
 // column-major 4x4; objcolor is rgba (4 floats/obj), objpose 16 floats/obj.
 static void draw_lit_object(int i, const float* V, const float* P,
                             const float* objcolor, const float* objpose,
@@ -1411,7 +1411,7 @@ static int sort_transparent(int n_obj, const float* objcolor, const float* objpo
     return nt;
 }
 
-int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* objpose, float* campose){
+int tact_win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* objpose, float* campose){
     static GLFWwindow* window;
 
     static GLuint program;
@@ -1679,7 +1679,7 @@ int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
     return 0;
 }
 
-int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* objpose, float* campose, char* out_buf, int opt, int req_width, int req_height, float fovy_deg){
+int tact_egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* objpose, float* campose, char* out_buf, int opt, int req_width, int req_height, float fovy_deg){
     static EGLDisplay egl_dpy;
     static EGLContext egl_ctx;
     static EGLSurface egl_surf = EGL_NO_SURFACE;
@@ -1703,7 +1703,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
     #define EGL_N_PADDING 8
     static Mesh mesh[EGL_MAX_OBJ];
     // Per-slot fingerprint so Env.add/Env.delete (which mutates n_obj and shifts
-    // type/shape arrays) get reflected here too — same pattern as win_render.
+    // type/shape arrays) get reflected here too — same pattern as tact_win_render.
     static int   prev_type[EGL_MAX_OBJ];
     static float prev_shape[EGL_MAX_OBJ * EGL_N_PADDING];
     static int   prev_n_obj = 0;
@@ -1757,7 +1757,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	// surfaceless EGL, generic device platform, then the legacy default display.
 	egl_dpy = choose_egl_display();
         if (egl_dpy == EGL_NO_DISPLAY) {
-            fprintf(stderr, "egl_render: cannot initialize any EGL display\n");
+            fprintf(stderr, "tact_egl_render: cannot initialize any EGL display\n");
             return -2;
         }
 
@@ -1769,7 +1769,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
                 egl_log_error("eglChooseConfig(no MSAA)");
                 return -2;
             }
-            fprintf(stderr, "egl_render: disabled MSAA; using single-sample EGL pbuffer\n");
+            fprintf(stderr, "tact_egl_render: disabled MSAA; using single-sample EGL pbuffer\n");
         }
 
 	//OpenGL API bind
@@ -1846,7 +1846,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
                     egl_log_error("eglMakeCurrent(no MSAA fallback)");
                     return -2;
                 }
-                fprintf(stderr, "egl_render: disabled MSAA after eglMakeCurrent failure\n");
+                fprintf(stderr, "tact_egl_render: disabled MSAA after eglMakeCurrent failure\n");
             } else {
                 return -2;
             }
@@ -1935,7 +1935,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 
     // Sync mesh table to current (type, shape) per slot. Handles Env.add()
     // and Env.delete() by detecting per-slot fingerprint changes — same
-    // approach as win_render. Without this, dynamically added shapes would
+    // approach as tact_win_render. Without this, dynamically added shapes would
     // not have GPU resources and slots reindexed by delete() would draw the
     // wrong mesh.
     if (n_obj > EGL_MAX_OBJ) n_obj = EGL_MAX_OBJ;
@@ -2024,7 +2024,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
     glUniform1i(locShadowMap, SHADOW_TEX_UNIT);
 
     // Transparency: opaque first, then alpha<1 back-to-front with depth writes
-    // off. (Matches win_render; egl keeps drawing rgb[0]<0 shapes as before —
+    // off. (Matches tact_win_render; egl keeps drawing rgb[0]<0 shapes as before —
     // only translucent ones are deferred to the second pass.)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -2099,7 +2099,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 	size_t zstd_len = ZSTD_compressCCtx(cctx, zstd_buf, zstd_cap, raw_buf, raw_size, 3);
 
 	if (ZSTD_isError(zstd_len)){
-	    fprintf(stderr, "egl_render depth: zstd error: %s\n", ZSTD_getErrorName(zstd_len));
+	    fprintf(stderr, "tact_egl_render depth: zstd error: %s\n", ZSTD_getErrorName(zstd_len));
 	    eglMakeCurrent(egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	    return 0;
 	}

@@ -261,7 +261,7 @@ static int model_ready(const bin_model_t *m)
 {
     int expect_lam = 0;
     if (m && m->have_dims && m->nq >= 0 && m->n_pair >= 0) {
-        expect_lam = 6 * MAX_PTS_PER_PAIR * (m->n_pair > 0 ? m->n_pair : 1) + 2 * m->nq;
+        expect_lam = 6 * TACT_MAX_PTS_PER_PAIR * (m->n_pair > 0 ? m->n_pair : 1) + 2 * m->nq;
     }
     return m && m->have_dims && m->have_sim_f64 && m->have_sim_i32 &&
            m->nb >= 0 && m->nq >= 0 && m->n_shape >= 0 && m->n_pair >= 0 &&
@@ -512,7 +512,7 @@ int tact_render(const tact_t *h, const double *q)
         shadow_enabled = c->light0[7] != 0.0;
     }
     tact_render_set_light(light_pos, light_target, light_ortho, shadow_enabled);
-    int rc = win_render(n_obj, c->ctype, shape, objcolor, objpose, campose);
+    int rc = tact_win_render(n_obj, c->ctype, shape, objcolor, objpose, campose);
 
     free(T);
     free(shape);

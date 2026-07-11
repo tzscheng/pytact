@@ -102,7 +102,7 @@ void crb_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
 
 /* General dense SPD LDL^T (in-place). A is n×n row-major. After factor: lower
  * triangle holds L (unit-diag implicit), diagonal holds D, upper triangle is
- * unchanged. ldlt_factor returns 0 on success or -(k+1) when pivot D[k]≤EPS. */
+ * unchanged. ldlt_factor returns 0 on success or -(k+1) when pivot D[k]≤TACT_EPS. */
 int  ldlt_factor(double *A, int n);
 void ldlt_solve (const double *A, int n, double *b);
 
@@ -130,7 +130,8 @@ void rk4_step  (int nb, double *X, double *I6, int *parent, int *jtype,
  * storage) — collision side
  * ============================================================================= */
 
-/* Multi-point collision detection.
+/* tact_collision_check (public — declared in tact.h): multi-point collision
+ * detection.
  *
  * Output buffer `out` carries up to `max_pts` contact points, each laid out as
  * 7 consecutive doubles:
@@ -148,21 +149,19 @@ void rk4_step  (int nb, double *X, double *I6, int *parent, int *jtype,
  *   - box-box pairs:  tact_box_box_manifold() — SAT + face clipping, up to max_pts pts.
  *   - all other type combinations: existing MPR (single point), wrapped to return
  *     n_pts = 1 (depth > 0) or n_pts = 0 (touching, no penetration). */
-int  tact_collision_check(int type1, double *param1, int type2, double *param2,
-                     double *out, int max_pts);
 
-/* Single-point MPR fallback (mpr.c) — used by tact_collision_check for convex pairs
- * with no dedicated detector. out[0..6] = [point, normal, depth]; returns intersect. */
-int  tact_collision_check_mpr(int type1, double *param1, int type2, double *param2, double *out);
+/* tact_collision_check_mpr (public — declared in tact.h): single-point MPR
+ * fallback (mpr.c), used by tact_collision_check for convex pairs with no
+ * dedicated detector. out[0..6] = [point, normal, depth]; returns intersect. */
 
-/* box_box.c — SAT + face-clipping manifold for two BOX shapes.
- * Same return / out-layout convention as tact_collision_check.
+/* tact_box_box_manifold (public — declared in tact.h): box_box.c SAT +
+ * face-clipping manifold for two TACT_BOX shapes. Same return / out-layout
+ * convention as tact_collision_check.
  *
  * Half-extents in param[6..8], position in param[0..2], extrinsic-xyz Euler in
- * param[3..5]. Up to min(max_pts, MAX_PTS_PER_PAIR) contact points returned,
+ * param[3..5]. Up to min(max_pts, TACT_MAX_PTS_PER_PAIR) contact points returned,
  * sub-id'd 0..n-1 by polar angle around manifold centroid in tangent plane. */
-int  tact_box_box_manifold(const double *param1, const double *param2,
-                      double *out, int max_pts);
+
 int  load_mesh(int mesh_idx);
 int  load_obj(int mesh_idx);
 /* Ray intersection primitives (ray.c) — sphere needs |Rd|=1, box returns -1 when
@@ -186,21 +185,22 @@ double mesh_local_radius(int idx);
 /* Bounding-sphere radius of hfield slot `slot` about its local origin:
  * sqrt(sx² + sy² + max(|min_h|,|max_h|)²). -1 if the slot is empty. Raycast broad phase. */
 double hfield_local_radius(int slot);
-/* Register the filesystem path for mesh slot `idx`. Called from Python's
- * Model.build() after tact_create_from_arrays() so subsequent collision/render mesh
- * loads know which `.obj` file to read. Path must be readable from the
- * process's current working directory or absolute. */
-void tact_set_mesh_path(int idx, const char* path);
-/* Register a height-field grid into slot `slot`. Called from Python's Model.build()
- * (analogous to tact_set_mesh_path, but the grid is pushed directly rather than read from a
- * file C-side). `data` is nrow*ncol heights in meters, row-major: data[i*ncol + j] is
- * the height at grid node (row i along local +Y, col j along local +X). The grid spans
- * local [-sx, sx] × [-sy, sy]. Copies the data; safe to free `data` after the call. */
-void tact_set_hfield_data(int slot, int nrow, int ncol, double sx, double sy, const double* data);
+/* tact_set_mesh_path (public — declared in tact.h): register the filesystem
+ * path for mesh slot `idx`. Called from Python's Model.build() after
+ * tact_create_from_arrays() so subsequent collision/render mesh loads know
+ * which `.obj` file to read. Path must be readable from the process's current
+ * working directory or absolute. */
+
+/* tact_set_hfield_data (public — declared in tact.h): register a height-field
+ * grid into slot `slot`. Called from Python's Model.build() (analogous to
+ * tact_set_mesh_path, but the grid is pushed directly rather than read from a
+ * file C-side). `data` is nrow*ncol heights in meters, row-major: data[i*ncol
+ * + j] is the height at grid node (row i along local +Y, col j along local
+ * +X). The grid spans local [-sx, sx] × [-sy, sy]. Copies the data; safe to
+ * free `data` after the call. */
+
 /* 3×3 orthonormal frame whose third column = normalized z_in. Row-major, R[3*r+c]. */
 void choose_rotation(double *z_in, double *R);
-void tact_render_set_light(float pos[3], float target[3], float ortho, int shadow_enabled);
-int  win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* objpose, float* campose);
 
 
 /* =============================================================================
@@ -214,7 +214,7 @@ int  win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* 
  * READS
  *   q[nq]        joint positions (limit-row activation)
  *   lam_in       warm-start λ, ctx_size, or NULL = cold start (zero λ).
- *                Layout [contact 6·MAX_PTS_PER_PAIR·max(n_pair,1) | fric nq |
+ *                Layout [contact 6·TACT_MAX_PTS_PER_PAIR·max(n_pair,1) | fric nq |
  *                limit nq] — owned by lcp.c, mirrored by Python SolverState.
  *                Never mutated (caller ctx stays pure).
  *   h            nb, nq, n_pair, dt
@@ -243,11 +243,11 @@ void contact_lcp(tact_t *h, double *q, double *lam_in);
 typedef struct {
     int valid;
     int nblk;
-    int blk_of_body[MAX_NB];    /* block id of body i, or -1 (static, no DoF chain) */
-    int blk_size[MAX_NB];       /* DoF count of block b (nblk ≤ nb) */
-    int blk_off[MAX_NB + 1];    /* prefix sum into blk_dof */
-    int blk_mat_off[MAX_NB];    /* offset into packed block-matrix buffer (Σ s²) */
-    int blk_dof[6 * MAX_NB];    /* DoF indices per block, ascending within block */
+    int blk_of_body[TACT_MAX_NB];    /* block id of body i, or -1 (static, no DoF chain) */
+    int blk_size[TACT_MAX_NB];       /* DoF count of block b (nblk ≤ nb) */
+    int blk_off[TACT_MAX_NB + 1];    /* prefix sum into blk_dof */
+    int blk_mat_off[TACT_MAX_NB];    /* offset into packed block-matrix buffer (Σ s²) */
+    int blk_dof[6 * TACT_MAX_NB];    /* DoF indices per block, ascending within block */
 } lcp_partition_t;
 
 /* Private engine state behind tact_t.core (public head lives in tact.h).

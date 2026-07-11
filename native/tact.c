@@ -43,7 +43,7 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
      * DoFs than contact-row capacity overflows. The int tail (ci,cj,cp_idx,sub_id=4·Pm;
      * free_map=nq; row_blocks=2·M2; fric_dof/body + limit_dof/sign/body = 5·nq) is
      * folded in (as doubles) with slack below. */
-    size_t Pm_max = (size_t)MAX_PTS_PER_PAIR * (size_t)npair_max;
+    size_t Pm_max = (size_t)TACT_MAX_PTS_PER_PAIR * (size_t)npair_max;
     size_t M2_max = (size_t)6*Pm_max + (size_t)2*nq;     /* max constraint rows */
     size_t lcp_ws_doubles = M2_max*M2_max               /* A */
                           + (size_t)2*M2_max*nq          /* J + Y */
@@ -100,7 +100,7 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
     h->dt = dt;
     c->erp = erp; c->slop = slop; c->cfm_scale = cfm_scale;
     c->v_rest_thresh = v_rest_thresh; c->iters = iters; c->tol = tol;
-    h->ctx_size = (int)(6 * MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1) + 2 * nq);
+    h->ctx_size = (int)(6 * TACT_MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1) + 2 * nq);
     c->g[0] = g[0]; c->g[1] = g[1]; c->g[2] = g[2];
 
     char *p = (char*)c->arena;
@@ -276,7 +276,7 @@ void tact_edit_model(tact_t *h, double *X, double *I6, double *Ti)
 /* Phase 2: feedback in C — mirrors sim.py:Model.feedback() 14 cases.
  * Reads from h->{T,v,a,f,f_ext}, q, qd, tau (raw actuation, for case 3).
  * Writes to h->y (length h->y_size). */
-static void tact_feedback(tact_t *h, double *q, double *qd, double *tau)
+static void feedback_eval(tact_t *h, double *q, double *qd, double *tau)
 {
     tact_core_t *c = h->core;
     double *y = h->y;
@@ -461,7 +461,7 @@ static void tact_feedback(tact_t *h, double *q, double *qd, double *tau)
    ctx: caller-owned solver context (read-only input; NULL = cold start, zero λ).
    Its payload is the PGS warm-start λ vector — ONE vector holding every row
    type, blocks in row-table order (the SolverState layout, the C↔Python ABI):
-       [contact (6·MAX_PTS_PER_PAIR·max(n_pair,1), slot-indexed)
+       [contact (6·TACT_MAX_PTS_PER_PAIR·max(n_pair,1), slot-indexed)
         | joint-friction (nq) | joint-limit (nq)]
    The next warm-start is written to the engine-owned h->ctx_next (same idiom
    as q_next/qd_next). Three ways to drive it:
@@ -528,7 +528,7 @@ int tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, d
                      c->f_ext, c->g, c->tau_p, h->f, h->a, h->v, c->workspace);
 
     /* Stage 4: feedback. raw tau (pre ff/sk/PID) is what case 3 reads. */
-    if (c->fb_set) tact_feedback(h, q, qd, tau);
+    if (c->fb_set) feedback_eval(h, q, qd, tau);
     return 0;
 }
 
@@ -847,7 +847,7 @@ static double raycast_cached(const rc_shape *cache, int n, const double *R0, con
         }
 
         switch (s->type) {
-        case 100: {  /* MESH: ray into mesh-local frame: R0_loc = Rᵀ(R0-p), Rd_loc = Rᵀ Rd */
+        case 100: {  /* TACT_MESH: ray into mesh-local frame: R0_loc = Rᵀ(R0-p), Rd_loc = Rᵀ Rd */
             double dp[3] = {R0[0]-p[0], R0[1]-p[1], R0[2]-p[2]};
             double R0l[3] = {R[0]*dp[0]+R[3]*dp[1]+R[6]*dp[2],
                              R[1]*dp[0]+R[4]*dp[1]+R[7]*dp[2],
@@ -858,12 +858,12 @@ static double raycast_cached(const rc_shape *cache, int n, const double *R0, con
             t = ray_intersects_mesh_slot(R0l, Rdl, s->slot);
             break;
         }
-        case 101: {  /* BOX */
+        case 101: {  /* TACT_BOX */
             double hs[3] = {s->sh[0], s->sh[1], s->sh[2]};
             t = ray_intersects_box(R0, Rd, p, R, hs);
             break;
         }
-        case 102:    /* SPHERE */
+        case 102:    /* TACT_SPHERE */
             t = ray_intersects_sphere(R0, Rd, p, s->sh[0]);
             break;
         case 103: {  /* CYLINDER: sh = [r, hh, _]; endpoints = p ± hh·z */
@@ -873,14 +873,14 @@ static double raycast_cached(const rc_shape *cache, int n, const double *R0, con
             t = ray_intersects_cylinder(R0, Rd, P1, P2, r);
             break;
         }
-        case 104: {  /* CAPSULE */
+        case 104: {  /* TACT_CAPSULE */
             double r = s->sh[0], hh = s->sh[1];
             double P1[3] = {p[0]+hh*z[0], p[1]+hh*z[1], p[2]+hh*z[2]};
             double P2[3] = {p[0]-hh*z[0], p[1]-hh*z[1], p[2]-hh*z[2]};
             t = ray_intersects_capsule(R0, Rd, P1, P2, r);
             break;
         }
-        case 105: {  /* HFIELD: ray into hfield-local frame, same transform as mesh */
+        case 105: {  /* TACT_HFIELD: ray into hfield-local frame, same transform as mesh */
             double dp[3] = {R0[0]-p[0], R0[1]-p[1], R0[2]-p[2]};
             double R0l[3] = {R[0]*dp[0]+R[3]*dp[1]+R[6]*dp[2],
                              R[1]*dp[0]+R[4]*dp[1]+R[7]*dp[2],
@@ -985,7 +985,7 @@ void tact_raycast_frame(tact_t *h, double *q, int frame_idx, double *dirs, int n
 }
 
 /* ---------------------------------------------------------------------------
- * Cholesky helpers — small, dense, SPD m×m matrices (m ≤ ~6*MAX_NB in practice).
+ * Cholesky helpers — small, dense, SPD m×m matrices (m ≤ ~6*TACT_MAX_NB in practice).
  * Used by tact_ik2 to solve (J Jᵀ + λ²I) x = e_x. λ²>0 guarantees SPD.
  * In-place factorization writes L into the lower triangle of A.
  * --------------------------------------------------------------------------- */
@@ -1031,7 +1031,7 @@ static void chol_solve(double *A, int m, double *b, double *x, double *y) {
  *
  * Workspace layout (in c->workspace, 120·nb doubles): q_full(nb) | dq(nb) | J(m·nb)
  *                                                   | A(m·m) | e(m) | bx(m) | yvec(m).
- * Caller responsibility: ensure m ≤ ~6·MAX_NB so the carve fits. */
+ * Caller responsibility: ensure m ≤ ~6·TACT_MAX_NB so the carve fits. */
 int tact_ik2(tact_t *h, double *q_in, double *x_d, int n, int *frame_idx, int *mode, const char *eulerseq, double advance, double tolerance, double damping, int max_iter, double *q_out)
 {
     tact_core_t *c = h->core;

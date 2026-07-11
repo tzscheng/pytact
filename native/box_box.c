@@ -1,7 +1,7 @@
 /* box_box.c — box-box contact manifold via SAT + Sutherland-Hodgman face
- * clipping. Returns up to MAX_PTS_PER_PAIR contact points sharing one contact
+ * clipping. Returns up to TACT_MAX_PTS_PER_PAIR contact points sharing one contact
  * normal (the smallest-penetration separating axis from SAT). Dispatched into
- * from tact_collision_check (narrow.c) for BOX/BOX pairs.
+ * from tact_collision_check (narrow.c) for TACT_BOX/TACT_BOX pairs.
  *
  * Algorithm follows the well-known ODE / Bullet box-box detector:
  *   1. SAT over 15 candidate axes (3 face normals of A, 3 of B, 9 edge crosses).
@@ -13,7 +13,7 @@
  *      clip the incident box's contact face polygon against the four side
  *      planes of the reference face (Sutherland-Hodgman in the reference face's
  *      tangent plane, depth interpolated along clipped edges). Vertices with
- *      depth < 0 are dropped; if more than MAX_PTS_PER_PAIR survive, Bullet's
+ *      depth < 0 are dropped; if more than TACT_MAX_PTS_PER_PAIR survive, Bullet's
  *      4-point pruning (deepest + farthest + max-area + opposite-side) selects
  *      the subset that best spans the contact patch.
  *   3. Edge-cross winner (best_code 6..14): edge-edge contact — closest-pair
@@ -31,7 +31,7 @@
  *           oriented from param1 toward param2 (matches MPR convention)
  *   [6]     scalar penetration depth (≥ 0)
  *
- * Param layout (matches the BOX entries elsewhere in tact):
+ * Param layout (matches the TACT_BOX entries elsewhere in tact):
  *   param[0..2]  box center in world
  *   param[3..5]  extrinsic-xyz Euler angles (radians)
  *   param[6..8]  half-extents along local x, y, z
@@ -417,11 +417,11 @@ static int face_face_manifold(int best_code, const double *n,
     }
     if (n_kept == 0) return 0;
 
-    /* Prune to the smaller of max_pts and MAX_PTS_PER_PAIR via Bullet-style
+    /* Prune to the smaller of max_pts and TACT_MAX_PTS_PER_PAIR via Bullet-style
      * 4-point selection (deepest + farthest + max-area + opposite-side). For
      * the typical 4-corner-overlap case n_kept ≤ 4, this is a straight copy. */
     int cap = max_pts;
-    if (cap > MAX_PTS_PER_PAIR) cap = MAX_PTS_PER_PAIR;
+    if (cap > TACT_MAX_PTS_PER_PAIR) cap = TACT_MAX_PTS_PER_PAIR;
     double pruned[MAX_CLIP_VERTS][3];
     n_kept = prune_to_max(kept, n_kept, pruned, cap);
 

@@ -830,7 +830,7 @@ static int box_hf_contact(double *box_param, double *hf_param, double *out, int 
     if (ncand == 0) return 0;
 
     /* Keep up to max_pts deepest candidates (selection by repeated max). */
-    int cap = (max_pts < MAX_PTS_PER_PAIR) ? max_pts : MAX_PTS_PER_PAIR;
+    int cap = (max_pts < TACT_MAX_PTS_PER_PAIR) ? max_pts : TACT_MAX_PTS_PER_PAIR;
     int used[8] = {0};
     for (n_out = 0; n_out < cap && n_out < ncand; n_out++) {
         int best=-1; double bd=-1.0;
@@ -1075,7 +1075,7 @@ static int capsule_hf_contact(double *cap_param, double *hf_param, double *out, 
  *   • 2·N_ANG side off-center samples (z = ±hh/2, ρ=r_cyl) — denser side coverage
  *                                                          for long lying cylinders
  * With N_ANG=16 the total is 2 + 32 + 16 + 32 = 82 samples per pair. Each is a single
- * vertex-vs-cell-plane check (~30 ops); selection picks the deepest ≤ MAX_PTS_PER_PAIR.
+ * vertex-vs-cell-plane check (~30 ops); selection picks the deepest ≤ TACT_MAX_PTS_PER_PAIR.
  *
  *   cyl_param = [pos(3), euler_xyz(3), r_cyl, hh, _]   (axis = local +z)
  *   hf_param  = [pos(3), euler_xyz(3), slot,  _, _]
@@ -1178,7 +1178,7 @@ static int cylinder_hf_contact(double *cyl_param, double *hf_param, double *out,
     if (ncand == 0) return 0;
 
     /* Select up to max_pts deepest candidates (selection by repeated max; small cap). */
-    int cap_n = (max_pts < MAX_PTS_PER_PAIR) ? max_pts : MAX_PTS_PER_PAIR;
+    int cap_n = (max_pts < TACT_MAX_PTS_PER_PAIR) ? max_pts : TACT_MAX_PTS_PER_PAIR;
     int used[N_CAND_MAX] = {0};
     int n_out = 0;
     for (n_out = 0; n_out < cap_n && n_out < ncand; n_out++) {
@@ -1207,7 +1207,7 @@ static int cylinder_hf_contact(double *cyl_param, double *hf_param, double *out,
  * .obj data, transform it to hfield-local frame and check against the local terrain
  * triangle (same vertex-vs-cell-plane pattern as box_hf and cylinder_hf, but with
  * mesh.obj vertices instead of generated samples). Streaming top-N selection keeps
- * memory bounded at MAX_PTS_PER_PAIR regardless of mesh size, so this handles small
+ * memory bounded at TACT_MAX_PTS_PER_PAIR regardless of mesh size, so this handles small
  * (tetrahedron) and large (2000+ vertex) meshes alike.
  *
  *   mesh_param = [pos(3), euler_xyz(3), slot, _, _]   (slot indexes shape.c mesh storage)
@@ -1249,10 +1249,10 @@ static int mesh_hf_contact(double *mesh_param, double *hf_param, double *out, in
     const double *o  = hf_param;
     const double *mc = mesh_param;
 
-    /* Streaming top-N: keep deepest MAX_PTS_PER_PAIR candidates as we scan vertices.
+    /* Streaming top-N: keep deepest TACT_MAX_PTS_PER_PAIR candidates as we scan vertices.
      * For each new penetrating vertex, if it's deeper than current shallowest, replace.
-     * Memory cost: O(MAX_PTS_PER_PAIR), regardless of nv. */
-    double top[MAX_PTS_PER_PAIR][7];
+     * Memory cost: O(TACT_MAX_PTS_PER_PAIR), regardless of nv. */
+    double top[TACT_MAX_PTS_PER_PAIR][7];
     int    n_top = 0;
     int    idx_min = 0;     /* index of shallowest in top[] (valid when n_top == MAX) */
 
@@ -1273,20 +1273,20 @@ static int mesh_hf_contact(double *mesh_param, double *hf_param, double *out, in
         double cd[7];
         if (!point_below_hf_triangle(p, nr, nc, H, sx, sy, dx, dy, cd)) continue;
 
-        if (n_top < MAX_PTS_PER_PAIR) {
+        if (n_top < TACT_MAX_PTS_PER_PAIR) {
             for (int j = 0; j < 7; j++) top[n_top][j] = cd[j];
             n_top++;
-            if (n_top == MAX_PTS_PER_PAIR) {
+            if (n_top == TACT_MAX_PTS_PER_PAIR) {
                 /* Initialize idx_min */
                 idx_min = 0;
-                for (int k = 1; k < MAX_PTS_PER_PAIR; k++)
+                for (int k = 1; k < TACT_MAX_PTS_PER_PAIR; k++)
                     if (top[k][6] < top[idx_min][6]) idx_min = k;
             }
         } else if (cd[6] > top[idx_min][6]) {
             for (int j = 0; j < 7; j++) top[idx_min][j] = cd[j];
             /* Recompute idx_min (constant 4 comparisons) */
             idx_min = 0;
-            for (int k = 1; k < MAX_PTS_PER_PAIR; k++)
+            for (int k = 1; k < TACT_MAX_PTS_PER_PAIR; k++)
                 if (top[k][6] < top[idx_min][6]) idx_min = k;
         }
     }
@@ -1294,9 +1294,9 @@ static int mesh_hf_contact(double *mesh_param, double *hf_param, double *out, in
     if (n_top == 0) return 0;
 
     /* Emit selected candidates, deepest first for stable sub_id ordering. */
-    int cap_n = (max_pts < MAX_PTS_PER_PAIR) ? max_pts : MAX_PTS_PER_PAIR;
+    int cap_n = (max_pts < TACT_MAX_PTS_PER_PAIR) ? max_pts : TACT_MAX_PTS_PER_PAIR;
     int n_emit = (n_top < cap_n) ? n_top : cap_n;
-    int used[MAX_PTS_PER_PAIR] = {0};
+    int used[TACT_MAX_PTS_PER_PAIR] = {0};
     for (int k = 0; k < n_emit; k++) {
         int best = -1;
         double bd = -1.0;
@@ -1331,44 +1331,44 @@ int tact_collision_check(int type1, double* param1, int type2, double *param2, d
 {
     if (max_pts <= 0) return 0;
 
-    if (type1 == BOX && type2 == BOX) {
+    if (type1 == TACT_BOX && type2 == TACT_BOX) {
         return tact_box_box_manifold(param1, param2, out, max_pts);
     }
     /* box-sphere (either order). out normal convention is param1→param2, while
      * box_sphere_contact emits box→sphere; flip when the sphere is param1. */
-    if (type1 == BOX && type2 == SPHERE) {
+    if (type1 == TACT_BOX && type2 == TACT_SPHERE) {
         return box_sphere_contact(param1, param2, out);
     }
-    if (type1 == SPHERE && type2 == BOX) {
+    if (type1 == TACT_SPHERE && type2 == TACT_BOX) {
         int rc = box_sphere_contact(param2, param1, out);   /* box=param2, sphere=param1 */
         if (rc >= 0) { out[3] = -out[3]; out[4] = -out[4]; out[5] = -out[5]; }
         return rc;
     }
     /* sphere-sphere: symmetric, no swap needed. Normal is already param1→param2. */
-    if (type1 == SPHERE && type2 == SPHERE) {
+    if (type1 == TACT_SPHERE && type2 == TACT_SPHERE) {
         return sphere_sphere_contact(param1, param2, out);
     }
     /* capsule-sphere (either order). capsule_sphere_contact emits capsule→sphere; flip
      * the normal when the sphere is param1 (so the capsule is param2). */
-    if (type1 == CAPSULE && type2 == SPHERE) {
+    if (type1 == TACT_CAPSULE && type2 == TACT_SPHERE) {
         return capsule_sphere_contact(param1, param2, out);
     }
-    if (type1 == SPHERE && type2 == CAPSULE) {
+    if (type1 == TACT_SPHERE && type2 == TACT_CAPSULE) {
         int rc = capsule_sphere_contact(param2, param1, out);   /* cap=param2, sphere=param1 */
         if (rc >= 0) { out[3] = -out[3]; out[4] = -out[4]; out[5] = -out[5]; }
         return rc;
     }
     /* capsule-capsule: symmetric (closest-pair on two segments), no swap needed.
      * Normal is already param1 → param2 from the function. */
-    if (type1 == CAPSULE && type2 == CAPSULE) {
+    if (type1 == TACT_CAPSULE && type2 == TACT_CAPSULE) {
         return capsule_capsule_contact(param1, param2, out);
     }
     /* cylinder-sphere (either order). cylinder_sphere_contact emits cylinder→sphere; flip
      * the normal when the sphere is param1 (so the cylinder is param2). */
-    if (type1 == CYL && type2 == SPHERE) {
+    if (type1 == TACT_CYL && type2 == TACT_SPHERE) {
         return cylinder_sphere_contact(param1, param2, out);
     }
-    if (type1 == SPHERE && type2 == CYL) {
+    if (type1 == TACT_SPHERE && type2 == TACT_CYL) {
         int rc = cylinder_sphere_contact(param2, param1, out);   /* cyl=param2, sphere=param1 */
         if (rc >= 0) { out[3] = -out[3]; out[4] = -out[4]; out[5] = -out[5]; }
         return rc;
@@ -1376,10 +1376,10 @@ int tact_collision_check(int type1, double* param1, int type2, double *param2, d
     /* box-capsule (either order). box_capsule_contact emits box→capsule per point; flip the
      * normal of every point when the capsule is param1 (so the box is param2). May return
      * up to 2 contact points (parallel-resting manifold). */
-    if (type1 == BOX && type2 == CAPSULE) {
+    if (type1 == TACT_BOX && type2 == TACT_CAPSULE) {
         return box_capsule_contact(param1, param2, out, max_pts);
     }
-    if (type1 == CAPSULE && type2 == BOX) {
+    if (type1 == TACT_CAPSULE && type2 == TACT_BOX) {
         int n = box_capsule_contact(param2, param1, out, max_pts);   /* box=param2, cap=param1 */
         for (int k = 0; k < n; k++) {
             out[7*k+3] = -out[7*k+3]; out[7*k+4] = -out[7*k+4]; out[7*k+5] = -out[7*k+5];
@@ -1388,20 +1388,20 @@ int tact_collision_check(int type1, double* param1, int type2, double *param2, d
     }
     /* sphere-hfield (either order). sphere_hf_contact emits terrain→sphere; that is
      * param1→param2 when the hfield is param1, so flip only when the sphere is param1. */
-    if (type1 == HFIELD && type2 == SPHERE) {
+    if (type1 == TACT_HFIELD && type2 == TACT_SPHERE) {
         return sphere_hf_contact(param2, param1, out);          /* hf=param1, sphere=param2 */
     }
-    if (type1 == SPHERE && type2 == HFIELD) {
+    if (type1 == TACT_SPHERE && type2 == TACT_HFIELD) {
         int rc = sphere_hf_contact(param1, param2, out);        /* sphere=param1, hf=param2 */
         if (rc >= 0) { out[3] = -out[3]; out[4] = -out[4]; out[5] = -out[5]; }
         return rc;
     }
     /* box-hfield (either order, Tier 2). box_hf_contact emits terrain→box per point; that
      * is param1→param2 when the hfield is param1, so flip every point when box is param1. */
-    if (type1 == HFIELD && type2 == BOX) {
+    if (type1 == TACT_HFIELD && type2 == TACT_BOX) {
         return box_hf_contact(param2, param1, out, max_pts);    /* hf=param1, box=param2 */
     }
-    if (type1 == BOX && type2 == HFIELD) {
+    if (type1 == TACT_BOX && type2 == TACT_HFIELD) {
         int n = box_hf_contact(param1, param2, out, max_pts);   /* box=param1, hf=param2 */
         for (int k = 0; k < n; k++) {
             out[7*k+3] = -out[7*k+3]; out[7*k+4] = -out[7*k+4]; out[7*k+5] = -out[7*k+5];
@@ -1411,10 +1411,10 @@ int tact_collision_check(int type1, double* param1, int type2, double *param2, d
     /* capsule-hfield (either order). capsule_hf_contact emits terrain→capsule per point;
      * that is param1→param2 when the hfield is param1, so flip every point when capsule
      * is param1. May return up to 2 contact points (parallel-resting manifold). */
-    if (type1 == HFIELD && type2 == CAPSULE) {
+    if (type1 == TACT_HFIELD && type2 == TACT_CAPSULE) {
         return capsule_hf_contact(param2, param1, out, max_pts);    /* cap=param2, hf=param1 */
     }
-    if (type1 == CAPSULE && type2 == HFIELD) {
+    if (type1 == TACT_CAPSULE && type2 == TACT_HFIELD) {
         int n = capsule_hf_contact(param1, param2, out, max_pts);   /* cap=param1, hf=param2 */
         for (int k = 0; k < n; k++) {
             out[7*k+3] = -out[7*k+3]; out[7*k+4] = -out[7*k+4]; out[7*k+5] = -out[7*k+5];
@@ -1424,10 +1424,10 @@ int tact_collision_check(int type1, double* param1, int type2, double *param2, d
     /* cylinder-hfield (either order, Tier 2). cylinder_hf_contact emits terrain→cylinder
      * per point; flip every point when cylinder is param1. May return up to MAX_PTS
      * (rim/side dense-sample manifold). */
-    if (type1 == HFIELD && type2 == CYL) {
+    if (type1 == TACT_HFIELD && type2 == TACT_CYL) {
         return cylinder_hf_contact(param2, param1, out, max_pts);    /* cyl=param2, hf=param1 */
     }
-    if (type1 == CYL && type2 == HFIELD) {
+    if (type1 == TACT_CYL && type2 == TACT_HFIELD) {
         int n = cylinder_hf_contact(param1, param2, out, max_pts);   /* cyl=param1, hf=param2 */
         for (int k = 0; k < n; k++) {
             out[7*k+3] = -out[7*k+3]; out[7*k+4] = -out[7*k+4]; out[7*k+5] = -out[7*k+5];
@@ -1436,11 +1436,11 @@ int tact_collision_check(int type1, double* param1, int type2, double *param2, d
     }
     /* mesh-hfield (either order, Tier 2). mesh_hf_contact emits terrain→mesh per
      * point; flip every point when mesh is param1. Vertex-sampling based; up to
-     * MAX_PTS_PER_PAIR deepest vertices kept. */
-    if (type1 == HFIELD && type2 == MESH) {
+     * TACT_MAX_PTS_PER_PAIR deepest vertices kept. */
+    if (type1 == TACT_HFIELD && type2 == TACT_MESH) {
         return mesh_hf_contact(param2, param1, out, max_pts);        /* mesh=param2, hf=param1 */
     }
-    if (type1 == MESH && type2 == HFIELD) {
+    if (type1 == TACT_MESH && type2 == TACT_HFIELD) {
         int n = mesh_hf_contact(param1, param2, out, max_pts);       /* mesh=param1, hf=param2 */
         for (int k = 0; k < n; k++) {
             out[7*k+3] = -out[7*k+3]; out[7*k+4] = -out[7*k+4]; out[7*k+5] = -out[7*k+5];
@@ -1450,7 +1450,7 @@ int tact_collision_check(int type1, double* param1, int type2, double *param2, d
     /* Safety guard: every hfield pair is now handled above. If a future shape type
      * is added without an hfield-specific detector, prevent the convex MPR fallback
      * from colliding against the hfield's convex hull (a giant dome). */
-    if (type1 == HFIELD || type2 == HFIELD) return -1;
+    if (type1 == TACT_HFIELD || type2 == TACT_HFIELD) return -1;
 
     /* Fallback: single-point MPR. Translate its return convention (0 = hit,
      * <0 = miss) into the multi-point convention (n_pts written, or -1 = miss). */

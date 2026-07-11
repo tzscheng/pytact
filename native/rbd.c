@@ -18,7 +18,7 @@ void normalize(double *n, double* v, int row){
     for(int i = 0; i < row; i++) sqsum += v[i]*v[i];
     norm = sqrt(sqsum);
     
-    if (fabs(norm) < EPS) {
+    if (fabs(norm) < TACT_EPS) {
 	fprintf(stderr, "vector norm is too small\n");
 	exit(0);
     }
@@ -104,7 +104,7 @@ void matsub(double *m3, double *m1, double *m2, int row, int col){
 //3x3 matrix inverse
 void matinv3(double *Minv, double* M){
     double det = M[0]*M[4]*M[8] + M[1]*M[5]*M[6] + M[2]*M[3]*M[7] - M[2]*M[4]*M[6] - M[0]*M[5]*M[7] - M[1]*M[3]*M[8];
-    if (fabs(det) < EPS) {
+    if (fabs(det) < TACT_EPS) {
 	fprintf(stderr, "Matrix determinent is too small\n");
 	exit(0);
     }
@@ -749,7 +749,7 @@ void jcalc6(double *XJ, double *S, const double *q6){
 //      latent until C _fk became reachable from model.step (Stage A+).
 void _fk(double *T, int nb, double *Ti, int *parent, int *jtype, double *q){
     double T_tmp[16];
-    double Tb[16*MAX_NB];
+    double Tb[16*TACT_MAX_NB];
 
     /* q-index walks per-body. Each body consumes nv[i] slots: 0 for jtype 0 (fixed),
      * 1 for jtype 1/2, 6 for jtype 3 (free). */
@@ -813,7 +813,7 @@ void _fk(double *T, int nb, double *Ti, int *parent, int *jtype, double *q){
 void jacob_whitney(double *J, int nb, double *T, double *_T, int *parent, int *jtype, int idx){
     /* Compute q_base/nq from jtype. J is 6×nq row-major (stride nq).
      * Fixed joints contribute 0 columns (no DoF). */
-    int q_base[MAX_NB];
+    int q_base[TACT_MAX_NB];
     int nq = 0;
     for (int j = 0; j < nb; j++) {
         q_base[j] = nq;
@@ -909,7 +909,7 @@ void jacob_whitney(double *J, int nb, double *T, double *_T, int *parent, int *j
 void aba_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, double *q, double *qd, double *tau, double *f_ext, double *g, double *qdd, double *f_out, double *a_out, double *v_out, double *workspace, double *ff, double *sk, double *armature, double dt_imp, double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref, int full)
 {
     /* Per-body DoF count and q-base. nv[i]: 0 for fixed, 6 for free, else 1. */
-    int q_base[MAX_NB], nv[MAX_NB], d_offset[MAX_NB];
+    int q_base[TACT_MAX_NB], nv[TACT_MAX_NB], d_offset[TACT_MAX_NB];
     int nq = 0, d_total = 0;
     for (int i = 0; i < nb; i++) {
         q_base[i] = nq;
@@ -1163,7 +1163,7 @@ void aba_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
 void rne_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, double *q, double *qd, double *qdd, double *f_ext, double *g, double *tau, double *f_out, double *a_out, double *v_out, double *workspace)
 {
     /* Per-body q-base and nv (free=6, fixed=0, else 1). */
-    int q_base[MAX_NB];
+    int q_base[TACT_MAX_NB];
     int nq = 0;
     for (int i = 0; i < nb; i++) {
         q_base[i] = nq;
@@ -1269,7 +1269,7 @@ void rne_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
 void crb_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, double *q, double *H, double *workspace)
 {
     /* H is (nq, nq) row-major. Fixed contributes 0 slots; free=6; else 1. */
-    int q_base[MAX_NB];
+    int q_base[TACT_MAX_NB];
     int nq = 0;
     for (int i = 0; i < nb; i++) {
         q_base[i] = nq;
@@ -1360,7 +1360,7 @@ void crb_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
 //---- general dense SPD LDL^T --------------------------------------------------
 //In-place LDL^T factor of n×n row-major SPD matrix A. Lower triangle holds L
 //(unit diagonal implicit), diagonal holds D, upper triangle is untouched.
-//Returns 0 on success; -(k+1) when pivot D[k] ≤ EPS (matrix not numerically SPD).
+//Returns 0 on success; -(k+1) when pivot D[k] ≤ TACT_EPS (matrix not numerically SPD).
 //
 //Outer-product variant: D[j] = A[j,j] - Σ_{k<j} L[j,k]² · D[k];
 //                       L[i,j] = (A[i,j] - Σ_{k<j} L[i,k] · L[j,k] · D[k]) / D[j].
@@ -1376,7 +1376,7 @@ int ldlt_factor(double *A, int n)
             double Ljk = A[j*n + k];
             Dj -= Ljk * Ljk * A[k*n + k];
         }
-        if (Dj <= EPS) return -(j + 1);
+        if (Dj <= TACT_EPS) return -(j + 1);
         A[j*n + j] = Dj;
         double inv_Dj = 1.0 / Dj;
         for (int i = j + 1; i < n; i++) {

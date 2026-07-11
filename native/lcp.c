@@ -91,7 +91,7 @@ static inline double dotN(const double *a, const double *b, int n)
  * Rationale, measured speedups, the fixed-foot gotcha, and the planned S2
  * (sparse-J Delassus build) with its forward-compat invariants for future
  * general constraints (joint limits / loop closure): see docs/design-lcp-perf.md. */
-#define LCP_MAXF (6 * MAX_NB)              /* max free DoF (every body free) */
+#define LCP_MAXF (6 * TACT_MAX_NB)              /* max free DoF (every body free) */
 
 /* Partition lives per-handle in core->lcp_part (lcp_partition_t, core.h) —
  * built once on the first solve; (nb, parent, jtype) are fixed per handle. */
@@ -101,7 +101,7 @@ static int uf_find(int *uf, int x) { while (uf[x] != x) { uf[x] = uf[uf[x]]; x =
 static void lcp_build_partition(lcp_partition_t *pt, int nb, const int *parent, const int *jtype)
 {
     /* union-find: merge each moving body with its nearest moving ancestor */
-    int uf[MAX_NB];
+    int uf[TACT_MAX_NB];
     for (int i = 0; i < nb; i++) uf[i] = i;
     for (int i = 0; i < nb; i++) {
         if (jtype[i] == 0) continue;       /* fixed: no DoF, no block */
@@ -113,13 +113,13 @@ static void lcp_build_partition(lcp_partition_t *pt, int nb, const int *parent, 
         }
     }
     /* per-body DoF base (== F-base, free_map is identity since fixed→0 slots) */
-    int q_base[MAX_NB], nq = 0;
+    int q_base[TACT_MAX_NB], nq = 0;
     for (int i = 0; i < nb; i++) {
         q_base[i] = nq;
         nq += (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
     }
     /* dense block ids assigned in body order; accumulate sizes */
-    int root2blk[MAX_NB];
+    int root2blk[TACT_MAX_NB];
     for (int i = 0; i < nb; i++) root2blk[i] = -1;
     int nblk = 0;
     for (int b = 0; b < nb; b++) pt->blk_size[b] = 0;
@@ -141,7 +141,7 @@ static void lcp_build_partition(lcp_partition_t *pt, int nb, const int *parent, 
         mat_off += pt->blk_size[b] * pt->blk_size[b];
     }
     /* fill DoF index lists (ascending: bodies visited in order, DoF consecutive) */
-    int cur[MAX_NB];
+    int cur[TACT_MAX_NB];
     for (int b = 0; b < nblk; b++) cur[b] = pt->blk_off[b];
     for (int i = 0; i < nb; i++) {
         int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
@@ -202,7 +202,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     /* ctx layout [contact | fric | limit] — owned here, mirrored by Python
        SolverState. lam_in (NULL = cold) is read-only; the fric/limit blocks
        are seeded into ctx_next and updated in place by the solve. */
-    int C_ofs = 6 * MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1);
+    int C_ofs = 6 * TACT_MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1);
     double *lam_contact_prev = lam_in;
     double *lam_contact_out  = h->ctx_next;
     double *lam_fric         = h->ctx_next + C_ofs;
@@ -220,12 +220,12 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     double *contact_d_out     = core->contact_d;
 
     int P  = n_pair > 0 ? n_pair : 1;
-    int Pm = MAX_PTS_PER_PAIR * P;                 /* upper bound on contact-point count nc */
+    int Pm = TACT_MAX_PTS_PER_PAIR * P;                 /* upper bound on contact-point count nc */
 
     /* Compute nq = sum(nv[i]) with nv=6 for jtype=3 (free), 0 for fixed, else 1.
      * Per-DoF free_map: position in compressed free vector. With fixed=0 slots,
      * every nq slot belongs to a movable DoF, so free_map is just identity. */
-    int q_base_local[MAX_NB];
+    int q_base_local[TACT_MAX_NB];
     int nq = 0;
     for (int i = 0; i < nb; i++) {
         q_base_local[i] = nq;
@@ -240,7 +240,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
 
     int F = 0;
     /* slice workspace — doubles first, ints at the tail. Sizes use Pm (=MAX_PTS·P)
-     * for per-contact-point arrays so a cpair may contribute up to MAX_PTS_PER_PAIR
+     * for per-contact-point arrays so a cpair may contribute up to TACT_MAX_PTS_PER_PAIR
      * contacts. Per-cpair arrays (ci, cj) stay sized P (one entry per cpair, holds
      * the shape indices); per-point arrays (cp_idx, sub_id) sized Pm. */
     double *p_world = workspace;                    /* 3*Pm */
@@ -259,7 +259,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     int    *ci_arr  = (int*)(J6 + 6*nq);            /* Pm — shape idx i of contact k's owner cpair */
     int    *cj_arr  = ci_arr  + Pm;                 /* Pm — shape idx j */
     int    *cp_idx  = cj_arr  + Pm;                 /* Pm — cpair_idx of contact k */
-    int    *sub_id  = cp_idx  + Pm;                 /* Pm — sub-index 0..MAX_PTS_PER_PAIR-1 within cpair */
+    int    *sub_id  = cp_idx  + Pm;                 /* Pm — sub-index 0..TACT_MAX_PTS_PER_PAIR-1 within cpair */
     int    *free_map= sub_id  + Pm;                 /* nq (per-DoF) */
     int    *row_blocks = free_map + nq;             /* 2*M2 — per-CONSTRAINT-ROW block-
                                                        support set: ≤2 distinct M-block
@@ -294,22 +294,22 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     /* lam_contact_out carries previous values forward on inactive (cpair, sub_id) slots, so
        initialize from lam_contact_prev (zero if NULL). lam_contact_prev and lam_contact_out may alias —
        when they do, the seed copy is already done (and a self-memcpy would be UB).
-       Length: 6 * MAX_PTS_PER_PAIR * n_pair (one 6-vec per (cpair_idx, sub_id) slot). */
-    if (!lam_contact_prev)                          memset(lam_contact_out, 0, 6*MAX_PTS_PER_PAIR*n_pair*sizeof(double));
-    else if (lam_contact_prev != lam_contact_out)      memcpy(lam_contact_out, lam_contact_prev, 6*MAX_PTS_PER_PAIR*n_pair*sizeof(double));
+       Length: 6 * TACT_MAX_PTS_PER_PAIR * n_pair (one 6-vec per (cpair_idx, sub_id) slot). */
+    if (!lam_contact_prev)                          memset(lam_contact_out, 0, 6*TACT_MAX_PTS_PER_PAIR*n_pair*sizeof(double));
+    else if (lam_contact_prev != lam_contact_out)      memcpy(lam_contact_out, lam_contact_prev, 6*TACT_MAX_PTS_PER_PAIR*n_pair*sizeof(double));
 
     /* Newton restitution: e is per-contact (min-blended material, mat[12*k+11]);
      * v_rest_thresh is a global numerical gate, now passed in (was hardcoded 3e-2). */
 
     /* ---- PASS 1: collision detection → active contact set ------------------ *
-     * Each cpair may produce up to MAX_PTS_PER_PAIR contact points (box-box
+     * Each cpair may produce up to TACT_MAX_PTS_PER_PAIR contact points (box-box
      * manifold yields up to 4; other type combinations yield 1). Per-point
      * cdata gets sub_id ∈ [0, n_points-1] from the narrowphase output, with
      * the ordering convention defined in narrow.c's box-box manifold (polar angle around
      * centroid in tangent plane). The tact_collision_check out-buffer is laid out
      * 7 doubles per point. */
     int nc = 0;
-    double out_buf[7 * MAX_PTS_PER_PAIR];
+    double out_buf[7 * TACT_MAX_PTS_PER_PAIR];
     PROF_TS(t_p0);
     for (int n = 0; n < n_pair; n++) {
         int si = cpair[2*n + 0];
@@ -330,7 +330,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
         }
 
         int npts = tact_collision_check(ctype[si], param1, ctype[sj], param2,
-                                   out_buf, MAX_PTS_PER_PAIR);
+                                   out_buf, TACT_MAX_PTS_PER_PAIR);
         if (npts <= 0) continue;             /* < 0: separating; 0: touching */
 
         for (int s = 0; s < npts; s++) {
@@ -657,9 +657,9 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     /* ---- PASS 4: warm-start λ and PGS sweep with 4 cones ------------------- */
     /* warm-start: gather from lam_contact_out (already seeded from lam_contact_prev). Active
        contacts' slots in lam_contact_out will be overwritten in pass 5 — read first.
-       Slot index: cp_idx[k] * MAX_PTS_PER_PAIR + sub_id[k]. */
+       Slot index: cp_idx[k] * TACT_MAX_PTS_PER_PAIR + sub_id[k]. */
     for (int k = 0; k < nc; k++) {
-        int slot = cp_idx[k] * MAX_PTS_PER_PAIR + sub_id[k];
+        int slot = cp_idx[k] * TACT_MAX_PTS_PER_PAIR + sub_id[k];
         memcpy(lam + 6*k, lam_contact_out + 6*slot, 6*sizeof(double));
     }
     /* friction rows warm-start from the per-DoF lam_fric carry (0 if cold). */
@@ -835,7 +835,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     }
     /* scatter λ to lam_contact_out at (cpair_idx, sub_id) slot for next step's warm-start */
     for (int k = 0; k < nc; k++) {
-        int slot = cp_idx[k] * MAX_PTS_PER_PAIR + sub_id[k];
+        int slot = cp_idx[k] * TACT_MAX_PTS_PER_PAIR + sub_id[k];
         memcpy(lam_contact_out + 6*slot, lam + 6*k, 6*sizeof(double));
     }
     /* scatter friction λ to the per-DoF lam_fric carry (in-place warm-start). */
