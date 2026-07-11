@@ -236,13 +236,11 @@ def rotation_error(R1, R2):
     return logmap_so3(R1 @ R2.T)
 
 #R1: desired  R2: now    — antisymmetric-vee form of the old sin-shape error.
-#Mathematically equivalent to the pre-logmap rotation_error; kept around as a
-#reference implementation but never wired in. Commented out since rotation_error
-#was switched to logmap-based; uncomment if you need the sin-shape behavior back.
-#def rotation_error2(R1, R2):
-#    R_e = R1 @ R2.T
-#    e = 0.5*np.array([R_e[2, 1] - R_e[1, 2], R_e[0, 2] - R_e[2, 0], R_e[1, 0] - R_e[0, 1]])
-#    return e
+#Kept available for controllers that intentionally use the pre-logmap behavior.
+def rotation_error2(R1, R2):
+    R_e = R1 @ R2.T
+    e = 0.5*np.array([R_e[2, 1] - R_e[1, 2], R_e[0, 2] - R_e[2, 0], R_e[1, 0] - R_e[0, 1]])
+    return e
 
 #T1: desired  T2: now
 def homogeneous_error(T1, T2):

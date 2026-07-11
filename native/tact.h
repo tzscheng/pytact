@@ -70,6 +70,7 @@ void xyheading_to_homogeneous(double x, double y, double heading, double *T);
 void rotxyz_to_homogeneous (double *R, double *x, double *T);
 void homogeneous_error     (double *T1, double *T2, double *e);
 void rotation_error        (double *R1, double *R2, double *e);
+void rotation_error2       (double *R1, double *R2, double *e);
 
 /* SO(3) exp/log — used by free (jtype=3) joint with axis-angle rotation. */
 void skew3        (double *K, const double *v);

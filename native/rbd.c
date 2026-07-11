@@ -454,6 +454,19 @@ void rotation_error(double* R1, double* R2, double* e){
     logmap_so3(M, e);
 }
 
+//R1: desired  R2: now   — antisymmetric-vee form of the old sin-shape error.
+//Kept available for controllers that intentionally use the pre-logmap behavior.
+void rotation_error2(double* R1, double* R2, double* e){
+    /* M = R1 · R2ᵀ */
+    double M[9];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            M[3*i + j] = R1[3*i+0]*R2[3*j+0] + R1[3*i+1]*R2[3*j+1] + R1[3*i+2]*R2[3*j+2];
+    e[0] = 0.5 * (M[7] - M[5]);
+    e[1] = 0.5 * (M[2] - M[6]);
+    e[2] = 0.5 * (M[3] - M[1]);
+}
+
 //T1: desired, T2: now    (orientation in e[0..3], translation in e[3..6])
 void homogeneous_error(double* T1, double* T2, double* e){
     double R1[9] = {T1[0],T1[1],T1[2], T1[4],T1[5],T1[6], T1[8],T1[9],T1[10]};

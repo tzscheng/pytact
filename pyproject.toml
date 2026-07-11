@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pytact"
-version = "0.1.0a4"
+version = "0.1.0a5"
 description = "Python package for tact, a high contact/tactile fidelity dynamics simulator"
 readme = "README.md"
 license = "MIT"
