@@ -14,7 +14,9 @@ DIST_DIR ?= dist
 # no -D_GNU_SOURCE: on glibc >=2.38 it redirects sscanf/strtol to __isoc23_*,
 # raising the wheel's glibc floor to 2.38 (manylinux_2_38); without it the
 # floor is 2.35 (libmvec atan2 from -ffast-math) -> manylinux_2_35 wheels
-CFLAGS ?= -W -Wall -O3 -fPIC -ffast-math -funroll-loops
+# -fvisibility=hidden: only TACT_API-annotated declarations (tact.h) are
+# exported from libtact.so; internal helpers and vendored libccd stay private
+CFLAGS ?= -W -Wall -O3 -fPIC -ffast-math -funroll-loops -fvisibility=hidden
 LDFLAGS ?=
 LDLIBS ?= -lm -ldl
 
