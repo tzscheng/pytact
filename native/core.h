@@ -207,34 +207,34 @@ int  win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* 
  * lcp.c — Stewart-Trinkle / Anitescu LCP contact solver with 4 cones
  * (normal, tangent disk, spin clamp, roll disk). Mirrors rbd.py:contact_lcp.
  *
- * Inputs (caller-allocated):
- *   nb, T[16*nb], parent[nb], jtype[nb]               kinematics at current q
- *   n_pair, cpair[2*n_pair], ctype[nshape], cbody[nshape]
- *   ctran[16*nshape], cshape[3*nshape], cparam[13*nshape]   contact geometry/material
- *   qd_free[nb], M_full[nb*nb], dt                    pre-contact predictor + mass matrix
- *   erp, slop, cfm_scale, v_rest_thresh, iters, tol   solver parameters
- *   lam_contact_prev[6*n_pair] or NULL                        warm-start (cpair-indexed); NULL=cold
- *   floss[nq] or NULL                                 per-DoF joint Coulomb bound (N·m / N);
- *                                                     0/NULL = no friction row (jtype 1/2 only)
- *   lam_fric[nq] or NULL                              per-DoF friction warm-start, in-place carry
- *   q[nq], jnt_lo[nq], jnt_hi[nq] or NULL             joint positions + per-DoF limit range
- *                                                     (limited iff lo<hi, jtype 1/2 only); NULL = no limits
- *   lam_limit[nq] or NULL                             per-DoF limit warm-start, in-place carry
- *   workspace                                         see lcp.c for sizing (≈ 6P·F + 36P² + ...)
+ * Takes the handle directly (single caller: tact_step_lcp). Since the handle
+ * makes everything reachable, this contract is the boundary — anything not
+ * listed must stay untouched, and adding a constraint-row type extends it.
  *
- * Outputs:
- *   dqd_out[nb]            velocity correction (qd_next = qd_free + dqd)
- *   lam_contact_out[6*n_pair] λ scattered back to cpair index (warm-start carry)
- *   f_ext_out[6*nb]        body-frame wrench (zero on bodies with no contact)
- *   *nc_out                number of active contacts this step
- *   *iters_out             actual PGS iterations consumed (≤ iters)
- *   *residual_out          max |Δλ| at last iteration
+ * READS
+ *   q[nq]        joint positions (limit-row activation)
+ *   lam_in       warm-start λ, ctx_size, or NULL = cold start (zero λ).
+ *                Layout [contact 6·MAX_PTS_PER_PAIR·max(n_pair,1) | fric nq |
+ *                limit nq] — owned by lcp.c, mirrored by Python SolverState.
+ *                Never mutated (caller ctx stays pure).
+ *   h            nb, nq, n_pair, dt
+ *   core model   parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
+ *                floss (0 = no friction row), jnt_lo/jnt_hi (limited iff
+ *                lo<hi; both jtype 1/2 only), erp, slop, cfm_scale,
+ *                v_rest_thresh, iters, tol
+ *   core staged  T (fk at q), qd_free_buf (contact-free predictor),
+ *                M_buf (joint-space mass matrix) — filled by tact_step_lcp
+ *
+ * WRITES
+ *   h->ctx_next        next warm-start λ (full [contact|fric|limit] vector)
+ *   h->contact_count   active contact points this step
+ *   core: qdd          velocity correction dqd (qd_next = qd_free + dqd)
+ *         f_ext        per-body contact wrench (zero where no contact)
+ *         contact_i/contact_d   contact reports (see tact_contact_reports)
+ *         lcp_nc/lcp_iters/lcp_residual   last-solve stats
+ *         lcp_ws       scratch (layout documented in lcp.c)
  * ============================================================================= */
-void contact_lcp(int nb, double *T, int *parent, int *jtype, int n_pair, int *cpair, int *ctype, int *cbody, double *ctran, double *cshape, double *cparam,
-                 double *qd_free, double *M_full, double dt, double erp, double slop, double cfm_scale, double v_rest_thresh, int iters, double tol,
-                 double *lam_contact_prev, double *floss, double *lam_fric, double *q, double *jnt_lo, double *jnt_hi, double *lam_limit,
-                 double *dqd_out, double *lam_contact_out, double *f_ext_out, int *nc_out, int *iters_out, double *residual_out,
-		 int *contact_count_out, int *contact_i_out, double *contact_d_out, double *workspace);
+void contact_lcp(tact_t *h, double *q, double *lam_in);
 
 /* Private engine state behind tact_t.core (public head lives in tact.h).
  * Allocated together with the public struct in tact_create_from_arrays. */
@@ -279,6 +279,8 @@ struct tact_core_t {
     double *ctx_prev;      /* staging for the h->ctx_next-as-input mode */
     int    *contact_i;
     double *contact_d;
+    int     lcp_nc, lcp_iters;   /* last contact_lcp stats */
+    double  lcp_residual;
 
     void   *arena;
 

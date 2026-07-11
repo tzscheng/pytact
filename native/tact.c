@@ -479,7 +479,6 @@ int tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, d
     if (!h || !q || !qd || !tau) return -1;
     tact_core_t *c = h->core;
     double *lam_in = ctx;                /* NULL = cold start */
-    double *lam_out = h->ctx_next;
     if (ctx == h->ctx_next) {
         /* internal warm-start mode: stage last output so in/out never alias */
         memcpy(c->ctx_prev, h->ctx_next, (size_t)h->ctx_size * sizeof(double));
@@ -505,37 +504,11 @@ int tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, d
     crb_featherstone(h->nb, c->X, c->I6, c->parent, c->jtype, q, c->M_buf, c->workspace);
     for (int i = 0; i < h->nq; i++) c->M_buf[(size_t)i*h->nq + i] += c->armature[i];
 
-    /* LCP solve: writes dqd into c->qdd (reused as scratch), fills c->f_ext with
-       contact wrench, and writes the next warm-start λ into lam_out. */
-    int nc_out = 0, iters_out = 0;
-    double residual_out = 0.0;
-    /* Slice the unified λ vector into contact_lcp's per-type pointers (offset
-       arithmetic mirrors SolverState / Model.step). Contact block: contact_lcp
-       reads lin and seeds/writes lout itself. Per-DoF blocks (fric, limit —
-       adjacent in the layout): contact_lcp updates them in place, so seed lam_out
-       from lam_in here; lam_in stays untouched (caller's ctx immutable). */
-    int C = 6 * MAX_PTS_PER_PAIR * (h->n_pair > 0 ? h->n_pair : 1);
-    double *lin   = lam_in;
-    double *lout  = lam_out;
-    double *lfout = lam_out + C;            /* joint-friction block */
-    double *llout = lam_out + C + h->nq;    /* joint-limit block */
-    if (lam_in) memcpy(lfout, lam_in + C, 2 * h->nq * sizeof(double));
-    else        memset(lfout, 0,          2 * h->nq * sizeof(double));
-    contact_lcp(h->nb, c->T, c->parent, c->jtype,
-                h->n_pair, c->cpair, c->ctype, c->cbody,
-                c->ctran, c->cshape, c->cparam,
-                c->qd_free_buf, c->M_buf, h->dt,
-                c->erp, c->slop, c->cfm_scale, c->v_rest_thresh,
-                c->iters, c->tol,
-                lin,                        /* in: previous λ (warm-start) */
-                c->floss, lfout,            /* joint Coulomb friction + its warm-start (in-place on lfout) */
-                q, c->jnt_lo, c->jnt_hi, llout,  /* joint limits (q for activation) + warm-start (in-place on llout) */
-                c->qdd,                     /* out: dqd (velocity correction) */
-                lout,                       /* out: λ_full (next warm-start) */
-                c->f_ext,                   /* out: per-body contact wrench */
-                &nc_out, &iters_out, &residual_out,
-                &h->contact_count, c->contact_i, c->contact_d,
-                c->lcp_ws);
+    /* LCP solve: reads the T/qd_free_buf/M_buf staged above, writes dqd into
+       c->qdd (reused as scratch), the contact wrench into c->f_ext, and the
+       next warm-start λ into h->ctx_next. The ctx slicing and [contact | fric
+       | limit] layout live in lcp.c (see the contract in core.h). */
+    contact_lcp(h, q, lam_in);
 
     /* semi-implicit Euler: qd_next = qd_free + dqd; q_next = q_step(q, qd_next, dt).
        q_step handles SO(3) integration for free bodies (translation R·v_body·dt

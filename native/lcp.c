@@ -194,21 +194,47 @@ static void lcp_block_solve(int b, double *x, const double *pack)
     for (int r = 0; r < s; r++) x[d[r]] = sb[r];
 }
 
-void contact_lcp(int nb, double *T, int *parent, int *jtype,
-                 int n_pair, int *cpair, int *ctype, int *cbody,
-                 double *ctran, double *cshape, double *cparam,
-                 double *qd_free, double *M_full, double dt,
-                 double erp, double slop, double cfm_scale,
-                 double v_rest_thresh,
-                 int iters, double tol,
-                 double *lam_contact_prev,
-                 double *floss, double *lam_fric,
-                 double *q, double *jnt_lo, double *jnt_hi, double *lam_limit,
-                 double *dqd_out, double *lam_contact_out, double *f_ext_out,
-                 int *nc_out, int *iters_out, double *residual_out,
-                 int *contact_count_out, int *contact_i_out, double *contact_d_out,
-                 double *workspace)
+void contact_lcp(tact_t *h, double *q, double *lam_in)
 {
+    tact_core_t *core = h->core;
+    /* Hoist handle fields into locals once per call (ns-scale) — the solve
+       body below is unchanged from the flat-argument version, so inner-loop
+       codegen is identical. Reads/writes contract: core.h. */
+    int     nb       = h->nb;
+    int     n_pair   = h->n_pair;
+    double  dt       = h->dt;
+    double *T        = core->T;
+    int    *parent   = core->parent, *jtype = core->jtype;
+    int    *cpair    = core->cpair, *ctype = core->ctype, *cbody = core->cbody;
+    double *ctran    = core->ctran, *cshape = core->cshape, *cparam = core->cparam;
+    double *qd_free  = core->qd_free_buf;
+    double *M_full   = core->M_buf;
+    double  erp      = core->erp, slop = core->slop, cfm_scale = core->cfm_scale;
+    double  v_rest_thresh = core->v_rest_thresh, tol = core->tol;
+    int     iters    = core->iters;
+    double *floss    = core->floss, *jnt_lo = core->jnt_lo, *jnt_hi = core->jnt_hi;
+    double *workspace = core->lcp_ws;
+
+    /* ctx layout [contact | fric | limit] — owned here, mirrored by Python
+       SolverState. lam_in (NULL = cold) is read-only; the fric/limit blocks
+       are seeded into ctx_next and updated in place by the solve. */
+    int C_ofs = 6 * MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1);
+    double *lam_contact_prev = lam_in;
+    double *lam_contact_out  = h->ctx_next;
+    double *lam_fric         = h->ctx_next + C_ofs;
+    double *lam_limit        = lam_fric + h->nq;
+    if (lam_in) memcpy(lam_fric, lam_in + C_ofs, 2 * h->nq * sizeof(double));
+    else        memset(lam_fric, 0,              2 * h->nq * sizeof(double));
+
+    double *dqd_out   = core->qdd;
+    double *f_ext_out = core->f_ext;
+    int    *nc_out    = &core->lcp_nc;
+    int    *iters_out = &core->lcp_iters;
+    double *residual_out = &core->lcp_residual;
+    int    *contact_count_out = &h->contact_count;
+    int    *contact_i_out     = core->contact_i;
+    double *contact_d_out     = core->contact_d;
+
     int P  = n_pair > 0 ? n_pair : 1;
     int Pm = MAX_PTS_PER_PAIR * P;                 /* upper bound on contact-point count nc */
 
