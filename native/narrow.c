@@ -1,9 +1,9 @@
 /* narrow.c — narrow-phase contact dispatch + dedicated analytic detectors.
- * collision_check routes each shape pair to box_box_manifold (box_box.c, SAT +
+ * tact_collision_check routes each shape pair to tact_box_box_manifold (box_box.c, SAT +
  * clipping), the analytic box-sphere / sphere-hfield / box-hfield detectors here,
  * or the MPR fallback (mpr.c) for the remaining convex pairs. out[] layout +
  * param1->param2 normal convention: see tact.h. */
-#include "tact.h"
+#include "core.h"
 #include "shape.h"
 
 /* Analytical box-sphere narrowphase. A sphere has no flat feature, so box-sphere
@@ -1321,18 +1321,18 @@ static int mesh_hf_contact(double *mesh_param, double *hf_param, double *out, in
 
 /* Multi-point dispatcher. See tact.h for out[] layout and return-value convention.
  *
- * box-box pairs route through box_box_manifold (SAT + face clipping, up to 4
+ * box-box pairs route through tact_box_box_manifold (SAT + face clipping, up to 4
  * coplanar contact points). box-sphere / sphere-sphere / sphere-hfield route
  * through closed-form analytic detectors (single point). box-hfield uses a
  * Tier-2 multi-point detector (≤4 points). All other type combinations fall
  * back to MPR for a single-point witness — once those shapes get dedicated
  * detectors (Phase 3+ for capsule, mesh-hfield) they'd dispatch here too. */
-int collision_check(int type1, double* param1, int type2, double *param2, double* out, int max_pts)
+int tact_collision_check(int type1, double* param1, int type2, double *param2, double* out, int max_pts)
 {
     if (max_pts <= 0) return 0;
 
     if (type1 == BOX && type2 == BOX) {
-        return box_box_manifold(param1, param2, out, max_pts);
+        return tact_box_box_manifold(param1, param2, out, max_pts);
     }
     /* box-sphere (either order). out normal convention is param1→param2, while
      * box_sphere_contact emits box→sphere; flip when the sphere is param1. */
@@ -1454,7 +1454,7 @@ int collision_check(int type1, double* param1, int type2, double *param2, double
 
     /* Fallback: single-point MPR. Translate its return convention (0 = hit,
      * <0 = miss) into the multi-point convention (n_pts written, or -1 = miss). */
-    int rc = collision_check_mpr(type1, param1, type2, param2, out);
+    int rc = tact_collision_check_mpr(type1, param1, type2, param2, out);
     if (rc < 0) return -1;
     /* MPR populated out[0..6]. n_pts = 1 if depth > 0, else 0 (touching). */
     return (out[6] > 0.0) ? 1 : 0;

@@ -1268,7 +1268,7 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
         # face manifold returns up to 4; other type combos return 1). 7 doubles
         # per point: [pos_x, pos_y, pos_z, n_x, n_y, n_z, depth].
         _out_buf = (ctypes.c_double * (7 * MAX_PTS_PER_PAIR))(*np.zeros(7 * MAX_PTS_PER_PAIR))
-        npts = clib.collision_check(ctype[i], _p1, ctype[j], _p2, _out_buf, MAX_PTS_PER_PAIR)
+        npts = clib.tact_collision_check(ctype[i], _p1, ctype[j], _p2, _out_buf, MAX_PTS_PER_PAIR)
         if npts <= 0:
             continue
         out_all = np.array(_out_buf).reshape(MAX_PTS_PER_PAIR, 7)

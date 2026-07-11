@@ -14,7 +14,7 @@
 #include <turbojpeg.h>
 #include <zstd.h>
 
-#include "tact.h"
+#include "core.h"
 // Shared shape-asset slot storage (mesh_path, hf_* grids) — defined in shape.c.
 #include "shape.h"
 
@@ -492,7 +492,7 @@ static unsigned char* rec_buf = NULL;  //glReadPixels target
 
 static int quit_request = 0;
 
-//---- Light + shadow state (settable via render_set_light()) ----
+//---- Light + shadow state (settable via tact_render_set_light()) ----
 // Defaults match the historical hardcoded values; YAML `lights:` overrides.
 #define SHADOW_MAP_SIZE 2048
 static int   g_shadow_enabled = 1;
@@ -508,7 +508,7 @@ static const float g_light_zfar  = 30.0f;
 
 // Called from Python before each render. No GL state touched here — just
 // stashes values; win_render/egl_render reads them per frame.
-void render_set_light(float pos[3], float target[3], float ortho, int shadow_enabled){
+void tact_render_set_light(float pos[3], float target[3], float ortho, int shadow_enabled){
     g_light_pos[0]   = pos[0];    g_light_pos[1]   = pos[1];    g_light_pos[2]   = pos[2];
     g_light_target[0]= target[0]; g_light_target[1]= target[1]; g_light_target[2]= target[2];
     g_light_ortho    = ortho;
@@ -1542,7 +1542,7 @@ int win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 
     float LightVP[16], LMVP[16];
     float *T;
-    compute_light_vp(LightVP);  // recomputed each frame so render_set_light() changes apply immediately
+    compute_light_vp(LightVP);  // recomputed each frame so tact_render_set_light() changes apply immediately
 
     //---- Pass 1: depth-only render from the light, into the shadow FBO ----
     if(g_shadow_enabled){
@@ -1976,7 +1976,7 @@ int egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* o
 
     float LightVP[16], LMVP[16];
     float *T;
-    compute_light_vp(LightVP);  // recomputed each frame so render_set_light() changes apply immediately
+    compute_light_vp(LightVP);  // recomputed each frame so tact_render_set_light() changes apply immediately
 
     //---- Pass 1: depth-only render from the light into the shadow FBO ----
     if(g_shadow_enabled){

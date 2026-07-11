@@ -29,18 +29,18 @@ _FLT = ctypes.POINTER(ctypes.c_float)
 #(mu is now per-material in cparam, no longer a global; ff/sk are per-joint damping/spring -- C side subtracts ff*qd + sk*q from tau before the integrator;
 # floss = per-DoF joint Coulomb friction (constraint row); armature = per-DoF rotor/reflected inertia; jnt_lo/jnt_hi = per-DoF joint limit range (constraint row, limited iff lo<hi); craycast is per-shape int flag: 1=visible to ray, 0=skipped)
 # 10 _DBL before dt: X, I6, Ti, ff, sk, floss, armature, jnt_lo, jnt_hi, g
-clib.tact_create.argtypes = [ctypes.c_int, _INT, _INT, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_int, _INT, _INT, _DBL, _DBL, _DBL, _INT, _INT,
-                             ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_double]
-clib.tact_create.restype  = ctypes.c_void_p
+clib.tact_create_from_arrays.argtypes = [ctypes.c_int, _INT, _INT, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_int, _INT, _INT, _DBL, _DBL, _DBL, _INT, _INT,
+                                         ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_double, ctypes.POINTER(ctypes.c_void_p)]
+clib.tact_create_from_arrays.restype  = ctypes.c_int
 
 clib.tact_destroy.argtypes = [ctypes.c_void_p]
 clib.tact_destroy.restype = None
 
 #h, q, qd, tau (raw actuation -- C subtracts ff*qd + sk*q internally before the integrator),
-#Kp_j, Kd_j, q_ref, qd_ref (NULL ok), lam_in, lam_out (REQUIRED -- unified PGS warm-start
-#vector [contact | fric | limit], the SolverState layout)
+#Kp_j, Kd_j, q_ref, qd_ref (NULL ok), ctx_in, ctx_out (REQUIRED -- solver
+#context; currently the unified PGS warm-start vector [contact | fric | limit])
 clib.tact_step_lcp.argtypes     = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL]
-clib.tact_step_lcp.restype      = None
+clib.tact_step_lcp.restype      = ctypes.c_int
 
 #h, n_feeds, kinds, offsets, idx, n_frames, fbody, ftran, ftran_inv, y_size
 clib.tact_set_feedback.argtypes = [ctypes.c_void_p, ctypes.c_int, _INT, _INT, _INT, ctypes.c_int, _INT, _DBL, _DBL, ctypes.c_int]
@@ -116,31 +116,31 @@ clib.tact_frame_id.restype     = ctypes.c_int
 
 # Register filesystem path for a mesh slot. Python resolves relative paths
 # against the YAML file's directory before calling this.
-clib.set_mesh_path.argtypes = [ctypes.c_int, ctypes.c_char_p]
-clib.set_mesh_path.restype  = None
+clib.tact_set_mesh_path.argtypes = [ctypes.c_int, ctypes.c_char_p]
+clib.tact_set_mesh_path.restype  = None
 
 # Push a height-field grid into a slot. Python loads/scales the grid (nrow*ncol
 # heights in meters, row-major) and passes it directly; C copies it.
-clib.set_hfield_data.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int,
+clib.tact_set_hfield_data.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                  ctypes.c_double, ctypes.c_double, _DBL]
-clib.set_hfield_data.restype  = None
+clib.tact_set_hfield_data.restype  = None
 
 # Push light params (pos, target, ortho-frustum half-extent, shadow on/off) into render.c
 # module statics. Called before each render; cheap (no GL state touched).
-clib.render_set_light.argtypes = [_FLT, _FLT, ctypes.c_float, ctypes.c_int]
-clib.render_set_light.restype  = None
+clib.tact_render_set_light.argtypes = [_FLT, _FLT, ctypes.c_float, ctypes.c_int]
+clib.tact_render_set_light.restype  = None
 
-# Narrow-phase collision detection (narrow.c). collision_check is the multi-point
-# dispatcher; collision_check_mpr is the MPR fallback exposed for benchmarking and
+# Narrow-phase collision detection (narrow.c). tact_collision_check is the multi-point
+# dispatcher; tact_collision_check_mpr is the MPR fallback exposed for benchmarking and
 # sign-convention regression tests.
 # type ∈ {MESH=100, BOX=101, SPHERE=102, CYL=103, CAPSULE=104, HFIELD=105}.
 # param layout: [pos(3), euler_xyz(3), shape_param(≤3)].
 # out layout: 7 doubles per contact point (px, py, pz, nx, ny, nz, depth).
-clib.collision_check.argtypes     = [ctypes.c_int, _DBL, ctypes.c_int, _DBL, _DBL, ctypes.c_int]
-clib.collision_check.restype      = ctypes.c_int
-clib.collision_check_mpr.argtypes = [ctypes.c_int, _DBL, ctypes.c_int, _DBL, _DBL]
-clib.collision_check_mpr.restype  = ctypes.c_int
-# Box-box specific detector (SAT + face clipping). Same out layout as collision_check.
+clib.tact_collision_check.argtypes     = [ctypes.c_int, _DBL, ctypes.c_int, _DBL, _DBL, ctypes.c_int]
+clib.tact_collision_check.restype      = ctypes.c_int
+clib.tact_collision_check_mpr.argtypes = [ctypes.c_int, _DBL, ctypes.c_int, _DBL, _DBL]
+clib.tact_collision_check_mpr.restype  = ctypes.c_int
+# Box-box specific detector (SAT + face clipping). Same out layout as tact_collision_check.
 # param: 9 doubles each (pos, euler_xyz, half-extents). max_pts ≤ MAX_PTS_PER_PAIR.
-clib.box_box_manifold.argtypes    = [_DBL, _DBL, _DBL, ctypes.c_int]
-clib.box_box_manifold.restype     = ctypes.c_int
+clib.tact_box_box_manifold.argtypes    = [_DBL, _DBL, _DBL, ctypes.c_int]
+clib.tact_box_box_manifold.restype     = ctypes.c_int

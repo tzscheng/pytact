@@ -8,21 +8,27 @@
  *
  * Public surface declared in tact.h. Struct definition is private to this
  * file — Python only sees an opaque void* handle. */
-#include "model.h"
+#include "core.h"
 
 
-tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, double *Ti, double *ff, double *sk, double *floss, double *armature, double *jnt_lo, double *jnt_hi, double *g, double dt, int integrator, int n_shape, int n_pair, int *ctype, int *cbody, double *cshape, double *ctran, double *cparam, int *craycast, int *cpair, double erp, double slop, double cfm_scale, double v_rest_thresh, int iters, double tol)
+int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *I6, double *Ti, double *ff, double *sk, double *floss, double *armature, double *jnt_lo, double *jnt_hi, double *g, double dt, int integrator, int n_shape, int n_pair, int *ctype, int *cbody, double *cshape, double *ctran, double *cparam, int *craycast, int *cpair, double erp, double slop, double cfm_scale, double v_rest_thresh, int iters, double tol, tact_t **out)
 {
+    if (!out) return -1;
+    *out = NULL;
+    if (nb < 0 || n_shape < 0 || n_pair < 0 || !parent || !jtype ||
+        !X || !I6 || !Ti || !ff || !sk || !g) return -2;
+    if (n_shape > 0 && (!ctype || !cbody || !cshape || !ctran || !cparam)) return -3;
+    if (n_pair > 0 && !cpair) return -4;
+
     int npair_max = n_pair > 0 ? n_pair : 1;
     /* Per-body indexing. nq_per_body[i] = q slots, nv_per_body[i] = velocity DoFs.
      * Under axis-angle: 6 for jtype=3 (free), 0 for jtype=0 (fixed — no state),
      * else 1. d_total = sum(nv²) sizes the d-block array in aba/crb/rne workspace. */
-    int nq = 0, nv_total = 0, d_total = 0;
+    int nq = 0, d_total = 0;
     for (int i = 0; i < nb; ++i) {
         int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
         int nqi = nvi;     /* axis-angle: nq_per_body == nv_per_body */
         nq       += nqi;
-        nv_total += nvi;
         d_total  += nvi * nvi;
     }
 
@@ -73,19 +79,22 @@ tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, doub
     size_t bytes_int = sizeof(int) * (6*nb + 3*n_shape + 2*n_pair + 4*Pm_max);
 
     tact_t *h = (tact_t*)calloc(1, sizeof(tact_t));
+    if (!h) return -5;
     h->arena = malloc(bytes_dbl + bytes_int);
+    if (!h->arena) {
+        tact_destroy(h);
+        return -6;
+    }
 
-    h->nb = nb; h->nq = nq; h->nv = nv_total;
+    (void)integrator;
+    h->nb = nb; h->nq = nq;
     h->n_shape = n_shape; h->n_pair = n_pair;
-    h->contact_capacity = (int)Pm_max;
     h->contact_count = 0;
-    h->integrator = integrator; h->dt = dt;
+    h->dt = dt;
     h->erp = erp; h->slop = slop; h->cfm_scale = cfm_scale;
     h->v_rest_thresh = v_rest_thresh; h->iters = iters; h->tol = tol;
-    h->lam_size = (int)(6 * MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1) + 2 * nq);
+    h->ctx_size = (int)(6 * MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1) + 2 * nq);
     h->g[0] = g[0]; h->g[1] = g[1]; h->g[2] = g[2];
-    h->zero_tau = (double*)calloc((size_t)(nq > 0 ? nq : 1), sizeof(double));
-    h->zero_lam = (double*)calloc((size_t)(h->lam_size > 0 ? h->lam_size : 1), sizeof(double));
 
     char *p = (char*)h->arena;
     #define CARVE_DBL(field, n) do { h->field = (double*)p; p += (size_t)(n)*sizeof(double); } while (0)
@@ -167,7 +176,8 @@ tact_t *tact_create(int nb, int *parent, int *jtype, double *X, double *I6, doub
     }
     if (n_pair > 0) memcpy(h->cpair, cpair, 2*n_pair*sizeof(int));
 
-    return h;
+    *out = h;
+    return 0;
 }
 
 void tact_destroy(tact_t *h)
@@ -177,8 +187,6 @@ void tact_destroy(tact_t *h)
     if (h->fb_arena) free(h->fb_arena);
     free(h->q0);
     free(h->qd0);
-    free(h->zero_tau);
-    free(h->zero_lam);
     free(h->crgba);
     free(h->view);
     free(h->light0);
@@ -193,9 +201,9 @@ int tact_n_pair(const tact_t *h)   { return h ? h->n_pair : 0; }
 int tact_y_size(const tact_t *h)   { return h ? h->y_size : 0; }
 double tact_dt(const tact_t *h)    { return h ? h->dt : 0.0; }
 
-int tact_lam_size(const tact_t *h)
+int tact_ctx_size(const tact_t *h)
 {
-    return h ? h->lam_size : 0;
+    return h ? h->ctx_size : 0;
 }
 
 int tact_contact_count(tact_t *h)
@@ -213,7 +221,7 @@ void tact_contact_reports(tact_t *h, int *contact_i_out, double *contact_d_out)
 
 /* Phase 2: pre-marshal feedback descriptors into the handle. Allocates a separate
  * arena (h->fb_arena) so it can be re-set without disturbing the dynamics arena.
- * After this is called, tact_step() will fill h->y_buf at the end of each step. */
+ * After this is called, tact_step_lcp() will fill h->y_buf at the end of each step. */
 void tact_set_feedback(tact_t *h, int n_feeds, int *kinds, int *offsets, int *idx, int n_frames, int *fbody, double *ftran, double *ftran_inv, int y_size)
 {
     if (h->fb_arena) { free(h->fb_arena); h->fb_arena = NULL; }
@@ -449,18 +457,23 @@ static void tact_feedback(tact_t *h, double *q, double *qd, double *tau)
    Self-contained. Reads q, qd, tau. Writes h->{T, f_ext (contact wrench), f, a, v,
    qdd, q_next, qd_next, M_buf, qd_free_buf, lcp_ws (transient), y_buf}.
 
-   lam_in / lam_out (REQUIRED, non-NULL): the caller-threaded PGS warm-start λ —
-   ONE vector per direction holding every row type, blocks in row-table order
-   (the SolverState layout, the C↔Python ABI):
+   ctx_in / ctx_out (REQUIRED, non-NULL): caller-threaded solver context.
+   Its current payload is the PGS warm-start λ vector — ONE vector per direction
+   holding every row type, blocks in row-table order (the SolverState layout,
+   the C↔Python ABI):
        [contact (6·MAX_PTS_PER_PAIR·max(n_pair,1), slot-indexed)
         | joint-friction (nq) | joint-limit (nq)]
-   lam_in is read-only (seeds lam_out — contact block inside contact_lcp, the
+   ctx_in is read-only (seeds ctx_out — contact block inside contact_lcp, the
    per-DoF blocks via the memcpy below); pass distinct buffers for a pure,
    immutable-input step. A future constraint-row type appends a block here
    instead of growing this signature. (The 3-pair in/out args + the internal
    h->*_prev NULL fallbacks were folded into this 2026-06-06.) */
-void tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref, double *lam_in, double *lam_out)
+int tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref, double *ctx_in, double *ctx_out)
 {
+    if (!h || !q || !qd || !tau || !ctx_in || !ctx_out) return -1;
+    double *lam_in = ctx_in;
+    double *lam_out = ctx_out;
+
     /* Stage 1: forward kinematics */
     _fk(h->T, h->nb, h->Ti, h->parent, h->jtype, q);
 
@@ -530,6 +543,7 @@ void tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, 
 
     /* Stage 4: feedback. raw tau (pre ff/sk/PID) is what case 3 reads. */
     if (h->fb_set) tact_feedback(h, q, qd, tau);
+    return 0;
 }
 
 /* ============================================================================

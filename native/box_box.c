@@ -1,7 +1,7 @@
 /* box_box.c — box-box contact manifold via SAT + Sutherland-Hodgman face
  * clipping. Returns up to MAX_PTS_PER_PAIR contact points sharing one contact
  * normal (the smallest-penetration separating axis from SAT). Dispatched into
- * from collision_check (narrow.c) for BOX/BOX pairs.
+ * from tact_collision_check (narrow.c) for BOX/BOX pairs.
  *
  * Algorithm follows the well-known ODE / Bullet box-box detector:
  *   1. SAT over 15 candidate axes (3 face normals of A, 3 of B, 9 edge crosses).
@@ -36,7 +36,7 @@
  *   param[3..5]  extrinsic-xyz Euler angles (radians)
  *   param[6..8]  half-extents along local x, y, z
  */
-#include "tact.h"
+#include "core.h"
 
 /* ===== tiny inline helpers ================================================ */
 
@@ -568,7 +568,7 @@ static int edge_edge_contact(int best_code, const double *n, double depth,
  * Not thread-safe — debug aid only. */
 int box_box_debug_best_code = -1;
 
-int box_box_manifold(const double *param1, const double *param2,
+int tact_box_box_manifold(const double *param1, const double *param2,
                      double *out, int max_pts)
 {
     double c1[3] = {param1[0], param1[1], param1[2]};

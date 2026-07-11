@@ -2,7 +2,7 @@
  * capsule). Each returns forward distance t along Rd, or -1 on miss. Mesh/hfield
  * variants read shape.c's slot storage (transform the ray into shape-local frame
  * first). Mirrors rbd.py:ray_intersects_*. (Split out of ccd.c.) */
-#include "tact.h"
+#include "core.h"
 #include "shape.h"
 
 /* ============================================================================

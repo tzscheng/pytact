@@ -1,4 +1,4 @@
-#include "model.h"
+#include "core.h"
 
 enum {
     BIN_DTYPE_I32 = 1,
@@ -26,7 +26,6 @@ typedef struct bin_model_t {
     double dt, erp, slop, cfm_scale, v_rest_thresh, tol;
     int have_dims, have_sim_f64, have_sim_i32;
     tact_t *h;
-    double *zero_tau, *zero_lam;
 
     int *parent, *jtype;
     double *X, *I6, *Ti;
@@ -46,11 +45,6 @@ typedef struct bin_model_t {
     int *hfield_meta, *hfield_offsets;
     double *hfield_size, *hfield_data;
 } bin_model_t;
-
-struct tact_ctx_t {
-    const tact_t *h;
-    double *lam;
-};
 
 static void free_ptr(void **p)
 {
@@ -291,7 +285,7 @@ static int register_mesh_paths(const bin_model_t *m)
     for (int i = 0; i < m->n_mesh; ++i) {
         if (!m->mesh_slots) return -1;
         if (*p == '\0') return -1;
-        set_mesh_path(m->mesh_slots[i], p);
+        tact_set_mesh_path(m->mesh_slots[i], p);
         p += strlen(p) + 1;
     }
     if (*p != '\0') return -1;
@@ -311,7 +305,7 @@ static int register_hfield_data(const bin_model_t *m)
         int hi = m->hfield_offsets[i + 1];
         if (slot < 0 || nrow < 2 || ncol < 2 || lo < 0 || hi < lo ||
             hi > m->n_hfield_values || hi - lo != nrow * ncol) return -1;
-        set_hfield_data(slot, nrow, ncol, m->hfield_size[2 * i], m->hfield_size[2 * i + 1],
+        tact_set_hfield_data(slot, nrow, ncol, m->hfield_size[2 * i], m->hfield_size[2 * i + 1],
                         m->hfield_data + lo);
     }
     if (m->hfield_offsets[m->n_hfield] != m->n_hfield_values) return -1;
@@ -345,13 +339,13 @@ static void destroy_bin_model(bin_model_t *m)
 static int create_handle(bin_model_t *m)
 {
     if (!model_ready(m)) return -1;
-    m->h = tact_create(
+    int rc = tact_create_from_arrays(
         m->nb, m->parent, m->jtype, m->X, m->I6, m->Ti, m->ff, m->sk,
         m->floss, m->armature, m->jnt_lo, m->jnt_hi, m->g, m->dt, m->integrator,
         m->n_shape, m->n_pair, m->ctype, m->cbody, m->cshape, m->ctran, m->cparam,
         m->craycast, m->cpair, m->erp, m->slop, m->cfm_scale, m->v_rest_thresh,
-        m->iters, m->tol);
-    if (!m->h) return -1;
+        m->iters, m->tol, &m->h);
+    if (rc != 0) return -1;
     tact_set_feedback(m->h, m->n_feed, m->feed_kinds, m->feed_offsets, m->feed_idx,
                       m->n_frame, m->fbody, m->ftran, m->ftran_inv, m->y_size);
     m->h->q0 = m->q0; m->q0 = NULL;
@@ -363,7 +357,7 @@ static int create_handle(bin_model_t *m)
     return 0;
 }
 
-int tact_load(const char *path, tact_t **out)
+int tact_create_from_bin(const char *path, tact_t **out)
 {
     if (!path || !out) return -1;
     *out = NULL;
@@ -434,15 +428,6 @@ int tact_load(const char *path, tact_t **out)
     return 0;
 }
 
-int tact_info(const tact_t *h, tact_info_t *out)
-{
-    if (!h || !out) return -1;
-    out->nb = h->nb; out->nq = h->nq; out->n_shape = h->n_shape; out->n_pair = h->n_pair;
-    out->n_frame = h->n_frames; out->n_feed = h->n_feeds; out->y_size = h->y_size;
-    out->lam_size = h->lam_size; out->dt = h->dt;
-    return 0;
-}
-
 int tact_frame_count(const tact_t *h)
 {
     return (h && h->frame_names) ? h->n_frames : 0;
@@ -475,69 +460,6 @@ const double *tact_q0(const tact_t *h)
 const double *tact_qd0(const tact_t *h)
 {
     return h ? h->qd0 : NULL;
-}
-
-int tact_create_ctx(const tact_t *h, tact_ctx_t **out)
-{
-    if (!h || !out) return -1;
-    *out = NULL;
-    tact_ctx_t *ctx = (tact_ctx_t*)calloc(1, sizeof(tact_ctx_t));
-    if (!ctx) return -2;
-    ctx->h = h;
-    ctx->lam = (double*)calloc((size_t)h->lam_size, sizeof(double));
-    if (!ctx->lam) {
-        tact_destroy_ctx(ctx);
-        return -3;
-    }
-    *out = ctx;
-    return 0;
-}
-
-void tact_destroy_ctx(tact_ctx_t *ctx)
-{
-    if (!ctx) return;
-    free(ctx->lam);
-    free(ctx);
-}
-
-double *tact_ctx_lam(tact_ctx_t *ctx)
-{
-    return ctx ? ctx->lam : NULL;
-}
-
-int tact_step(const tact_t *h,
-              const double *q, const double *qd, const double *tau,
-              const double *q_ref, const double *qd_ref,
-              const double *kp, const double *kd,
-              const tact_ctx_t *ctx_in,
-              double *q_out, double *qd_out, double *y_out,
-              tact_ctx_t *ctx_out)
-{
-    if (!h || !q || !qd || !q_out || !qd_out) return -1;
-    if (ctx_in && ctx_in->h != h) return -2;
-    if (ctx_out && ctx_out->h != h) return -3;
-    const double *u = tau ? tau : h->zero_tau;
-    const double *lam_in = ctx_in ? ctx_in->lam : h->zero_lam;
-    double *tmp_lam = NULL;
-    double *lam_out = ctx_out ? ctx_out->lam : NULL;
-    if (!lam_out) {
-        tmp_lam = (double*)calloc((size_t)h->lam_size, sizeof(double));
-        if (!tmp_lam) return -4;
-        lam_out = tmp_lam;
-    }
-    double *kp_active = (kp && q_ref) ? (double*)kp : NULL;
-    double *kd_active = (kd && (q_ref || qd_ref)) ? (double*)kd : NULL;
-
-    tact_step_lcp((tact_t*)h, (double*)q, (double*)qd, (double*)u,
-                  kp_active, kd_active, (double*)q_ref, (double*)qd_ref,
-                  (double*)lam_in, lam_out);
-    memcpy(q_out, tact_q_next((tact_t*)h), (size_t)h->nq * sizeof(double));
-    memcpy(qd_out, tact_qd_next((tact_t*)h), (size_t)h->nq * sizeof(double));
-    if (y_out && h->y_size > 0) {
-        memcpy(y_out, tact_y((tact_t*)h), (size_t)h->y_size * sizeof(double));
-    }
-    free(tmp_lam);
-    return 0;
 }
 
 int tact_render(const tact_t *h, const double *q)
@@ -594,7 +516,7 @@ int tact_render(const tact_t *h, const double *q)
         light_ortho = (float)h->light0[6];
         shadow_enabled = h->light0[7] != 0.0;
     }
-    render_set_light(light_pos, light_target, light_ortho, shadow_enabled);
+    tact_render_set_light(light_pos, light_target, light_ortho, shadow_enabled);
     int rc = win_render(n_obj, h->ctype, shape, objcolor, objpose, campose);
 
     free(T);

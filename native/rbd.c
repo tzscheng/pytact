@@ -1,6 +1,6 @@
 /* rbd.c — rigid-body dynamics + the linear-algebra / euler-quaternion / spatial
  * primitives the dynamics layer is built on. Public surface declared in tact.h. */
-#include "tact.h"
+#include "core.h"
 
 //--------------------basic linear algebra--------------------------------
 

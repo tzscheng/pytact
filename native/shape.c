@@ -2,7 +2,7 @@
  * from .obj) and height-field slot table (grids pushed from Python). Defines the
  * extern globals declared in shape.h; consumed by mpr.c (mesh support), narrow.c
  * (hfield contact), ray.c (ray casts), render.c. (Split out of ccd.c.) */
-#include "tact.h"
+#include "core.h"
 #include "shape.h"
 #include <limits.h>
 
@@ -18,14 +18,14 @@ int       num_face[MAX_MESH];
 int     (*face  [MAX_MESH])[3];
 double    mesh_radius[MAX_MESH];   // cached bounding-sphere radius (about local origin); 0 = uncomputed
 
-// Mesh path table populated by set_mesh_path() from Python during build().
+// Mesh path table populated by tact_set_mesh_path() from Python during build().
 // Indexed by the same slot id stored in cshape[i][0] for mesh shapes (cytpe==100).
 // Empty string means "no path registered" — collision/render will error.
 char mesh_path[MAX_MESH][MAX_PATH_LEN];
 
-void set_mesh_path(int idx, const char* path) {
+void tact_set_mesh_path(int idx, const char* path) {
     if (idx < 0 || idx >= MAX_MESH) {
-        fprintf(stderr, "set_mesh_path: idx %d out of range [0, %d)\n", idx, MAX_MESH);
+        fprintf(stderr, "tact_set_mesh_path: idx %d out of range [0, %d)\n", idx, MAX_MESH);
         return;
     }
     strncpy(mesh_path[idx], path, MAX_PATH_LEN - 1);
@@ -43,7 +43,7 @@ void set_mesh_path(int idx, const char* path) {
 // hf_nrow[slot]*hf_ncol[slot] heights (meters), row-major: hf_data[i*ncol + j] is the
 // height at grid node (row i along local +Y, col j along local +X). The grid spans local
 // [-sx, sx] × [-sy, sy]. min/max height are cached for the bounding-sphere broad phase.
-// Pushed directly from Python via set_hfield_data() during build() (no lazy C-side load,
+// Pushed directly from Python via tact_set_hfield_data() during build() (no lazy C-side load,
 // unlike meshes). Indexed by the slot id stored in cshape[i][0] for hfield shapes
 // (ctype==105). hf_data[slot]==NULL means "no grid registered".
 int      hf_nrow[MAX_HFIELD];
@@ -52,13 +52,13 @@ double   hf_sx[MAX_HFIELD], hf_sy[MAX_HFIELD];   // half-extents in local X / Y
 double   hf_minh[MAX_HFIELD], hf_maxh[MAX_HFIELD];
 double  *hf_data[MAX_HFIELD];
 
-void set_hfield_data(int slot, int nrow, int ncol, double sx, double sy, const double* data) {
+void tact_set_hfield_data(int slot, int nrow, int ncol, double sx, double sy, const double* data) {
     if (slot < 0 || slot >= MAX_HFIELD) {
-        fprintf(stderr, "set_hfield_data: slot %d out of range [0, %d)\n", slot, MAX_HFIELD);
+        fprintf(stderr, "tact_set_hfield_data: slot %d out of range [0, %d)\n", slot, MAX_HFIELD);
         return;
     }
     if (nrow < 2 || ncol < 2) {
-        fprintf(stderr, "set_hfield_data: grid %dx%d too small (need >=2 each)\n", nrow, ncol);
+        fprintf(stderr, "tact_set_hfield_data: grid %dx%d too small (need >=2 each)\n", nrow, ncol);
         return;
     }
     if (hf_data[slot]) { free(hf_data[slot]); hf_data[slot] = NULL; }  // re-register: drop old grid
@@ -89,7 +89,7 @@ double hfield_local_radius(int slot) {
 /* Bounding-sphere radius of mesh `slot` about its local origin (max |vertex|), for the
  * raycast broad phase. Loads the mesh on first use and caches the radius per slot
  * (geometry is constant; only the world pose changes per frame). Returns -1 if the slot
- * is invalid or fails to load (caller then treats it as "never cull"). set_mesh_path()
+ * is invalid or fails to load (caller then treats it as "never cull"). tact_set_mesh_path()
  * invalidates the cache (mesh_radius[idx]=0) when a slot is re-pathed. */
 double mesh_local_radius(int slot)
 {
@@ -176,9 +176,9 @@ static int obj_parse_vertex_index(const char *tok, int vcount)
 }
 
 int load_obj(int mesh_idx) {
-    // Path must have been registered via set_mesh_path() before any mesh-shape
+    // Path must have been registered via tact_set_mesh_path() before any mesh-shape
     // collision/render/raycast call. Python's Model.build() does this after
-    // tact_create(). Loads both vertices (for CCD support) and triangle faces
+    // tact_create_from_arrays(). Loads both vertices (for CCD support) and triangle faces
     // (for ray_intersects_mesh). Returns vertex count.
     if (mesh_idx < 0 || mesh_idx >= MAX_MESH || mesh_path[mesh_idx][0] == '\0') {
         fprintf(stderr, "load_obj: no path registered for mesh slot %d "

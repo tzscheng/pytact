@@ -631,7 +631,7 @@ class Model:
                             self.mesh_path_to_idx[abs_path] = slot
                             # Push the path to C immediately so subsequent
                             # load_obj / render path lookups succeed.
-                            clib.set_mesh_path(slot, abs_path.encode())
+                            clib.tact_set_mesh_path(slot, abs_path.encode())
                         # Normalize the YAML so downstream build() sees the
                         # same shape struct it did before (cshape[0] = idx).
                         sh['param'] = [float(slot)]
@@ -639,7 +639,7 @@ class Model:
                     # Resolve heightfield grid → C-side slot. The grid is loaded
                     # here (`file:` = MuJoCo custom hfield binary via
                     # load_hfield — the shared tact/extras/envs/ format — or an
-                    # inline `data:` list) and pushed to C via set_hfield_data;
+                    # inline `data:` list) and pushed to C via tact_set_hfield_data;
                     # cshape[0]=slot mirrors the mesh slot scheme. size:
                     # [sx, sy, sz] — sx,sy are XY half-extents (m); sz
                     # multiplies grid values into meters (use sz=1 for a grid
@@ -669,7 +669,7 @@ class Model:
                             raise ValueError(f"hfield slot table exhausted (MAX_HFIELD={self._hf_max_slots})")
                         slot = self.hf_next_slot
                         self.hf_next_slot += 1
-                        clib.set_hfield_data(slot, nrow, ncol, sx, sy, heights.ctypes.data_as(_DBL))
+                        clib.tact_set_hfield_data(slot, nrow, ncol, sx, sy, heights.ctypes.data_as(_DBL))
                         self.hfield_data.append({
                             'slot': slot,
                             'nrow': nrow,
@@ -1315,7 +1315,7 @@ class Model:
             clib.tact_destroy(self._h)
             self._h = None
 
-        #tact_create copies these into its arena, so the build arrays are only needed
+        #tact_create_from_arrays copies these into its arena, so the build arrays are only needed
         #for the duration of the call. We still keep refs on self until the next call
         #just to be safe against any pre-collection.
         self._build_X      = np.ascontiguousarray(np.asarray(self.X),  dtype=np.float64)
@@ -1342,7 +1342,8 @@ class Model:
         self._build_ctran  = np.ascontiguousarray(np.asarray(self.ctran).reshape(nshape, 16) if nshape else np.zeros((0, 16)), dtype=np.float64)
         self._build_cparam = np.ascontiguousarray(np.asarray(self.cparam).reshape(nshape, 13) if nshape else np.zeros((0, 13)), dtype=np.float64)
 
-        self._h = clib.tact_create(
+        h = ctypes.c_void_p()
+        rc = clib.tact_create_from_arrays(
             nb,
             self._build_parent.ctypes.data_as(_INT),
             self._build_jtype.ctypes.data_as(_INT),
@@ -1369,7 +1370,11 @@ class Model:
             # global LCP solver knobs (from YAML sim:, else __init__ defaults)
             ctypes.c_double(self.erp), ctypes.c_double(self.slop), ctypes.c_double(self.cfm_scale),
             ctypes.c_double(self.v_rest_thresh), ctypes.c_int(self.iters), ctypes.c_double(self.tol),
+            ctypes.byref(h),
         )
+        if rc != 0:
+            raise RuntimeError(f"tact_create_from_arrays failed: {rc}")
+        self._h = h
 
         #wrap arena's dynamic buffers as numpy views — re-acquired on every recreate.
         # Buffers are per-DoF (length nq) — equals nb when no free6 joints, larger
@@ -1681,22 +1686,24 @@ class Model:
             qr_ptr  = q_ref.ctypes.data_as(_DBL)      if q_ref       is not None else None
             qdr_ptr = qd_ref.ctypes.data_as(_DBL)     if qd_ref      is not None else None
 
-            # warm-start carry: ctx.lam in, fresh lam_out (= ctx_next) out. ctx=None →
-            # cold (zeros). Distinct in/out buffers keep ctx immutable (C seeds out
-            # from in). ONE vector for all PGS row types — [contact | fric | limit],
-            # the SolverState layout; tact_step_lcp slices it by the same arithmetic.
+            # Solver context carry: ctx.lam in, fresh output vector (= ctx_next)
+            # out. ctx=None → cold (zeros). Distinct in/out buffers keep ctx
+            # immutable. The current payload is one warm-start λ vector for all
+            # PGS row types — [contact | fric | limit], the SolverState layout.
             nq_dof  = len(self.floss)
-            lam_len = 6 * MAX_PTS_PER_PAIR * max(len(self.cpair), 1) + 2 * nq_dof
-            lam_in  = np.zeros(lam_len) if ctx is None else np.ascontiguousarray(ctx.lam, dtype=np.float64)
-            lam_out = np.zeros(lam_len, dtype=np.float64)
-            clib.tact_step_lcp(self._h, q_in.ctypes.data_as(_DBL), qd_in.ctypes.data_as(_DBL), tau_in.ctypes.data_as(_DBL), Kp_ptr, Kd_ptr, qr_ptr, qdr_ptr,
-                               lam_in.ctypes.data_as(_DBL), lam_out.ctypes.data_as(_DBL))
+            ctx_len = 6 * MAX_PTS_PER_PAIR * max(len(self.cpair), 1) + 2 * nq_dof
+            ctx_in  = np.zeros(ctx_len) if ctx is None else np.ascontiguousarray(ctx.lam, dtype=np.float64)
+            ctx_out = np.zeros(ctx_len, dtype=np.float64)
+            rc = clib.tact_step_lcp(self._h, q_in.ctypes.data_as(_DBL), qd_in.ctypes.data_as(_DBL), tau_in.ctypes.data_as(_DBL), Kp_ptr, Kd_ptr, qr_ptr, qdr_ptr,
+                                    ctx_in.ctypes.data_as(_DBL), ctx_out.ctypes.data_as(_DBL))
+            if rc != 0:
+                raise RuntimeError(f"tact_step_lcp failed: {rc}")
 
             #copy outputs out of arena (next step would overwrite views)
             q_next  = self._h_q_next.copy()
             qd_next = self._h_qd_next.copy()
             y       = self._h_y[:self._y_size].copy()
-            ctx_next = SolverState(lam=lam_out, nq=nq_dof)
+            ctx_next = SolverState(lam=ctx_out, nq=nq_dof)
 
         elif not self.use_c and self.solver == 'lcp':
             #LCP path: ABA-with-joint-PD(f_ext=0) → qd_free, CRB → M, contact_lcp solves for
@@ -2277,7 +2284,7 @@ class Env:
         L = self.m.lights[0]
         pos = (ctypes.c_float * 3)(*L['pos'])
         tgt = (ctypes.c_float * 3)(*L['target'])
-        clib.render_set_light(pos, tgt, ctypes.c_float(L['ortho']), ctypes.c_int(1 if L['shadow'] else 0))
+        clib.tact_render_set_light(pos, tgt, ctypes.c_float(L['ortho']), ctypes.c_int(1 if L['shadow'] else 0))
 
     def _geom_arrays(self):
         # Camera-invariant inputs to win_render/egl_render (object poses/shapes/types/

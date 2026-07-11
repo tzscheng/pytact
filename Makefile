@@ -27,10 +27,10 @@ TACT_SRC := \
 	native/ray.c \
 	native/lcp.c \
 	native/tact.c \
-	native/model.c \
+	native/bin.c \
 	native/render.c
 
-TACT_HEADERS := native/tact.h native/shape.h native/model.h
+TACT_HEADERS := native/tact.h native/shape.h native/core.h
 TACT_LIB := $(LIB_DIR)/libtact.so
 BIN_TEST := native/demos/basic/bin-test
 

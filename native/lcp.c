@@ -3,7 +3,7 @@
  * Companion layer on top of narrow.c (narrow-phase) and rbd.c (CRB + LDLᵀ).
  * Mirrors rbd.py:contact_lcp 1:1. lcp is the only contact solver (the legacy
  * penalty solver was removed 2026-05-24). Public surface in tact.h. */
-#include "tact.h"
+#include "core.h"
 
 /* ----- optional stage profiling (compile with -DLCP_PROF) -------------------- */
 #ifdef LCP_PROF
@@ -296,7 +296,7 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
      * manifold yields up to 4; other type combinations yield 1). Per-point
      * cdata gets sub_id ∈ [0, n_points-1] from the narrowphase output, with
      * the ordering convention defined in narrow.c's box-box manifold (polar angle around
-     * centroid in tangent plane). The collision_check out-buffer is laid out
+     * centroid in tangent plane). The tact_collision_check out-buffer is laid out
      * 7 doubles per point. */
     int nc = 0;
     double out_buf[7 * MAX_PTS_PER_PAIR];
@@ -319,7 +319,7 @@ void contact_lcp(int nb, double *T, int *parent, int *jtype,
             param2[6+k] = cshape[3*sj + k];
         }
 
-        int npts = collision_check(ctype[si], param1, ctype[sj], param2,
+        int npts = tact_collision_check(ctype[si], param1, ctype[sj], param2,
                                    out_buf, MAX_PTS_PER_PAIR);
         if (npts <= 0) continue;             /* < 0: separating; 0: touching */
 

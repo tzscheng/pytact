@@ -1,10 +1,10 @@
 /* mpr.c — generic convex narrowphase: MPR (Minkowski Portal Refinement) + EPA
- * portal, the fallback used by collision_check for shape pairs without a
+ * portal, the fallback used by tact_collision_check for shape pairs without a
  * dedicated detector. Holds the libccd-derived ccd_* core, the per-shape support
- * function (reads mesh vertices from shape.c), size_of_param, and collision_check_mpr.
+ * function (reads mesh vertices from shape.c), size_of_param, and tact_collision_check_mpr.
  * (Formerly the bulk of ccd.c.) */
 #include <float.h>
-#include "tact.h"
+#include "core.h"
 #include "shape.h"
 
 #define CCD_OBJ_MESH    MESH
@@ -827,10 +827,10 @@ int size_of_param(int type){
 }
 
 /* Single-point MPR-based collision check — the original implementation. Used as
- * the fallback path inside collision_check() for all shape combinations that
+ * the fallback path inside tact_collision_check() for all shape combinations that
  * don't have a dedicated multi-point detector. Exposed (non-static) for sign-
  * convention regression testing of new dedicated detectors. */
-int collision_check_mpr(int type1, double* param1, int type2, double *param2, double* out){
+int tact_collision_check_mpr(int type1, double* param1, int type2, double *param2, double* out){
       ccd_t ccd;
 
       ccd.support1 = ccd_support;
