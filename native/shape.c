@@ -111,15 +111,15 @@ typedef struct {
     double (*v)[3];
     int n;
     int cap;
-} ObjVerts;
+} obj_verts_t;
 
 typedef struct {
     int (*f)[3];
     int n;
     int cap;
-} ObjFaces;
+} obj_faces_t;
 
-static void obj_push_vert(ObjVerts *a, double x, double y, double z)
+static void obj_push_vert(obj_verts_t *a, double x, double y, double z)
 {
     if (a->n >= a->cap) {
         int new_cap = (a->cap == 0) ? 4096 : a->cap * 2;
@@ -138,7 +138,7 @@ static void obj_push_vert(ObjVerts *a, double x, double y, double z)
     a->n++;
 }
 
-static void obj_push_face(ObjFaces *a, int i0, int i1, int i2)
+static void obj_push_face(obj_faces_t *a, int i0, int i1, int i2)
 {
     if (a->n >= a->cap) {
         int new_cap = (a->cap == 0) ? 4096 : a->cap * 2;
@@ -198,8 +198,8 @@ int load_obj(int mesh_idx) {
     face[mesh_idx] = NULL;
     num_face[mesh_idx] = 0;
 
-    ObjVerts verts = {0};
-    ObjFaces faces = {0};
+    obj_verts_t verts = {0};
+    obj_faces_t faces = {0};
     char line[4096];
     while (fgets(line, sizeof(line), file)) {
         char *s = line;

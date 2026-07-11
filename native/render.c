@@ -483,14 +483,14 @@ static EGLDisplay choose_egl_display(void){
 }
 
 //---- Stage R.1: in-window mp4 recording (toggled by Shift+R key in tact_win_render) ----
-static int rec_request = 0;            //toggled by key_cb; tact_win_render acts on transitions
-static int rec_active  = 0;            //actual state in tact_win_render
+static int g_rec_request = 0;            //toggled by key_cb; tact_win_render acts on transitions
+static int g_rec_active  = 0;            //actual state in tact_win_render
 static int space_request = 0;          //set by key_cb on SPACE press; tact_win_render returns 1 once per press (consumed)
-static FILE* rec_pipe  = NULL;         //ffmpeg stdin
-static int rec_w = 0, rec_h = 0;       //locked dimensions
-static unsigned char* rec_buf = NULL;  //glReadPixels target
+static FILE* g_rec_pipe  = NULL;         //ffmpeg stdin
+static int g_rec_w = 0, g_rec_h = 0;       //locked dimensions
+static unsigned char* g_rec_buf = NULL;  //glReadPixels target
 
-static int quit_request = 0;
+static int g_quit_request = 0;
 
 //---- Light + shadow state (settable via tact_render_set_light()) ----
 // Defaults match the historical hardcoded values; YAML `lights:` overrides.
@@ -677,11 +677,11 @@ typedef struct{
     int draggingL;
     int draggingR;
     double lastX, lastY;
-} Camera;
-static Camera g_cam;
+} camera_t;
+static camera_t g_cam;
 
 
-static void cam_eye(const Camera *c, float eye[3]){
+static void cam_eye(const camera_t *c, float eye[3]){
     float cp = cosf(c->pitch);
     float sp = sinf(c->pitch);
     float cy = cosf(c->yaw);
@@ -698,7 +698,7 @@ static void cam_eye(const Camera *c, float eye[3]){
     eye[2] = c->target[2] + c->distance*sp;
 }
 
-static void cam_onMouseMove(Camera* c, double x, double y){
+static void cam_onMouseMove(camera_t* c, double x, double y){
     double dx = c->lastX - x;
     double dy = c->lastY - y;
 
@@ -737,7 +737,7 @@ static void cam_onMouseMove(Camera* c, double x, double y){
     }
 }
 
-static void cam_onScroll(Camera *c, double yoffset){
+static void cam_onScroll(camera_t *c, double yoffset){
     c->distance *= 1.0f - yoffset * c->zoomSpeed;
     if(c->distance < 0.2f) c->distance = 0.2f;
 }
@@ -775,10 +775,10 @@ static void framebuffer_size_cb(GLFWwindow* win, int w, int h){
 
 static void key_cb(GLFWwindow* win, int key, int scancode, int action, int mods){
     (void)win; (void)scancode;
-    //if (key == GLFW_KEY_R && action == GLFW_PRESS) rec_request = !rec_request;
-    //else if(key == GLFW_KEY_Q && action == GLFW_PRESS) quit_request = !quit_request;
-    if (key == GLFW_KEY_R && action == GLFW_PRESS && (mods & GLFW_MOD_SHIFT)) rec_request = !rec_request;
-    else if(key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) quit_request = !quit_request;
+    //if (key == GLFW_KEY_R && action == GLFW_PRESS) g_rec_request = !g_rec_request;
+    //else if(key == GLFW_KEY_Q && action == GLFW_PRESS) g_quit_request = !g_quit_request;
+    if (key == GLFW_KEY_R && action == GLFW_PRESS && (mods & GLFW_MOD_SHIFT)) g_rec_request = !g_rec_request;
+    else if(key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) g_quit_request = !g_quit_request;
     else if(key == GLFW_KEY_SPACE && action == GLFW_PRESS) space_request = 1;
 }
 
@@ -979,10 +979,10 @@ static void compute_light_vp(float out_LVP[16]){
 typedef struct {
     GLuint vao, vbo;
     int vertex_count;
-} Mesh;
+} gl_mesh_t;
 
-static Mesh mesh_from_pos_nrm(const float* data6, int vertex_count){
-    Mesh m = {0};
+static gl_mesh_t mesh_from_pos_nrm(const float* data6, int vertex_count){
+    gl_mesh_t m = {0};
     m.vertex_count = vertex_count;
 
     glGenVertexArrays(1,&m.vao);
@@ -1001,7 +1001,7 @@ static Mesh mesh_from_pos_nrm(const float* data6, int vertex_count){
     return m;
 }
 
-/*static void mesh_destroy(Mesh* m){
+/*static void mesh_destroy(gl_mesh_t* m){
     if(m->vbo) glDeleteBuffers(1,&m->vbo);
     if(m->vao) glDeleteVertexArrays(1,&m->vao);
     memset(m,0,sizeof(*m));
@@ -1052,7 +1052,7 @@ static void add_tri_pn(FloatArr* a, const float p0[3], const float n0[3], const 
     }*/
 
 // -------------------- basic shapes --------------------
-static Mesh make_box(float hx, float hy, float hz){
+static gl_mesh_t make_box(float hx, float hy, float hz){
     float x = hx, y = hy, z = hz;
     FloatArr a; fa_init(&a);
 
@@ -1085,12 +1085,12 @@ static Mesh make_box(float hx, float hy, float hz){
     V(+x,-y,-z, 0,0,-1); V(-x,+y,-z, 0,0,-1); V(+x,+y,-z, 0,0,-1);
     #undef V
 
-    Mesh m = mesh_from_pos_nrm(a.data, a.count/6);
+    gl_mesh_t m = mesh_from_pos_nrm(a.data, a.count/6);
     fa_free(&a);
     return m;
 }
 
-static Mesh make_sphere(float r,int stacks,int slices){
+static gl_mesh_t make_sphere(float r,int stacks,int slices){
     FloatArr a; fa_init(&a);
     for(int i=0;i<stacks;i++){
         float v0=(float)i/stacks, v1=(float)(i+1)/stacks;
@@ -1112,12 +1112,12 @@ static Mesh make_sphere(float r,int stacks,int slices){
             add_tri_pn(&a,p00,n00,p11,n11,p01,n01);
         }
     }
-    Mesh m = mesh_from_pos_nrm(a.data, a.count/6);
+    gl_mesh_t m = mesh_from_pos_nrm(a.data, a.count/6);
     fa_free(&a);
     return m;
 }
 
-static Mesh make_cylinder(float r, float hh, int slices){
+static gl_mesh_t make_cylinder(float r, float hh, int slices){
     FloatArr a;
     fa_init(&a);
 
@@ -1167,7 +1167,7 @@ static Mesh make_cylinder(float r, float hh, int slices){
         add_tri_pn(&a, botC,nBot, b0,nBot, b1,nBot);
     }
 
-    Mesh m = mesh_from_pos_nrm(a.data, a.count/6);
+    gl_mesh_t m = mesh_from_pos_nrm(a.data, a.count/6);
     fa_free(&a);
     return m;
 }
@@ -1212,7 +1212,7 @@ static void add_hemisphere(FloatArr* a, float r, int stacks, int slices, float z
     }
 }
 
-static Mesh make_capsule(float r, float hh, int stacks, int slices){
+static gl_mesh_t make_capsule(float r, float hh, int stacks, int slices){
     FloatArr a; fa_init(&a);
 
     // Cylinder runs along Z now (hh = half cylindrical length)
@@ -1246,16 +1246,16 @@ static Mesh make_capsule(float r, float hh, int stacks, int slices){
     add_hemisphere(&a, r, stacks, slices, z1, 1); // +Z cap
     add_hemisphere(&a, r, stacks, slices, z0, 0); // -Z cap
 
-    Mesh m = mesh_from_pos_nrm(a.data, a.count/6);
+    gl_mesh_t m = mesh_from_pos_nrm(a.data, a.count/6);
     fa_free(&a);
     return m;
 }
 
 // Build a render mesh from the shared mesh slot populated by shape.c::load_mesh().
-static Mesh make_mesh_slot(int slot){
+static gl_mesh_t make_mesh_slot(int slot){
     if(slot < 0 || slot >= MAX_MESH || mesh_path[slot][0] == '\0'){
         fprintf(stderr, "render: no path registered for mesh slot %d\n", slot);
-        Mesh empty={0};
+        gl_mesh_t empty={0};
         return empty;
     }
     if(num_vertex[slot] == 0) num_vertex[slot] = load_mesh(slot);
@@ -1264,7 +1264,7 @@ static Mesh make_mesh_slot(int slot){
     int tcount = num_face[slot];
     if(vcount == 0 || tcount == 0){
         fprintf(stderr, "render: no vertices or faces in %s\n", mesh_path[slot]);
-        Mesh empty={0};
+        gl_mesh_t empty={0};
         return empty;
     }
 
@@ -1295,7 +1295,7 @@ static Mesh make_mesh_slot(int slot){
         fa_push6(&out, p2[0],p2[1],p2[2], n[0],n[1],n[2]);
     }
 
-    Mesh m = mesh_from_pos_nrm(out.data, out.count/6);
+    gl_mesh_t m = mesh_from_pos_nrm(out.data, out.count/6);
     fa_free(&out);
     return m;
 }
@@ -1303,10 +1303,10 @@ static Mesh make_mesh_slot(int slot){
 // Build a triangulated surface mesh for height-field slot `slot`. The grid spans
 // local [-sx, sx] × [-sy, sy] in XY with the height along +Z; each cell is two
 // flat-shaded triangles (matching make_mesh_slot's active shading path).
-static Mesh make_hfield(int slot){
+static gl_mesh_t make_hfield(int slot){
     int nr = hf_nrow[slot], nc = hf_ncol[slot];
     const double *H = hf_data[slot];
-    if (nr < 2 || nc < 2 || !H){ Mesh empty={0}; return empty; }
+    if (nr < 2 || nc < 2 || !H){ gl_mesh_t empty={0}; return empty; }
 
     float sx = (float)hf_sx[slot], sy = (float)hf_sy[slot];
     float dx = 2.0f*sx/(nc-1), dy = 2.0f*sy/(nr-1);
@@ -1330,7 +1330,7 @@ static Mesh make_hfield(int slot){
             add_tri_pn(&a, p00, n, p11, n, p01, n);
         }
     }
-    Mesh m = mesh_from_pos_nrm(a.data, a.count/6);
+    gl_mesh_t m = mesh_from_pos_nrm(a.data, a.count/6);
     fa_free(&a);
     return m;
 }
@@ -1353,7 +1353,7 @@ static void flip_vertical(void* img, int width, int height, int bytes_per_pixel,
 static void draw_lit_object(int i, const float* V, const float* P,
                             const float* objcolor, const float* objpose,
                             GLint locModel, GLint locMVP, GLint locNMat, GLint locColor,
-                            const Mesh* mesh){
+                            const gl_mesh_t* mesh){
     float VM[16], MVP[16], A3[9], inv3[9], Nmat[9];
     const float* T = objpose + 16*i;
     m4_mul(VM, V, T);
@@ -1381,7 +1381,7 @@ static void draw_lit_object(int i, const float* V, const float* P,
 static void draw_translucent_object(int i, const float* V, const float* P,
                                     const float* objcolor, const float* objpose,
                                     GLint locModel, GLint locMVP, GLint locNMat, GLint locColor,
-                                    const Mesh* mesh){
+                                    const gl_mesh_t* mesh){
     glCullFace(GL_FRONT);
     draw_lit_object(i, V, P, objcolor, objpose, locModel, locMVP, locNMat, locColor, mesh);
     glCullFace(GL_BACK);
@@ -1422,7 +1422,7 @@ int tact_win_render(int n_obj, int* obj_type, float* shape, float* objcolor, flo
     static GLuint shadow_fbo, shadow_tex;
     #define WIN_MAX_OBJ 64
     #define WIN_N_PADDING 8
-    static Mesh mesh[WIN_MAX_OBJ];
+    static gl_mesh_t mesh[WIN_MAX_OBJ];
     // Per-slot fingerprint so add/delete (which mutates n_obj and shifts the
     // type/shape arrays) gets caught and only changed slots are rebuilt.
     static int   prev_type[WIN_MAX_OBJ];
@@ -1616,10 +1616,10 @@ int tact_win_render(int n_obj, int* obj_type, float* shape, float* objcolor, flo
     }
 
     //---- Stage R.1: handle 'R' toggle, capture frame to ffmpeg pipe ----
-    if(rec_request && !rec_active){
-	rec_w = win_width;
-	rec_h = win_height;
-	rec_buf = (unsigned char*)malloc((size_t)rec_w*rec_h*3);
+    if(g_rec_request && !g_rec_active){
+	g_rec_w = win_width;
+	g_rec_h = win_height;
+	g_rec_buf = (unsigned char*)malloc((size_t)g_rec_w*g_rec_h*3);
 
 	char filename[256];
 	time_t t = time(NULL);
@@ -1632,41 +1632,41 @@ int tact_win_render(int n_obj, int* obj_type, float* shape, float* objcolor, flo
 		 "ffmpeg -loglevel error -y -f rawvideo -pixel_format rgb24 "
 		 "-video_size %dx%d -framerate 50 -i - "
 		 "-vf vflip -c:v libx264 -pix_fmt yuv420p %s",
-		 rec_w, rec_h, filename);
-	rec_pipe = popen(cmd, "w");
-	if(!rec_pipe){
+		 g_rec_w, g_rec_h, filename);
+	g_rec_pipe = popen(cmd, "w");
+	if(!g_rec_pipe){
 	    fprintf(stderr, "[REC] popen failed; recording aborted\n");
-	    free(rec_buf); rec_buf = NULL;
-	    rec_request = 0;
+	    free(g_rec_buf); g_rec_buf = NULL;
+	    g_rec_request = 0;
 	} else {
-	    rec_active = 1;
+	    g_rec_active = 1;
 	    glfwSetWindowTitle(window, "tact [REC]");
-	    fprintf(stderr, "[REC] start: %s (%dx%d, 50fps)\n", filename, rec_w, rec_h);
+	    fprintf(stderr, "[REC] start: %s (%dx%d, 50fps)\n", filename, g_rec_w, g_rec_h);
 	}
     }
 
-    if(!rec_request && rec_active){
-	pclose(rec_pipe);
-	rec_pipe = NULL;
-	free(rec_buf); rec_buf = NULL;
-	rec_active = 0;
+    if(!g_rec_request && g_rec_active){
+	pclose(g_rec_pipe);
+	g_rec_pipe = NULL;
+	free(g_rec_buf); g_rec_buf = NULL;
+	g_rec_active = 0;
 	glfwSetWindowTitle(window, "tact");
 	fprintf(stderr, "[REC] stop\n");
     }
 
-    if(rec_active){
-	if(win_width != rec_w || win_height != rec_h){
+    if(g_rec_active){
+	if(win_width != g_rec_w || win_height != g_rec_h){
 	    static int warned = 0;
 	    if(!warned){
-		fprintf(stderr, "[REC] window resized during recording; capturing locked %dx%d region from bottom-left\n", rec_w, rec_h);
+		fprintf(stderr, "[REC] window resized during recording; capturing locked %dx%d region from bottom-left\n", g_rec_w, g_rec_h);
 		warned = 1;
 	    }
 	}
-	glReadPixels(0, 0, rec_w, rec_h, GL_RGB, GL_UNSIGNED_BYTE, rec_buf);
-	size_t n = (size_t)rec_w*rec_h*3;
-	if(fwrite(rec_buf, 1, n, rec_pipe) != n){
+	glReadPixels(0, 0, g_rec_w, g_rec_h, GL_RGB, GL_UNSIGNED_BYTE, g_rec_buf);
+	size_t n = (size_t)g_rec_w*g_rec_h*3;
+	if(fwrite(g_rec_buf, 1, n, g_rec_pipe) != n){
 	    fprintf(stderr, "[REC] write failed; will stop next frame\n");
-	    rec_request = 0;
+	    g_rec_request = 0;
 	}
     }
 
@@ -1674,7 +1674,7 @@ int tact_win_render(int n_obj, int* obj_type, float* shape, float* objcolor, flo
     glfwPollEvents();
     cnt++;
 
-    if (quit_request) return -1;            // ESC → caller exits
+    if (g_quit_request) return -1;            // ESC → caller exits
     if (space_request) { space_request = 0; return 1; }   // SPACE → one-shot signal to caller
     return 0;
 }
@@ -1701,7 +1701,7 @@ int tact_egl_render(int n_obj, int* obj_type, float* shape, float* objcolor, flo
     static GLuint resolve_fbo, resolve_color_rb, resolve_depth_rb;
     #define EGL_MAX_OBJ 64
     #define EGL_N_PADDING 8
-    static Mesh mesh[EGL_MAX_OBJ];
+    static gl_mesh_t mesh[EGL_MAX_OBJ];
     // Per-slot fingerprint so Env.add/Env.delete (which mutates n_obj and shifts
     // type/shape arrays) get reflected here too — same pattern as tact_win_render.
     static int   prev_type[EGL_MAX_OBJ];

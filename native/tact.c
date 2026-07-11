@@ -750,11 +750,11 @@ typedef struct {
     const double *sh; /* -> cshape + 3*i (box half-size / sphere r / cyl r,hh) */
     int    slot;      /* mesh slot for type 100, else -1 */
     double bsr;       /* bounding-sphere radius around p (broad phase); <0 = no bound / never skip */
-} rc_shape;
+} rc_shape_t;
 
 /* Fill `cache` with the world pose of every raycast-on shape; returns the count.
  * Requires c->T populated by _fk(q). `cache` must hold at least h->n_shape entries. */
-static int rc_build_cache(tact_t *h, rc_shape *cache)
+static int rc_build_cache(tact_t *h, rc_shape_t *cache)
 {
     tact_core_t *c = h->core;
     int n = 0;
@@ -763,7 +763,7 @@ static int rc_build_cache(tact_t *h, rc_shape *cache)
         double Tw[16];
         if (c->cbody[i] < 0) memcpy(Tw, c->ctran + 16*i, 16*sizeof(double));
         else matmul(Tw, c->T + 16*c->cbody[i], c->ctran + 16*i, 4, 4, 4);
-        rc_shape *s = &cache[n++];
+        rc_shape_t *s = &cache[n++];
         s->p[0]=Tw[3];  s->p[1]=Tw[7];  s->p[2]=Tw[11];
         s->R[0]=Tw[0];  s->R[1]=Tw[1];  s->R[2]=Tw[2];
         s->R[3]=Tw[4];  s->R[4]=Tw[5];  s->R[5]=Tw[6];
@@ -796,12 +796,12 @@ static int rc_build_cache(tact_t *h, rc_shape *cache)
  * by any ray and safe to drop — the cull is conservative and the image is unchanged. All
  * rays then share this reduced list (N -> N_visible). `cache` is frame-local scratch, so
  * compacting it (vs. an index array) is fine and keeps the per-ray loop branch-free. */
-static int rc_frustum_cull(rc_shape *cache, int n, const double *R0,
+static int rc_frustum_cull(rc_shape_t *cache, int n, const double *R0,
                            const double *fwd, double max_half_angle)
 {
     int m = 0;
     for (int k = 0; k < n; k++) {
-        rc_shape s = cache[k];
+        rc_shape_t s = cache[k];
         if (s.bsr < 0.0) { cache[m++] = s; continue; }           /* never-cull (mesh) */
         double d[3] = {s.p[0]-R0[0], s.p[1]-R0[1], s.p[2]-R0[2]};
         double dist2 = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
@@ -820,11 +820,11 @@ static int rc_frustum_cull(rc_shape *cache, int n, const double *R0,
  * ray_intersects_* on the cached world pose. Returns nearest forward hit distance, or -1.0
  * on miss. All per-ray temporaries are stack-local (no writes to shared state), so this is
  * safe to call from many threads over one shared cache. */
-static double raycast_cached(const rc_shape *cache, int n, const double *R0, const double *Rd)
+static double raycast_cached(const rc_shape_t *cache, int n, const double *R0, const double *Rd)
 {
     double best = -1.0;
     for (int k = 0; k < n; k++) {
-        const rc_shape *s = &cache[k];
+        const rc_shape_t *s = &cache[k];
         const double *p = s->p, *R = s->R, *z = s->z;
         double t = -1.0;
 
@@ -909,7 +909,7 @@ void tact_raycast_world(tact_t *h, double *q, double *R0s, double *Rds, int n, d
 {
     tact_core_t *c = h->core;
     _fk(c->T, h->nb, c->Ti, c->parent, c->jtype, q);
-    rc_shape cache[h->n_shape > 0 ? h->n_shape : 1];
+    rc_shape_t cache[h->n_shape > 0 ? h->n_shape : 1];
     int ncache = rc_build_cache(h, cache);
     for (int k = 0; k < n; k++)
         t_out[k] = raycast_cached(cache, ncache, R0s + 3*k, Rds + 3*k);
@@ -935,7 +935,7 @@ void tact_raycast_frame(tact_t *h, double *q, int frame_idx, double *dirs, int n
     _fk(c->T, h->nb, c->Ti, c->parent, c->jtype, q);
     /* Hoist per-shape world transforms out of the ray loop (single _fk -> poses
      * fixed for the whole batch). Frame-local, read-only during the loop. */
-    rc_shape cache[h->n_shape > 0 ? h->n_shape : 1];
+    rc_shape_t cache[h->n_shape > 0 ? h->n_shape : 1];
     int ncache = rc_build_cache(h, cache);
 
     int bi = c->fbody[frame_idx];
