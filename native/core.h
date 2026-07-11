@@ -236,6 +236,20 @@ int  win_render(int n_obj, int* obj_type, float* shape, float* objcolor, float* 
  * ============================================================================= */
 void contact_lcp(tact_t *h, double *q, double *lam_in);
 
+/* lcp.c — kinematic-tree partition for the block-diagonal M⁻¹ solve (see
+ * docs/design-lcp-perf.md). Depends only on (nb, parent, jtype), which are
+ * fixed for a handle's lifetime, so it is built lazily on the first
+ * contact_lcp call (valid=0 from calloc) and never invalidated. */
+typedef struct {
+    int valid;
+    int nblk;
+    int blk_of_body[MAX_NB];    /* block id of body i, or -1 (static, no DoF chain) */
+    int blk_size[MAX_NB];       /* DoF count of block b (nblk ≤ nb) */
+    int blk_off[MAX_NB + 1];    /* prefix sum into blk_dof */
+    int blk_mat_off[MAX_NB];    /* offset into packed block-matrix buffer (Σ s²) */
+    int blk_dof[6 * MAX_NB];    /* DoF indices per block, ascending within block */
+} lcp_partition_t;
+
 /* Private engine state behind tact_t.core (public head lives in tact.h).
  * Allocated together with the public struct in tact_create_from_arrays. */
 struct tact_core_t {
@@ -281,6 +295,7 @@ struct tact_core_t {
     double *contact_d;
     int     lcp_nc, lcp_iters;   /* last contact_lcp stats */
     double  lcp_residual;
+    lcp_partition_t lcp_part;    /* per-handle — was a file-static in lcp.c */
 
     void   *arena;
 

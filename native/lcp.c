@@ -84,28 +84,21 @@ static inline double dotN(const double *a, const double *b, int n)
  * two bodies (a contact Jacobian row is structurally 0 outside those blocks,
  * since jacob_whitney's nonzero columns are the body→root chain ⊆ its block).
  *
- * The partition depends only on topology (nb, parent[], jtype[]) → it changes
- * only on add/delete, so compute once and cache, validated by exact compare.
+ * The partition depends only on topology (nb, parent[], jtype[]), which is
+ * fixed per handle (add/delete rebuilds the handle) → built once on the
+ * first solve into core->lcp_part; no per-call validation needed.
  *
  * Rationale, measured speedups, the fixed-foot gotcha, and the planned S2
  * (sparse-J Delassus build) with its forward-compat invariants for future
  * general constraints (joint limits / loop closure): see docs/design-lcp-perf.md. */
 #define LCP_MAXF (6 * MAX_NB)              /* max free DoF (every body free) */
 
-static struct {
-    int valid;
-    int nb, nq, nblk;
-    int parent[MAX_NB], jtype[MAX_NB];     /* cache key */
-    int blk_of_body[MAX_NB];               /* block id of body i, or -1 (no DoF) */
-    int blk_size[MAX_NB];                  /* DoF count of block b (nblk ≤ nb) */
-    int blk_off[MAX_NB + 1];               /* prefix sum into blk_dof */
-    int blk_mat_off[MAX_NB];               /* offset into packed block-matrix buffer (Σ s²) */
-    int blk_dof[LCP_MAXF];                 /* DoF indices per block, ascending within block */
-} g_part;
+/* Partition lives per-handle in core->lcp_part (lcp_partition_t, core.h) —
+ * built once on the first solve; (nb, parent, jtype) are fixed per handle. */
 
 static int uf_find(int *uf, int x) { while (uf[x] != x) { uf[x] = uf[uf[x]]; x = uf[x]; } return x; }
 
-static void lcp_build_partition(int nb, const int *parent, const int *jtype)
+static void lcp_build_partition(lcp_partition_t *pt, int nb, const int *parent, const int *jtype)
 {
     /* union-find: merge each moving body with its nearest moving ancestor */
     int uf[MAX_NB];
@@ -129,32 +122,32 @@ static void lcp_build_partition(int nb, const int *parent, const int *jtype)
     int root2blk[MAX_NB];
     for (int i = 0; i < nb; i++) root2blk[i] = -1;
     int nblk = 0;
-    for (int b = 0; b < nb; b++) g_part.blk_size[b] = 0;
+    for (int b = 0; b < nb; b++) pt->blk_size[b] = 0;
     for (int i = 0; i < nb; i++) {
         int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
-        if (nvi == 0) { g_part.blk_of_body[i] = -1; continue; }
+        if (nvi == 0) { pt->blk_of_body[i] = -1; continue; }
         int r = uf_find(uf, i);
         if (root2blk[r] < 0) root2blk[r] = nblk++;
         int b = root2blk[r];
-        g_part.blk_of_body[i] = b;
-        g_part.blk_size[b] += nvi;
+        pt->blk_of_body[i] = b;
+        pt->blk_size[b] += nvi;
     }
     /* prefix sums into blk_dof and into the packed block-matrix buffer */
-    g_part.blk_off[0] = 0;
+    pt->blk_off[0] = 0;
     int mat_off = 0;
     for (int b = 0; b < nblk; b++) {
-        g_part.blk_off[b + 1] = g_part.blk_off[b] + g_part.blk_size[b];
-        g_part.blk_mat_off[b] = mat_off;
-        mat_off += g_part.blk_size[b] * g_part.blk_size[b];
+        pt->blk_off[b + 1] = pt->blk_off[b] + pt->blk_size[b];
+        pt->blk_mat_off[b] = mat_off;
+        mat_off += pt->blk_size[b] * pt->blk_size[b];
     }
     /* fill DoF index lists (ascending: bodies visited in order, DoF consecutive) */
     int cur[MAX_NB];
-    for (int b = 0; b < nblk; b++) cur[b] = g_part.blk_off[b];
+    for (int b = 0; b < nblk; b++) cur[b] = pt->blk_off[b];
     for (int i = 0; i < nb; i++) {
         int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
         if (nvi == 0) continue;
-        int b = g_part.blk_of_body[i];
-        for (int k = 0; k < nvi; k++) g_part.blk_dof[cur[b]++] = q_base[i] + k;
+        int b = pt->blk_of_body[i];
+        for (int k = 0; k < nvi; k++) pt->blk_dof[cur[b]++] = q_base[i] + k;
     }
     /* A contact's Jacobian (jacob_whitney) is nonzero on the body→root chain, so
        a contact on a FIXED body (e.g. a rigidly-mounted foot) lands in the block
@@ -162,32 +155,23 @@ static void lcp_build_partition(int nb, const int *parent, const int *jtype)
        involved-block Y solve covers it; truly static bodies (no moving ancestor)
        stay -1 (their Jacobian row is all zero → correctly skipped). */
     for (int i = 0; i < nb; i++) {
-        if (g_part.blk_of_body[i] >= 0) continue;       /* moving — own block set */
+        if (pt->blk_of_body[i] >= 0) continue;       /* moving — own block set */
         int a = parent[i];
         while (a >= 0 && jtype[a] == 0) a = parent[a];
-        g_part.blk_of_body[i] = (a >= 0) ? g_part.blk_of_body[a] : -1;
+        pt->blk_of_body[i] = (a >= 0) ? pt->blk_of_body[a] : -1;
     }
-    g_part.valid = 1; g_part.nb = nb; g_part.nq = nq; g_part.nblk = nblk;
-    memcpy(g_part.parent, parent, nb * sizeof(int));
-    memcpy(g_part.jtype,  jtype,  nb * sizeof(int));
-}
-
-static inline void lcp_ensure_partition(int nb, const int *parent, const int *jtype)
-{
-    if (g_part.valid && g_part.nb == nb &&
-        memcmp(g_part.parent, parent, nb * sizeof(int)) == 0 &&
-        memcmp(g_part.jtype,  jtype,  nb * sizeof(int)) == 0) return;
-    lcp_build_partition(nb, parent, jtype);
+    pt->nblk = nblk;
+    pt->valid = 1;
 }
 
 /* Solve M⁻¹·x in place for block b only: gather x at the block's DoF, run the
  * cached LDLᵀ factor, scatter back. Off-block entries are untouched (M⁻¹ is
  * block-diagonal). `pack` is the packed factored block-matrix buffer. */
-static void lcp_block_solve(int b, double *x, const double *pack)
+static void lcp_block_solve(const lcp_partition_t *pt, int b, double *x, const double *pack)
 {
-    int s = g_part.blk_size[b];
-    const int *d = g_part.blk_dof + g_part.blk_off[b];
-    const double *Mb = pack + g_part.blk_mat_off[b];
+    int s = pt->blk_size[b];
+    const int *d = pt->blk_dof + pt->blk_off[b];
+    const double *Mb = pack + pt->blk_mat_off[b];
     double sb[LCP_MAXF];
     for (int r = 0; r < s; r++) sb[r] = x[d[r]];
     ldlt_solve(Mb, s, sb);
@@ -510,12 +494,13 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
        Gather each block's dense sub-matrix from M_full and factor it in place in
        the packed buffer; cross-block coupling is exactly 0 → bit-identical to a
        dense LDLᵀ of the whole matrix (see S1 note above). */
-    lcp_ensure_partition(nb, parent, jtype);
-    int nblk = g_part.nblk;
+    lcp_partition_t *pt = &core->lcp_part;   /* per-handle; built on first solve */
+    if (!pt->valid) lcp_build_partition(pt, nb, parent, jtype);
+    int nblk = pt->nblk;
     for (int b = 0; b < nblk; b++) {
-        int s = g_part.blk_size[b];
-        const int *d = g_part.blk_dof + g_part.blk_off[b];
-        double *Mb = Mpack + g_part.blk_mat_off[b];
+        int s = pt->blk_size[b];
+        const int *d = pt->blk_dof + pt->blk_off[b];
+        double *Mb = Mpack + pt->blk_mat_off[b];
         for (int r = 0; r < s; r++) {
             const double *Mr = M_full + (size_t)d[r] * nq;
             double *Mbr = Mb + (size_t)r * s;
@@ -533,13 +518,13 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
        body (e.g. a foot) maps to the block of its nearest moving ancestor — so
        M⁻¹ only needs those blocks (the rest stays 0, as copied from J). */
     for (int k = 0; k < nc; k++) {
-        int b1 = (cbody[ci_arr[k]] >= 0) ? g_part.blk_of_body[cbody[ci_arr[k]]] : -1;
-        int b2 = (cbody[cj_arr[k]] >= 0) ? g_part.blk_of_body[cbody[cj_arr[k]]] : -1;
+        int b1 = (cbody[ci_arr[k]] >= 0) ? pt->blk_of_body[cbody[ci_arr[k]]] : -1;
+        int b2 = (cbody[cj_arr[k]] >= 0) ? pt->blk_of_body[cbody[cj_arr[k]]] : -1;
         for (int i = 6*k; i < 6*k + 6; i++) {
             double *Yi = Y + (size_t)i * F;
             memcpy(Yi, J + (size_t)i * F, F * sizeof(double));
-            if (b1 >= 0)              lcp_block_solve(b1, Yi, Mpack);
-            if (b2 >= 0 && b2 != b1)  lcp_block_solve(b2, Yi, Mpack);
+            if (b1 >= 0)              lcp_block_solve(pt, b1, Yi, Mpack);
+            if (b2 >= 0 && b2 != b1)  lcp_block_solve(pt, b2, Yi, Mpack);
         }
         /* record this contact's ≤2 distinct non-negative block ids (the support
            set used by the S2 sparse A build below). A contact owns 6 rows, all with
@@ -559,10 +544,10 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
 #ifndef TACT_NO_JFRIC
     for (int r = 0; r < n_fric; r++) {
         int row = 6*nc + r;
-        int b   = g_part.blk_of_body[fric_body[r]];
+        int b   = pt->blk_of_body[fric_body[r]];
         double *Yi = Y + (size_t)row * F;
         memcpy(Yi, J + (size_t)row * F, F * sizeof(double));   /* e_{fj} */
-        if (b >= 0) lcp_block_solve(b, Yi, Mpack);
+        if (b >= 0) lcp_block_solve(pt, b, Yi, Mpack);
         row_blocks[2*row + 0] = b;
         row_blocks[2*row + 1] = -1;
     }
@@ -571,10 +556,10 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     /* limit rows: Y = M⁻¹·(sign·e_{fj}); singleton block-support, same as friction. */
     for (int r = 0; r < n_limit; r++) {
         int row = 6*nc + n_fric + r;
-        int b   = g_part.blk_of_body[lim_body[r]];
+        int b   = pt->blk_of_body[lim_body[r]];
         double *Yi = Y + (size_t)row * F;
         memcpy(Yi, J + (size_t)row * F, F * sizeof(double));   /* sign·e_{fj} */
-        if (b >= 0) lcp_block_solve(b, Yi, Mpack);
+        if (b >= 0) lcp_block_solve(pt, b, Yi, Mpack);
         row_blocks[2*row + 0] = b;
         row_blocks[2*row + 1] = -1;
     }
@@ -843,7 +828,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
         tmp[c] = s;
     }
     /* M⁻¹·(Jᵀλ): block-diagonal solve over all blocks (each covers disjoint DoF) */
-    for (int b = 0; b < nblk; b++) lcp_block_solve(b, tmp, Mpack);
+    for (int b = 0; b < nblk; b++) lcp_block_solve(pt, b, tmp, Mpack);
     /* scatter back to full nq-vector */
     for (int i = 0, fi = 0; i < nq; i++) {
         if (free_map[i] >= 0) dqd_out[i] = tmp[fi++];
