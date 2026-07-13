@@ -18,7 +18,7 @@ bodies:
 
   - name: ball
     # qd0 = body-frame [vx,vy,vz, wx,wy,wz]; at identity orientation vx is world +x.
-    joint: {type: free, q0: [0, 0, 1.0, 0, 0, 0], qd0: [0.1, 0, 0, 0, 0, 0]}
+    joint: {type: free, q0: [0, 0, 1.0, 0, 0, 0], qd0: [0.5, 0, 0, 0, 0, 0]}
     inertial: {mass: 1, tensor: [sphere, 0.1]}
     shapes:
       - {type: sphere, param: [0.1], contact: [1, floor], rgba: [0.3, 0.6, 0.9, 1.0]}
