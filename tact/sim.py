@@ -1026,11 +1026,24 @@ class Model:
                             f"body '{body['name']}' and pass kp/kd to step() (start "
                             f"reads controller.kp/.kd attrs)")
 
+                # 2026-07-15 parent-resolution precedence fix: group-internal
+                # (prefixed) names must resolve BEFORE the base-attach fallback.
+                # The old order (kept below) matched the unprefixed parent name
+                # against the existing scene first, so add()-ing a model whose
+                # body names collide with the base — e.g. a second copy of the
+                # same robot as a visual reference character — re-parented every
+                # child body onto the base robot's same-named bodies. Only the
+                # group's root stayed independent, corrupting both FK/rendering
+                # (the added limbs track the base robot) and dynamics (the added
+                # subtree's inertia hangs off the base links). Base-attach
+                # (mounting an added model onto an existing scene body by name)
+                # still works via the final branch.
                 if body['joint']['parent'] == 'root': self.parent.append(None)
                 elif prefix == None: self.parent.append(self.fbody[self.fdict[body['joint']['parent']]])
-                elif body['joint']['parent'] in self.fdict.keys(): self.parent.append(self.fbody[self.fdict[body['joint']['parent']]]) #<---- base change case
+                #elif body['joint']['parent'] in self.fdict.keys(): self.parent.append(self.fbody[self.fdict[body['joint']['parent']]]) #<---- OLD base change case: base names shadowed group-internal names (see note above)
                 #else: self.parent.append(self.fbody[self.fdict[prefix + '.' + body['joint']['parent']]])
-                else: self.parent.append(self.fbody[self.fdict[prefix + body['joint']['parent']]])
+                elif prefix + body['joint']['parent'] in self.fdict: self.parent.append(self.fbody[self.fdict[prefix + body['joint']['parent']]])
+                else: self.parent.append(self.fbody[self.fdict[body['joint']['parent']]]) #<---- base change case (attach onto an existing scene body)
 
                 self.fdict[name] = self.f_idx
                 self.fbody.append(len(self.jtype)-1)

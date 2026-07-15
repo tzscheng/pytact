@@ -1497,6 +1497,34 @@ int tact_win_render(int n_obj, int* obj_type, float* shape, float* objcolor, flo
 	glfwMakeContextCurrent(window);
     }
 
+    // Programmatic camera updates: the caller passes campose every frame, but
+    // the interactive mouse camera owns g_cam between frames. Apply campose
+    // only when it CHANGES between calls — a static caller (plain viewers)
+    // leaves the mouse camera alone, while a tracking caller (view target
+    // following a robot) drives the camera every frame and still allows
+    // mouse orbit relative to the moving target in between.
+    {
+	static float prev_campose[6];
+	static int campose_valid = 0;
+	int cam_changed = 0;
+	for(int k = 0; k < 6; k++){
+	    if(!campose_valid || campose[k] != prev_campose[k]){ cam_changed = 1; break; }
+	}
+	if(cam_changed && campose_valid){
+	    // re-apply only the components the caller changed, so user zoom/orbit
+	    // offsets persist between programmatic updates
+	    if(campose[0] != prev_campose[0] || campose[1] != prev_campose[1] || campose[2] != prev_campose[2])
+		v3_set(g_cam.target, campose[0], campose[1], campose[2]);
+	    if(campose[3] != prev_campose[3]) g_cam.distance = campose[3];
+	    if(campose[4] != prev_campose[4]) g_cam.yaw = campose[4]*M_PI/180.0f;
+	    if(campose[5] != prev_campose[5]) g_cam.pitch = campose[5]*M_PI/180.0f;
+	}
+	if(cam_changed){
+	    for(int k = 0; k < 6; k++) prev_campose[k] = campose[k];
+	    campose_valid = 1;
+	}
+    }
+
     // Sync mesh table to current (type, shape) per slot. Handles Env.add()
     // (new slot index now has type/shape that didn't exist last frame) and
     // Env.delete() (slot index now holds what used to live further down).
