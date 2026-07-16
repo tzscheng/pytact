@@ -41,9 +41,9 @@ __attribute__((destructor)) static void lcp_prof_dump(void){
  *   mat      [12*P]             k_n,d_n,k_t,d_t,mu,k_sp,d_sp,mu_sp,k_rl,d_rl,mu_rl,e_rest
  *   ci, cj, cp_idx, sub_id      parallel int arrays (4*P)
  *   free_map [nb]               int, jtype>0 → 0..F-1, else -1
- * Row-sized buffers use M2 = 6P + 2·nq = max constraint rows (6 per contact-point +
- * 1 friction + 1 limit per DoF), so non-contact rows never overflow the contact-row
- * capacity 6P:
+ * Row-sized buffers use M2 = 6P + 3·nq = max constraint rows (6 per contact-point +
+ * 1 friction + 1 limit + 1 actuator per DoF), so non-contact rows never overflow the
+ * contact-row capacity 6P:
  *   row_blocks [2·M2]           S2: ≤2 M-block ids per CONSTRAINT ROW (block-support
  *                               set). Per-row (not per-contact) so non-contact rows
  *                               — joint friction, limits — drive the same A-build (I2).
@@ -55,10 +55,12 @@ __attribute__((destructor)) static void lcp_prof_dump(void){
  *   c_vec/lam/w  [M2] each      bias rhs / current λ / (A·λ + c) maintained in PGS
  *   tmp      [F]                per-column solve scratch
  *   J6       [6·nb]             jacob_whitney output for one body
+ *   act_b/act_vstar [nq each]   actuator-row effective damping Kp·dt+Kd / target v*
  *
- * Total doubles: ≈ M2² + 2·M2·F + F² + 3·M2 + 25P + 7·nq  (sized in tact.c).
+ * Total doubles: ≈ M2² + 2·M2·F + F² + 3·M2 + 25P + 9·nq  (sized in tact.c).
  * Total ints:    4P (ci,cj,cp_idx,sub_id) + nq (free_map) + 2·M2 (row_blocks)
- *                + 2·nq (fric_dof,fric_body) + 3·nq (lim_dof,lim_sign,lim_body).
+ *                + 2·nq (fric_dof,fric_body) + 3·nq (lim_dof,lim_sign,lim_body)
+ *                + 2·nq (act_dof,act_body).
  * ----------------------------------------------------------------------------- */
 
 static inline double dotN(const double *a, const double *b, int n)
@@ -197,18 +199,22 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     double  v_rest_thresh = core->v_rest_thresh, tol = core->tol;
     int     iters    = core->iters;
     double *floss    = core->floss, *jnt_lo = core->jnt_lo, *jnt_hi = core->jnt_hi;
+    double *taulim   = core->taulim;
+    const double *act_kp   = core->act_kp,   *act_kd    = core->act_kd;
+    const double *act_qref = core->act_qref, *act_qdref = core->act_qdref;
     double *workspace = core->lcp_ws;
 
-    /* ctx layout [contact | fric | limit] — owned here, mirrored by Python
-       SolverState. lam_in (NULL = cold) is read-only; the fric/limit blocks
+    /* ctx layout [contact | fric | limit | act] — owned here, mirrored by Python
+       SolverState. lam_in (NULL = cold) is read-only; the fric/limit/act blocks
        are seeded into ctx_next and updated in place by the solve. */
     int C_ofs = 6 * TACT_MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1);
     double *lam_contact_prev = lam_in;
     double *lam_contact_out  = h->ctx_next;
     double *lam_fric         = h->ctx_next + C_ofs;
     double *lam_limit        = lam_fric + h->nq;
-    if (lam_in) memcpy(lam_fric, lam_in + C_ofs, 2 * h->nq * sizeof(double));
-    else        memset(lam_fric, 0,              2 * h->nq * sizeof(double));
+    double *lam_act          = lam_limit + h->nq;
+    if (lam_in) memcpy(lam_fric, lam_in + C_ofs, 3 * h->nq * sizeof(double));
+    else        memset(lam_fric, 0,              3 * h->nq * sizeof(double));
 
     double *dqd_out   = core->qdd;
     double *f_ext_out = core->f_ext;
@@ -235,8 +241,8 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     /* Max constraint rows = 6 per contact-point + 1 joint-friction row per DoF +
      * 1 joint-limit row per DoF (a DoF can have both). All M2-sized buffers (J, Y,
      * A, c_vec, lam, w, row_blocks) use this so non-contact rows never overflow even
-     * when frictive/limited DoFs outnumber the contact-row capacity 6·Pm. */
-    int M2 = 6 * Pm + 2 * nq;
+     * when frictive/limited/actuated DoFs outnumber the contact-row capacity 6·Pm. */
+    int M2 = 6 * Pm + 3 * nq;
 
     int F = 0;
     /* slice workspace — doubles first, ints at the tail. Sizes use Pm (=MAX_PTS·P)
@@ -256,7 +262,9 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     double *w       = lam     + M2;                 /* M2 */
     double *tmp     = w       + M2;                 /* nq */
     double *J6      = tmp     + nq;                 /* 6*nq */
-    int    *ci_arr  = (int*)(J6 + 6*nq);            /* Pm — shape idx i of contact k's owner cpair */
+    double *act_b   = J6      + 6*nq;               /* n_act≤nq — effective PD damping Kp·dt+Kd */
+    double *act_vstar = act_b + nq;                 /* n_act≤nq — PD target velocity v* */
+    int    *ci_arr  = (int*)(act_vstar + nq);       /* Pm — shape idx i of contact k's owner cpair */
     int    *cj_arr  = ci_arr  + Pm;                 /* Pm — shape idx j */
     int    *cp_idx  = cj_arr  + Pm;                 /* Pm — cpair_idx of contact k */
     int    *sub_id  = cp_idx  + Pm;                 /* Pm — sub-index 0..TACT_MAX_PTS_PER_PAIR-1 within cpair */
@@ -276,6 +284,8 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     int    *lim_dof   = fric_body + nq;             /* n_limit≤nq — DoF index of each joint-limit row */
     int    *lim_sign  = lim_dof   + nq;             /* n_limit≤nq — +1 (lower bound) / −1 (upper bound) */
     int    *lim_body  = lim_sign  + nq;             /* n_limit≤nq — owning body (for block lookup) */
+    int    *act_dof   = lim_body  + nq;             /* n_act≤nq — DoF index of each actuator row */
+    int    *act_body  = act_dof   + nq;             /* n_act≤nq — owning body (for block lookup) */
 
     /* Per-DoF free_map: each body contributes nv[i] consecutive entries.
      * Fixed=0 slots → no entries. All other slots are free. */
@@ -414,10 +424,42 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
         }
     }
 
-    /* Constraint rows = 6·nc contact + n_fric friction + n_limit limit (generic over
-       row count/type, I2: everything below is driven off Mrow + row_blocks). */
-    int Mrow = 6 * nc + n_fric + n_limit;
-    if (Mrow == 0) {                               /* no contacts, no friction, no limit */
+    /* ---- actuator rows (box-bounded implicit joint PD) --------------------- *
+     * The implicit PD torque τ = Kp(qref − q − dt·qd⁺) + Kd(qdref − qd⁺) rewrites
+     * as τ = b·(v* − qd⁺) with b = Kp·dt + Kd, v* = (Kp(qref−q) + Kd·qdref)/b —
+     * a compliant velocity constraint toward v* with CFM 1/(b·dt), box-bounded by
+     * the actuator limit |λ| ≤ taulim·dt. Unsaturated, the PGS solution equals the
+     * ABA implicit-PD fold (same linear relation); saturated it delivers exactly
+     * ±taulim, coupled consistently with contacts in the same solve. Rows exist
+     * only for DoFs with taulim > 0 whose PD is active this step (staged by
+     * tact_step_lcp, which masks those gains out of the ABA predictor). Kp counts
+     * only with q_ref (same rule as ABA); qdref defaults to 0. rev/lin only (v1),
+     * matching the ABA fold's 1-DoF-only implicit PD. */
+    int n_act = 0;
+    if (taulim && (act_qref || act_qdref) && (act_kp || act_kd)) {
+        for (int i = 0; i < nb; i++) {
+            if (jtype[i] != 1 && jtype[i] != 2) continue;
+            int dof = q_base_local[i];
+            if (taulim[dof] <= 0.0) continue;
+            double Kp_i = (act_kp && act_qref) ? act_kp[dof] : 0.0;
+            double Kd_i = act_kd ? act_kd[dof] : 0.0;
+            double b_i  = Kp_i * dt + Kd_i;
+            if (b_i <= 0.0) continue;
+            double qr_i  = act_qref  ? act_qref[dof]  : 0.0;
+            double qdr_i = act_qdref ? act_qdref[dof] : 0.0;
+            act_dof[n_act]   = dof;
+            act_body[n_act]  = i;
+            act_b[n_act]     = b_i;
+            act_vstar[n_act] = (Kp_i * (qr_i - q[dof]) + Kd_i * qdr_i) / b_i;
+            n_act++;
+        }
+    }
+
+    /* Constraint rows = 6·nc contact + n_fric friction + n_limit limit + n_act
+       actuator (generic over row count/type, I2: everything below is driven off
+       Mrow + row_blocks). */
+    int Mrow = 6 * nc + n_fric + n_limit + n_act;
+    if (Mrow == 0) {                               /* no contacts, no friction, no limit, no act */
         *iters_out    = 0;
         *residual_out = 0.0;
         return;
@@ -484,6 +526,15 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
         int fj  = free_map[lim_dof[r]];
         int row = 6*nc + n_fric + r;
         J[(size_t)row * F + fj] = (double)lim_sign[r];
+    }
+
+    /* actuator rows: J[6nc+n_fric+n_limit+r] = e_{fj}, same shape as friction. The
+       generic c-build gives c = qd_free_{fj}; the PD target bias −v* and the CFM
+       1/(b·dt) are added below, and PGS clamps λ to the ±taulim·dt box. */
+    for (int r = 0; r < n_act; r++) {
+        int fj  = free_map[act_dof[r]];
+        int row = 6*nc + n_fric + n_limit + r;
+        J[(size_t)row * F + fj] = 1.0;
     }
 
     PROF_TS(t_p2);
@@ -564,6 +615,17 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
         row_blocks[2*row + 1] = -1;
     }
 
+    /* actuator rows: Y = M⁻¹·e_{fj}; singleton block-support, same as friction. */
+    for (int r = 0; r < n_act; r++) {
+        int row = 6*nc + n_fric + n_limit + r;
+        int b   = pt->blk_of_body[act_body[r]];
+        double *Yi = Y + (size_t)row * F;
+        memcpy(Yi, J + (size_t)row * F, F * sizeof(double));   /* e_{fj} */
+        if (b >= 0) lcp_block_solve(pt, b, Yi, Mpack);
+        row_blocks[2*row + 0] = b;
+        row_blocks[2*row + 1] = -1;
+    }
+
     PROF_TS(t_p3);
 
     /* A = J · Yᵀ  (Mrow × Mrow, dense-stored). ROW-DRIVEN (I2): A[ri][rj] is a
@@ -631,6 +693,13 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
         double b_lim = (erp / dt) * (depth - slop > 0.0 ? depth - slop : 0.0);
         c_vec[row] -= b_lim;
     }
+    /* actuator rows: bias toward the PD target velocity v* (c already holds
+       qd_free on the row from the generic c-build), so w = A·λ + c is the
+       post-velocity error against the servo target. */
+    for (int r = 0; r < n_act; r++) {
+        int row = 6*nc + n_fric + n_limit + r;
+        c_vec[row] -= act_vstar[r];
+    }
 
     /* Add CFM diagonal regularization: R_diag = cfm_scale / (k·dt² + d·dt + ε).
        Folded directly into A's diagonal so PGS sees A_reg without an extra array. */
@@ -650,6 +719,14 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
         A[(base+3)*Mrow + (base+3)] += R_sp;
         A[(base+4)*Mrow + (base+4)] += R_rl;
         A[(base+5)*Mrow + (base+5)] += R_rl;
+    }
+    /* actuator rows: the compliance 1/(b·dt) IS the implicit PD (not a CFM
+       tweak) — it makes the unsaturated PGS fixed point solve
+       λ·(1/(b·dt)) = v* − qd⁺, i.e. τ = b·(v* − qd⁺), the same relation the
+       ABA fold applies. No cfm_scale here; the regularization is physical. */
+    for (int r = 0; r < n_act; r++) {
+        size_t row = (size_t)(6*nc + n_fric + n_limit + r);
+        A[row*Mrow + row] += 1.0 / (act_b[r] * dt);
     }
 
     PROF_TS(t_p4);
@@ -671,6 +748,10 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     /* limit rows warm-start from the per-DoF lam_limit carry (0 if cold). */
     for (int r = 0; r < n_limit; r++) {
         lam[6*nc + n_fric + r] = lam_limit ? lam_limit[lim_dof[r]] : 0.0;
+    }
+    /* actuator rows warm-start from the per-DoF lam_act carry (0 if cold). */
+    for (int r = 0; r < n_act; r++) {
+        lam[6*nc + n_fric + n_limit + r] = lam_act ? lam_act[act_dof[r]] : 0.0;
     }
 
     /* w = A · λ + c  (initial; incrementally maintained inside PGS) */
@@ -814,6 +895,26 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
             double ra = dl < 0 ? -dl : dl; if (ra > residual) residual = ra;
         }
 
+        /* (7) actuator rows: 1D box clamp to ±taulim·dt (constant bound, like joint
+           friction). The 1/(b·dt) compliance on A_rr makes the unclamped solve the
+           implicit PD; the projection is the torque limit. */
+        for (int r = 0; r < n_act; r++) {
+            int row = 6*nc + n_fric + n_limit + r;
+            double A_rr  = A[(size_t)row * Mrow + row];
+            double bound = taulim[act_dof[r]] * dt;       /* impulse units */
+            double row_excl = w[row] - A_rr * lam[row];
+            double v = -row_excl / A_rr;
+            if      (v >  bound) v =  bound;
+            else if (v < -bound) v = -bound;
+            double dl = v - lam[row];
+            if (dl != 0.0) {
+                double *Ai = A + (size_t)row * Mrow;
+                for (int i = 0; i < Mrow; i++) w[i] += Ai[i] * dl;
+                lam[row] = v;
+            }
+            double ra = dl < 0 ? -dl : dl; if (ra > residual) residual = ra;
+        }
+
         if (residual < tol) break;
     }
     *iters_out    = it + (it < iters ? 1 : 0);
@@ -846,6 +947,9 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     /* scatter limit λ to the per-DoF lam_limit carry (in-place warm-start). */
     if (lam_limit)
         for (int r = 0; r < n_limit; r++) lam_limit[lim_dof[r]] = lam[6*nc + n_fric + r];
+    /* scatter actuator λ to the per-DoF lam_act carry (in-place warm-start). */
+    if (lam_act)
+        for (int r = 0; r < n_act; r++) lam_act[act_dof[r]] = lam[6*nc + n_fric + n_limit + r];
 
     /* ---- PASS 6: body-frame f_ext synthesis -------------------------------- */
     /* For each active contact:

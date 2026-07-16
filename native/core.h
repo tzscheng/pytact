@@ -215,18 +215,21 @@ void choose_rotation(double *z_in, double *R);
  *   q[nq]        joint positions (limit-row activation)
  *   lam_in       warm-start λ, ctx_size, or NULL = cold start (zero λ).
  *                Layout [contact 6·TACT_MAX_PTS_PER_PAIR·max(n_pair,1) | fric nq |
- *                limit nq] — owned by lcp.c, mirrored by Python SolverState.
- *                Never mutated (caller ctx stays pure).
+ *                limit nq | act nq] — owned by lcp.c, mirrored by Python
+ *                SolverState. Never mutated (caller ctx stays pure).
  *   h            nb, nq, n_pair, dt
  *   core model   parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
- *                floss (0 = no friction row), jnt_lo/jnt_hi (limited iff
- *                lo<hi; both jtype 1/2 only), erp, slop, cfm_scale,
- *                v_rest_thresh, iters, tol
+ *                floss (0 = no friction row), taulim (0 = no actuator row),
+ *                jnt_lo/jnt_hi (limited iff lo<hi; jtype 1/2 only), erp, slop,
+ *                cfm_scale, v_rest_thresh, iters, tol
  *   core staged  T (fk at q), qd_free_buf (contact-free predictor),
- *                M_buf (joint-space mass matrix) — filled by tact_step_lcp
+ *                M_buf (joint-space mass matrix),
+ *                act_kp/act_kd/act_qref/act_qdref (per-step PD for the box-
+ *                bounded actuator rows; NULL = none this step)
+ *                — all filled by tact_step_lcp
  *
  * WRITES
- *   h->ctx_next        next warm-start λ (full [contact|fric|limit] vector)
+ *   h->ctx_next        next warm-start λ (full [contact|fric|limit|act] vector)
  *   h->contact_count   active contact points this step
  *   core: qdd          velocity correction dqd (qd_next = qd_free + dqd)
  *         f_ext        per-body contact wrench (zero where no contact)
@@ -271,6 +274,8 @@ struct tact_core_t {
     double *sk;
     double *floss;
     double *armature;
+    double *taulim;        /* per-DoF actuator torque bound (0 = unlimited); PD force
+                              solved as a box-bounded LCP actuator row when > 0 */
     double *jnt_lo;
     double *jnt_hi;
     int    *ctype;
@@ -291,6 +296,19 @@ struct tact_core_t {
     double *M_buf;
     double *lcp_ws;
     double *ctx_prev;      /* staging for the h->ctx_next-as-input mode */
+
+    /* Per-step actuator-row staging (tact_step_lcp → contact_lcp). Pointers into
+       the caller's arrays, valid only during the step call; NULL = no PD this
+       step (or taulim inactive) → no actuator rows. pd_kp_masked/pd_kd_masked
+       are nq scratch copies with taulim-bounded DoFs zeroed, passed to the ABA
+       predictor so the PD force for those DoFs comes exclusively from the LCP
+       actuator rows (never applied twice). */
+    const double *act_kp;
+    const double *act_kd;
+    const double *act_qref;
+    const double *act_qdref;
+    double *pd_kp_masked;
+    double *pd_kd_masked;
     int    *contact_i;
     double *contact_d;
     int     lcp_nc, lcp_iters;   /* last contact_lcp stats */

@@ -1196,7 +1196,9 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
                 qd_free, M, dt,
                 erp=0.2, slop=1e-4, cfm_scale=1e-6, v_rest_thresh=3e-2, iters=20, tol=1e-6, cff=False,
                 lam_contact_prev=None, floss=None, lam_fric_prev=None,
-                q=None, jnt_lo=None, jnt_hi=None, lam_limit_prev=None):
+                q=None, jnt_lo=None, jnt_hi=None, lam_limit_prev=None,
+                taulim=None, act_kp=None, act_kd=None, act_qref=None, act_qdref=None,
+                lam_act_prev=None):
     """
     Soft-constrained LCP contact solver with Coulomb friction (Stewart-Trinkle /
     Anitescu time-stepping with disk projection for the friction cone).
@@ -1343,7 +1345,32 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
                 lim.append((fpos_of[vidx], vidx, -1.0, (erp/dt) * max(0.0, depth - slop)))
     n_limit = len(lim)
 
-    if nc == 0 and n_fric == 0 and n_limit == 0:
+    # Actuator rows (mirrors lcp.c): the implicit PD torque rewrites as
+    # τ = b·(v* − qd⁺), b = Kp·dt + Kd, v* = (Kp(qref−q) + Kd·qdref)/b — a
+    # compliant velocity row with compliance 1/(b·dt) box-bounded by ±taulim·dt.
+    # Kp counts only with q_ref (ABA rule); qdref defaults to 0. rev/lin only.
+    # (fpos, vidx, bound=taulim·dt, b_eff, vstar).
+    act = []
+    if (taulim is not None and (act_qref is not None or act_qdref is not None)
+            and (act_kp is not None or act_kd is not None) and q is not None):
+        for i in range(len(jtype)):
+            if jtype[i] not in (1, 2):
+                continue
+            vidx = int(_vb[i])
+            if taulim[vidx] <= 0.0:
+                continue
+            Kp_i = float(act_kp[vidx]) if (act_kp is not None and act_qref is not None) else 0.0
+            Kd_i = float(act_kd[vidx]) if act_kd is not None else 0.0
+            b_eff = Kp_i * dt + Kd_i
+            if b_eff <= 0.0:
+                continue
+            qr_i  = float(act_qref[vidx])  if act_qref  is not None else 0.0
+            qdr_i = float(act_qdref[vidx]) if act_qdref is not None else 0.0
+            vstar = (Kp_i * (qr_i - q[vidx]) + Kd_i * qdr_i) / b_eff
+            act.append((fpos_of[vidx], vidx, float(taulim[vidx]) * dt, b_eff, vstar))
+    n_act = len(act)
+
+    if nc == 0 and n_fric == 0 and n_limit == 0 and n_act == 0:
         empty_info = {'nc': 0, 'iters': 0, 'residual': 0.0,
                       'points': [], 'normals': [], 'depths': [], 'R_tan': [],
                       'lam_n':    np.zeros(0), 'lam_t1':   np.zeros(0), 'lam_t2': np.zeros(0),
@@ -1351,6 +1378,7 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
                       'lam_contact_full': np.zeros(6 * MAX_PTS_PER_PAIR * npair),
                       'lam_fric_full': np.zeros(nq),
                       'lam_limit_full': np.zeros(nq),
+                      'lam_act_full': np.zeros(nq),
                       'cpair_idx': np.zeros(0, dtype=int)}
         empty = (np.zeros(nq), np.zeros(0), empty_info, np.zeros((nb, 6)))
         return empty + ([],) if cff else empty
@@ -1400,6 +1428,14 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
             J_lim[r, vidx] = sign
         J = np.vstack([J, J_lim])
 
+    # actuator rows: J = e_{vidx} (like friction); PD target bias v* and the
+    # 1/(b·dt) compliance are added to b/R below.
+    if n_act:
+        J_act = np.zeros((n_act, nq))
+        for r, (fpos, vidx, bound, b_eff, vstar) in enumerate(act):
+            J_act[r, vidx] = 1.0
+        J = np.vstack([J, J_act])
+
     # ---- Pass 3: Delassus A and stabilization c --------------------------
     # M from crb_featherstone has zero rows/cols where jtype==0 (fixed joints
     # have S=0), so it is singular. Work in the jtype>0 subspace (free_idx, computed
@@ -1443,6 +1479,11 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
     if n_limit:
         R = np.concatenate([R, np.zeros(n_limit)])
         b = np.concatenate([b, np.array([b_lim for (_, _, _, b_lim) in lim])])
+    # actuator rows: the 1/(b_eff·dt) compliance IS the implicit PD (physical, not a
+    # CFM tweak); bias toward the servo target velocity v*.
+    if n_act:
+        R = np.concatenate([R, np.array([1.0 / (b_eff * dt) for (_, _, _, b_eff, _) in act])])
+        b = np.concatenate([b, np.array([vstar for (_, _, _, _, vstar) in act])])
     A_diag = np.diag(A) + R
     np.fill_diagonal(A, A_diag)
     c = J_f @ qd_f - b                                    # w = A λ + c ≥ 0
@@ -1453,7 +1494,7 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
     # is fresh), then tangent, spin, roll.
     # Warm-start: if lam_contact_prev (length 6*MAX_PTS_PER_PAIR*npair, indexed by
     # slot = cpair_idx * MAX_PTS_PER_PAIR + sub_id) is given, seed lam from it.
-    lam = np.zeros(6 * nc + n_fric + n_limit)
+    lam = np.zeros(6 * nc + n_fric + n_limit + n_act)
     if lam_contact_prev is not None and len(lam_contact_prev) >= 6 * MAX_PTS_PER_PAIR * npair:
         for k in range(nc):
             slot = cdata[k][16] * MAX_PTS_PER_PAIR + cdata[k][17]
@@ -1464,6 +1505,9 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
     if n_limit and lam_limit_prev is not None:
         for r, (fpos, vidx, sign, b_lim) in enumerate(lim):
             lam[6*nc + n_fric + r] = lam_limit_prev[vidx]
+    if n_act and lam_act_prev is not None:
+        for r, (fpos, vidx, bound, b_eff, vstar) in enumerate(act):
+            lam[6*nc + n_fric + n_limit + r] = lam_act_prev[vidx]
     residual = 0.0
     it = 0
     for it in range(iters):
@@ -1534,6 +1578,16 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
             residual = max(residual, abs(v - lam[row]))
             lam[row] = v
 
+        # --- (7) actuator rows: 1D box clamp to ±taulim·dt (like joint friction) ---
+        for r, (fpos, vidx, bound, b_eff, vstar) in enumerate(act):
+            row = 6*nc + n_fric + n_limit + r
+            w_row = float(A[row, :] @ lam) - A[row, row] * lam[row] + c[row]
+            v = -w_row / A[row, row]
+            if   v >  bound: v =  bound
+            elif v < -bound: v = -bound
+            residual = max(residual, abs(v - lam[row]))
+            lam[row] = v
+
         if residual < tol:
             break
 
@@ -1550,6 +1604,9 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
     lam_limit_full = lam_limit_prev.copy() if lam_limit_prev is not None else np.zeros(nq)
     for r, (fpos, vidx, sign, b_lim) in enumerate(lim):
         lam_limit_full[vidx] = lam[6*nc + n_fric + r]
+    lam_act_full = lam_act_prev.copy() if lam_act_prev is not None else np.zeros(nq)
+    for r, (fpos, vidx, bound, b_eff, vstar) in enumerate(act):
+        lam_act_full[vidx] = lam[6*nc + n_fric + n_limit + r]
 
     lam_n    = lam_c[0::6]
     lam_t1   = lam_c[1::6]
@@ -1579,7 +1636,8 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
         'lam_n':    lam_n,    'lam_t1': lam_t1, 'lam_t2': lam_t2,
         'lam_spin': lam_spin, 'lam_r1': lam_r1, 'lam_r2': lam_r2,
         'lam_contact_full': lam_contact_full, 'lam_fric_full': lam_fric_full,
-        'lam_limit_full': lam_limit_full, 'cpair_idx': cpair_idx,
+        'lam_limit_full': lam_limit_full, 'lam_act_full': lam_act_full,
+        'cpair_idx': cpair_idx,
     }
 
     # ---- Pass 6: synthesize per-body spatial f_ext (for feedback compat) -

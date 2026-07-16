@@ -29,7 +29,7 @@ typedef struct bin_model_t {
 
     int *parent, *jtype;
     double *X, *I6, *Ti;
-    double *ff, *sk, *floss, *armature, *jnt_lo, *jnt_hi, *g;
+    double *ff, *sk, *floss, *armature, *taulim, *jnt_lo, *jnt_hi, *g;
     int *ctype, *cbody, *craycast, *cpair;
     double *cshape, *ctran, *cparam;
     double *crgba, *view, *light0;
@@ -191,6 +191,7 @@ static int take_chunk(bin_model_t *m, const char *tag,
             nbytes != (uint64_t)m->nb * 16 * sizeof(double)) return -1;
     } else if (strcmp(tag, "ff") == 0 || strcmp(tag, "sk") == 0 ||
                strcmp(tag, "floss") == 0 || strcmp(tag, "armature") == 0 ||
+               strcmp(tag, "taulim") == 0 ||
                strcmp(tag, "jnt_lo") == 0 || strcmp(tag, "jnt_hi") == 0 ||
                strcmp(tag, "q0") == 0 || strcmp(tag, "qd0") == 0) {
         if (dtype != BIN_DTYPE_F64 || !shape_is(ch, 1, (uint64_t)m->nq, 0, 0, 0) ||
@@ -245,7 +246,8 @@ static int take_chunk(bin_model_t *m, const char *tag,
     TAKE_I32(feed_offsets); TAKE_I32(feed_idx); TAKE_I32(fbody);
 
     TAKE_F64(X); TAKE_F64(I6); TAKE_F64(Ti); TAKE_F64(ff); TAKE_F64(sk);
-    TAKE_F64(floss); TAKE_F64(armature); TAKE_F64(jnt_lo); TAKE_F64(jnt_hi);
+    TAKE_F64(floss); TAKE_F64(armature); TAKE_F64(taulim);
+    TAKE_F64(jnt_lo); TAKE_F64(jnt_hi);
     TAKE_F64(g); TAKE_F64(cshape); TAKE_F64(ctran); TAKE_F64(cparam);
     TAKE_F64(crgba); TAKE_F64(q0); TAKE_F64(qd0); TAKE_F64(view); TAKE_F64(light0);
     TAKE_F64(ftran); TAKE_F64(ftran_inv);
@@ -259,14 +261,16 @@ static int take_chunk(bin_model_t *m, const char *tag,
 
 static int model_ready(const bin_model_t *m)
 {
-    int expect_lam = 0;
+    int expect_lam = 0, expect_lam_legacy = 0;
     if (m && m->have_dims && m->nq >= 0 && m->n_pair >= 0) {
-        expect_lam = 6 * TACT_MAX_PTS_PER_PAIR * (m->n_pair > 0 ? m->n_pair : 1) + 2 * m->nq;
+        int c_ofs = 6 * TACT_MAX_PTS_PER_PAIR * (m->n_pair > 0 ? m->n_pair : 1);
+        expect_lam        = c_ofs + 3 * m->nq;   /* [contact | fric | limit | act] */
+        expect_lam_legacy = c_ofs + 2 * m->nq;   /* pre-taulim bins (no act block) */
     }
     return m && m->have_dims && m->have_sim_f64 && m->have_sim_i32 &&
            m->nb >= 0 && m->nq >= 0 && m->n_shape >= 0 && m->n_pair >= 0 &&
            m->n_frame >= 0 && m->n_feed >= 0 && m->lam_size > 0 &&
-           m->lam_size == expect_lam &&
+           (m->lam_size == expect_lam || m->lam_size == expect_lam_legacy) &&
            m->dt > 0.0 &&
            (m->nb == 0 || (m->parent && m->jtype && m->X && m->I6 && m->Ti)) &&
            (m->nq == 0 || (m->ff && m->sk && m->floss && m->armature &&
@@ -319,7 +323,8 @@ static void destroy_bin_model(bin_model_t *m)
     free_ptr((void**)&m->parent); free_ptr((void**)&m->jtype);
     free_ptr((void**)&m->X); free_ptr((void**)&m->I6); free_ptr((void**)&m->Ti);
     free_ptr((void**)&m->ff); free_ptr((void**)&m->sk); free_ptr((void**)&m->floss);
-    free_ptr((void**)&m->armature); free_ptr((void**)&m->jnt_lo); free_ptr((void**)&m->jnt_hi);
+    free_ptr((void**)&m->armature); free_ptr((void**)&m->taulim);
+    free_ptr((void**)&m->jnt_lo); free_ptr((void**)&m->jnt_hi);
     free_ptr((void**)&m->g);
     free_ptr((void**)&m->ctype); free_ptr((void**)&m->cbody); free_ptr((void**)&m->craycast);
     free_ptr((void**)&m->cpair); free_ptr((void**)&m->cshape); free_ptr((void**)&m->ctran);
@@ -341,7 +346,7 @@ static int create_handle(bin_model_t *m)
     if (!model_ready(m)) return -1;
     int rc = tact_create_from_arrays(
         m->nb, m->parent, m->jtype, m->X, m->I6, m->Ti, m->ff, m->sk,
-        m->floss, m->armature, m->jnt_lo, m->jnt_hi, m->g, m->dt, m->integrator,
+        m->floss, m->armature, m->taulim, m->jnt_lo, m->jnt_hi, m->g, m->dt, m->integrator,
         m->n_shape, m->n_pair, m->ctype, m->cbody, m->cshape, m->ctran, m->cparam,
         m->craycast, m->cpair, m->erp, m->slop, m->cfm_scale, m->v_rest_thresh,
         m->iters, m->tol, &m->h);

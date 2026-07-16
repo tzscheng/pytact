@@ -12,7 +12,7 @@
 #include "core.h"
 
 
-int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *I6, double *Ti, double *ff, double *sk, double *floss, double *armature, double *jnt_lo, double *jnt_hi, double *g, double dt, int integrator, int n_shape, int n_pair, int *ctype, int *cbody, double *cshape, double *ctran, double *cparam, int *craycast, int *cpair, double erp, double slop, double cfm_scale, double v_rest_thresh, int iters, double tol, tact_t **out)
+int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *I6, double *Ti, double *ff, double *sk, double *floss, double *armature, double *taulim, double *jnt_lo, double *jnt_hi, double *g, double dt, int integrator, int n_shape, int n_pair, int *ctype, int *cbody, double *cshape, double *ctran, double *cparam, int *craycast, int *cpair, double erp, double slop, double cfm_scale, double v_rest_thresh, int iters, double tol, tact_t **out)
 {
     if (!out) return -1;
     *out = NULL;
@@ -37,21 +37,22 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
     if (nq > 0 && (!ff || !sk)) return -2;
 
     /* LCP workspace size (matches slice layout in lcp.c). The max constraint-row
-     * count is M2 = 6·Pm + 2·nq (6 per contact-point + 1 friction + 1 limit per DoF),
-     * so the row-sized buffers (J, Y = M2·nq; A = M2²; c_vec/lam/w = 3·M2; row_blocks
-     * = 2·M2 ints) must use M2, NOT 6·Pm — otherwise a model with more frictive/limited
-     * DoFs than contact-row capacity overflows. The int tail (ci,cj,cp_idx,sub_id=4·Pm;
-     * free_map=nq; row_blocks=2·M2; fric_dof/body + limit_dof/sign/body = 5·nq) is
-     * folded in (as doubles) with slack below. */
+     * count is M2 = 6·Pm + 3·nq (6 per contact-point + 1 friction + 1 limit + 1
+     * actuator per DoF), so the row-sized buffers (J, Y = M2·nq; A = M2²;
+     * c_vec/lam/w = 3·M2; row_blocks = 2·M2 ints) must use M2, NOT 6·Pm —
+     * otherwise a model with more constraint DoFs than contact-row capacity
+     * overflows. The int tail (ci,cj,cp_idx,sub_id=4·Pm; free_map=nq;
+     * row_blocks=2·M2; fric_dof/body + limit_dof/sign/body + act_dof/body = 7·nq)
+     * is folded in (as doubles) with slack below. */
     size_t Pm_max = (size_t)TACT_MAX_PTS_PER_PAIR * (size_t)npair_max;
-    size_t M2_max = (size_t)6*Pm_max + (size_t)2*nq;     /* max constraint rows */
+    size_t M2_max = (size_t)6*Pm_max + (size_t)3*nq;     /* max constraint rows */
     size_t lcp_ws_doubles = M2_max*M2_max               /* A */
                           + (size_t)2*M2_max*nq          /* J + Y */
                           + (size_t)nq*nq                /* Mpack */
                           + (size_t)3*M2_max             /* c_vec, lam, w */
                           + (size_t)25*Pm_max            /* p_world, R_tan, depth, mat */
                           + (size_t)10*nq                /* tmp, J6, slack */
-                          + (size_t)(2*Pm_max + M2_max + 4*nq)  /* int tail as doubles (overestimate) */
+                          + (size_t)(2*Pm_max + M2_max + 6*nq)  /* int tail as doubles (overestimate) */
                           + 128;
 
     /* aba/crb/rne workspace (flat layout, see rbd.c aba_featherstone):
@@ -65,7 +66,8 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
     /* size doubles + ints separately; place doubles first so the carve stays 8-aligned */
     size_t bytes_dbl = sizeof(double) * (
         36*nb + 36*nb + 16*nb              /* X, I6, Ti */
-      + nq + nq + nq + nq                   /* ff, sk, floss, armature (per-DoF) */
+      + nq + nq + nq + nq + nq              /* ff, sk, floss, armature, taulim (per-DoF) */
+      + nq + nq                             /* pd_kp_masked, pd_kd_masked (per-step ABA scratch) */
       + nq + nq                             /* jnt_lo, jnt_hi (per-DoF) */
       + 3*n_shape + 16*n_shape + 13*n_shape /* cshape, ctran, cparam */
       + 16*nb                              /* T */
@@ -75,7 +77,7 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
       + nq                                  /* qd_free_buf (LCP predictor, per-DoF) */
       + nq*nq                               /* M_buf (joint-space mass matrix) */
       + 10*Pm_max                           /* contact_d reports: p,n,f,depth */
-      + 2*(6*Pm_max + 2*nq)                 /* ctx_next + ctx_prev (= ctx_size warm-start λ each) */
+      + 2*(6*Pm_max + 3*nq)                 /* ctx_next + ctx_prev (= ctx_size warm-start λ each) */
       + lcp_ws_doubles                      /* lcp_ws (contact_lcp workspace) */
     );
     /* ints: parent, jtype, q_base, v_base, nq_per_body, nv_per_body (6*nb)
@@ -100,7 +102,7 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
     h->dt = dt;
     c->erp = erp; c->slop = slop; c->cfm_scale = cfm_scale;
     c->v_rest_thresh = v_rest_thresh; c->iters = iters; c->tol = tol;
-    h->ctx_size = (int)(6 * TACT_MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1) + 2 * nq);
+    h->ctx_size = (int)(6 * TACT_MAX_PTS_PER_PAIR * (n_pair > 0 ? n_pair : 1) + 3 * nq);
     c->g[0] = g[0]; c->g[1] = g[1]; c->g[2] = g[2];
 
     char *p = (char*)c->arena;
@@ -112,6 +114,9 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
     CARVE_DBL(c->sk,       nq);
     CARVE_DBL(c->floss,    nq);
     CARVE_DBL(c->armature, nq);
+    CARVE_DBL(c->taulim,   nq);
+    CARVE_DBL(c->pd_kp_masked, nq);
+    CARVE_DBL(c->pd_kd_masked, nq);
     CARVE_DBL(c->jnt_lo,   nq);
     CARVE_DBL(c->jnt_hi,   nq);
     CARVE_DBL(c->cshape,   3*n_shape);
@@ -176,6 +181,8 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
     else       memset(c->floss, 0,     nq*sizeof(double));
     if (armature) memcpy(c->armature, armature, nq*sizeof(double));
     else          memset(c->armature, 0,        nq*sizeof(double));
+    if (taulim) memcpy(c->taulim, taulim, nq*sizeof(double));
+    else        memset(c->taulim, 0,      nq*sizeof(double));
     if (jnt_lo) memcpy(c->jnt_lo, jnt_lo, nq*sizeof(double)); else memset(c->jnt_lo, 0, nq*sizeof(double));
     if (jnt_hi) memcpy(c->jnt_hi, jnt_hi, nq*sizeof(double)); else memset(c->jnt_hi, 0, nq*sizeof(double));
     if (n_shape > 0) {
@@ -462,7 +469,7 @@ static void feedback_eval(tact_t *h, double *q, double *qd, double *tau)
    Its payload is the PGS warm-start λ vector — ONE vector holding every row
    type, blocks in row-table order (the SolverState layout, the C↔Python ABI):
        [contact (6·TACT_MAX_PTS_PER_PAIR·max(n_pair,1), slot-indexed)
-        | joint-friction (nq) | joint-limit (nq)]
+        | joint-friction (nq) | joint-limit (nq) | actuator (nq)]
    The next warm-start is written to the engine-owned h->ctx_next (same idiom
    as q_next/qd_next). Three ways to drive it:
      - pure threading: copy h->ctx_next into your own ctx buffer each step and
@@ -488,6 +495,29 @@ int tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, d
     /* Stage 1: forward kinematics */
     _fk(c->T, h->nb, c->Ti, c->parent, c->jtype, q);
 
+    /* Actuator torque bound (taulim > 0): a bounded DoF's PD force is solved as
+       a box-bounded LCP actuator row instead of the unbounded implicit fold in
+       ABA — mask its gains out of the predictor (PD applied exactly once) and
+       stage the originals for contact_lcp. taulim == 0 everywhere or PD off →
+       legacy path, bit-identical. */
+    double *Kp_aba = Kp_j, *Kd_aba = Kd_j;
+    c->act_kp = NULL; c->act_kd = NULL; c->act_qref = NULL; c->act_qdref = NULL;
+    if ((q_ref || qd_ref) && (Kp_j || Kd_j)) {
+        int n_bounded = 0;
+        for (int i = 0; i < h->nq; i++) if (c->taulim[i] > 0.0) n_bounded++;
+        if (n_bounded > 0) {
+            for (int i = 0; i < h->nq; i++) {
+                int bounded = (c->taulim[i] > 0.0);
+                c->pd_kp_masked[i] = (Kp_j && !bounded) ? Kp_j[i] : 0.0;
+                c->pd_kd_masked[i] = (Kd_j && !bounded) ? Kd_j[i] : 0.0;
+            }
+            Kp_aba = Kp_j ? c->pd_kp_masked : NULL;
+            Kd_aba = Kd_j ? c->pd_kd_masked : NULL;
+            c->act_kp = Kp_j; c->act_kd = Kd_j;
+            c->act_qref = q_ref; c->act_qdref = qd_ref;
+        }
+    }
+
     /* free predictor: aba_featherstone(f_ext=0). Output qdd is no-contact joint
        accel. f/a/v are overwritten by RNE below (post-contact spatial dynamics).
        Kp_j/Kd_j/q_ref/qd_ref pass through to aba's implicit PD path
@@ -495,7 +525,7 @@ int tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, d
     memset(c->f_ext, 0, 6*h->nb*sizeof(double));
     aba_featherstone(h->nb, c->X, c->I6, c->parent, c->jtype, q, qd, tau,
                      c->f_ext, c->g, c->qdd, h->f, h->a, h->v, c->workspace,
-                     c->ff, c->sk, c->armature, h->dt, Kp_j, Kd_j, q_ref, qd_ref, /*full=*/0);
+                     c->ff, c->sk, c->armature, h->dt, Kp_aba, Kd_aba, q_ref, qd_ref, /*full=*/0);
     for (int i = 0; i < h->nq; i++) c->qd_free_buf[i] = qd[i] + c->qdd[i] * h->dt;
 
     /* joint-space mass matrix at q. Add armature to the diagonal (rotor/reflected

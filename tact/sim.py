@@ -23,24 +23,29 @@ class SolverState(NamedTuple):
     arithmetic):
 
         [contact (6·MAX_PTS_PER_PAIR·max(n_pair,1), slot-indexed)
-         | joint-friction (nq, per-DoF) | joint-limit (nq, per-DoF)]
+         | joint-friction (nq, per-DoF) | joint-limit (nq, per-DoF)
+         | actuator (nq, per-DoF)]
 
     A future constraint-row type appends a block here (and bumps zero_state)
     instead of growing tact_step_lcp's signature / this tuple's fields. `nq` is
     layout metadata for the read-only block views below — introspection/debug
     only; step() consumes `lam` whole."""
-    lam: np.ndarray          # unified PGS warm-start λ: [contact | fric | limit]
+    lam: np.ndarray          # unified PGS warm-start λ: [contact | fric | limit | act]
     nq: int                  # per-DoF block length (layout metadata)
 
     @property
     def lam_contact(self):   # contact-cone block, slot = cpair_idx*MAX_PTS_PER_PAIR + sub_id
-        return self.lam[:len(self.lam) - 2 * self.nq]
+        return self.lam[:len(self.lam) - 3 * self.nq]
     @property
     def lam_fric(self):      # joint Coulomb friction block, per-DoF
-        c = len(self.lam) - 2 * self.nq
+        c = len(self.lam) - 3 * self.nq
         return self.lam[c:c + self.nq]
     @property
     def lam_limit(self):     # joint limit block, per-DoF
+        c = len(self.lam) - 2 * self.nq
+        return self.lam[c:c + self.nq]
+    @property
+    def lam_act(self):       # actuator (torque-bounded PD) block, per-DoF
         return self.lam[len(self.lam) - self.nq:]
 
 # NOTE: the free-joint locking mechanism (YAML `lock: true` → magic 6-DoF PD
@@ -409,6 +414,7 @@ class Model:
         self.sk = np.array([], dtype=float)  # joint spring stiffness
         self.floss = np.array([], dtype=float)  # joint Coulomb friction bound (frictionloss); solved as an LCP constraint row
         self.armature = np.array([], dtype=float)  # joint rotor/reflected inertia (MuJoCo armature); added to M diagonal + ABA d
+        self.taulim = np.array([], dtype=float)  # actuator torque bound (taulim); PD force solved as a box-bounded LCP actuator row. 0 = unlimited
         self.jnt_lo = np.array([], dtype=float)  # joint lower limit (rev: rad, lin: m); limited iff lo < hi
         self.jnt_hi = np.array([], dtype=float)  # joint upper limit; both solved as one-sided LCP constraint rows
 
@@ -929,6 +935,7 @@ class Model:
                     self.sk       = np.append(self.sk, 0)
                     self.floss    = np.append(self.floss, 0)   # free-joint DoFs: no Coulomb friction (v1)
                     self.armature = np.append(self.armature, 0)
+                    self.taulim   = np.append(self.taulim, 0)  # free-joint DoFs: unactuated, no torque bound
                     self.jnt_lo   = np.append(self.jnt_lo, 0)   # free-joint DoFs: no limits (v1)
                     self.jnt_hi   = np.append(self.jnt_hi, 0)
                     self.active.append(0)
@@ -998,6 +1005,19 @@ class Model:
                     # diagonal + ABA d. kg·m² (rev) / kg (lin). 0 = off.
                     if 'armature' in body['joint']: self.armature = np.append(self.armature, body['joint']['armature'])
                     else: self.armature = np.append(self.armature, 0)
+
+                    # actuator torque bound (N·m rev / N lin, symmetric ±taulim):
+                    # the joint PD force is solved as a box-bounded LCP actuator row
+                    # instead of the unbounded implicit ABA fold. 0 = unlimited
+                    # (legacy). Scalar only — asymmetric bounds are not supported.
+                    if 'taulim' in body['joint']:
+                        tl = body['joint']['taulim']
+                        if not np.isscalar(tl):
+                            raise ValueError(f"joint taulim must be a scalar (symmetric ±bound), got {tl!r}")
+                        if tl < 0:
+                            raise ValueError(f"joint taulim must be >= 0, got {tl!r}")
+                        self.taulim = np.append(self.taulim, tl)
+                    else: self.taulim = np.append(self.taulim, 0)
 
                     # joint range limit: `limit: [lo, hi]` — DEGREES for rev / m for lin
                     # (same convention as q0), stored internally in rad/m. Solved as
@@ -1198,6 +1218,7 @@ class Model:
         self.sk    = np.concatenate([self.sk[:nq_lo],    self.sk[nq_hi:]])
         self.floss = np.concatenate([self.floss[:nq_lo], self.floss[nq_hi:]])
         self.armature = np.concatenate([self.armature[:nq_lo], self.armature[nq_hi:]])
+        self.taulim = np.concatenate([self.taulim[:nq_lo], self.taulim[nq_hi:]])
         self.jnt_lo = np.concatenate([self.jnt_lo[:nq_lo], self.jnt_lo[nq_hi:]])
         self.jnt_hi = np.concatenate([self.jnt_hi[:nq_lo], self.jnt_hi[nq_hi:]])
         self.active = self.active[:nq_lo] + self.active[nq_hi:]
@@ -1338,6 +1359,7 @@ class Model:
         self._build_sk     = np.ascontiguousarray(np.asarray(self.sk), dtype=np.float64)
         self._build_floss  = np.ascontiguousarray(np.asarray(self.floss), dtype=np.float64)
         self._build_armature = np.ascontiguousarray(np.asarray(self.armature), dtype=np.float64)
+        self._build_taulim = np.ascontiguousarray(np.asarray(self.taulim), dtype=np.float64)
         self._build_jnt_lo = np.ascontiguousarray(np.asarray(self.jnt_lo), dtype=np.float64)
         self._build_jnt_hi = np.ascontiguousarray(np.asarray(self.jnt_hi), dtype=np.float64)
         self._build_g      = np.ascontiguousarray(np.asarray(self.g),  dtype=np.float64)
@@ -1367,6 +1389,7 @@ class Model:
             self._build_sk.ctypes.data_as(_DBL),
             self._build_floss.ctypes.data_as(_DBL),
             self._build_armature.ctypes.data_as(_DBL),
+            self._build_taulim.ctypes.data_as(_DBL),
             self._build_jnt_lo.ctypes.data_as(_DBL),
             self._build_jnt_hi.ctypes.data_as(_DBL),
             self._build_g.ctypes.data_as(_DBL),
@@ -1667,7 +1690,7 @@ class Model:
         topology change (add/delete) since the λ layout is sized by
         (n_pair, nq): 6*MAX_PTS_PER_PAIR*max(n_pair,1) contact slots + 2*nq."""
         npair, nq = len(self.cpair), len(self.floss)
-        return SolverState(lam=np.zeros(6 * MAX_PTS_PER_PAIR * max(npair, 1) + 2 * nq),
+        return SolverState(lam=np.zeros(6 * MAX_PTS_PER_PAIR * max(npair, 1) + 3 * nq),
                            nq=nq)
 
     def step(self, q, qd, tau=None, q_ref=None, qd_ref=None, kp=None, kd=None, ctx=None):
@@ -1679,6 +1702,10 @@ class Model:
         # q_ref/qd_ref activate internal joint-space PD on the LCP path; when both None,
         # behavior is bit-identical to pre-PD step.
         # kp/kd: per-DoF implicit joint-PD gains for THIS step (length nq, like tau).
+        # DoFs with YAML `taulim` > 0 solve their PD force as a box-bounded LCP
+        # actuator row (|τ| ≤ taulim, newton/MuJoCo actuatorfrcrange semantics)
+        # instead of the unbounded implicit ABA fold; taulim is a plant parameter
+        # (motor hardware), so it lives in YAML unlike the per-step gains below.
         # Gains are control-policy inputs, not plant parameters (YAML `k:` removed
         # 2026-06-07) — controllers switching modes pass per-mode gains here.
         # A reference without its gain is an error (the old silent zero-gain
@@ -1743,7 +1770,18 @@ class Model:
             #are all folded into ABA's articulated inertia.
             T = _fk(self.Ti, self.parent, self.jtype, q)
             f_ext_zero = np.zeros((len(self.X), 6))
-            qdd_free, f, a, v = aba_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, tau, f_ext_zero, self.g, full=True, ff=self.ff, sk=self.sk, armature=self.armature, dt=self.dt, Kp_j=Kp, Kd_j=Kd, q_ref=q_ref, qd_ref=qd_ref)
+            # taulim > 0 DoFs: PD force is solved as a box-bounded LCP actuator row —
+            # mask those gains out of the ABA predictor (PD applied exactly once)
+            # and hand the originals to contact_lcp. Mirrors tact_step_lcp (C).
+            Kp_aba, Kd_aba = Kp, Kd
+            act_on = ((q_ref is not None or qd_ref is not None)
+                      and (Kp is not None or Kd is not None)
+                      and np.any(self.taulim > 0))
+            if act_on:
+                bounded = self.taulim > 0
+                if Kp is not None: Kp_aba = np.where(bounded, 0.0, Kp)
+                if Kd is not None: Kd_aba = np.where(bounded, 0.0, Kd)
+            qdd_free, f, a, v = aba_featherstone(self.X, self.I6, self.parent, self.jtype, q, qd, tau, f_ext_zero, self.g, full=True, ff=self.ff, sk=self.sk, armature=self.armature, dt=self.dt, Kp_j=Kp_aba, Kd_j=Kd_aba, q_ref=q_ref, qd_ref=qd_ref)
             qd_free = qd + qdd_free * self.dt
             M = crb_featherstone(self.X, self.I6, self.parent, self.jtype, q)
             M = M + np.diag(self.armature)   # armature (rotor inertia) on the M diagonal — matches the C path + ABA predictor above
@@ -1753,15 +1791,20 @@ class Model:
             lam_contact_prev = None if ctx is None else ctx.lam_contact
             lam_fric_prev    = None if ctx is None else ctx.lam_fric
             lam_limit_prev   = None if ctx is None else ctx.lam_limit
+            lam_act_prev     = None if ctx is None else ctx.lam_act
             dqd, lam, lcp_info, f_ext = contact_lcp(T, self.parent, self.jtype, self.cpair, self.ctype, self.cbody, self.ctran, self.cshape, self.cparam, qd_free, M, self.dt,
                                                     erp=self.erp, slop=self.slop, cfm_scale=self.cfm_scale, v_rest_thresh=self.v_rest_thresh, iters=self.iters, tol=self.tol,
                                                     lam_contact_prev=lam_contact_prev, floss=self.floss, lam_fric_prev=lam_fric_prev,
-                                                    q=q, jnt_lo=self.jnt_lo, jnt_hi=self.jnt_hi, lam_limit_prev=lam_limit_prev)
+                                                    q=q, jnt_lo=self.jnt_lo, jnt_hi=self.jnt_hi, lam_limit_prev=lam_limit_prev,
+                                                    taulim=self.taulim if act_on else None,
+                                                    act_kp=Kp if act_on else None, act_kd=Kd if act_on else None,
+                                                    act_qref=q_ref if act_on else None, act_qdref=qd_ref if act_on else None,
+                                                    lam_act_prev=lam_act_prev)
             cblk = lcp_info['lam_contact_full']
             clen = 6 * MAX_PTS_PER_PAIR * max(len(self.cpair), 1)
             if len(cblk) != clen:   # npair==0: rbd sizes by npair (0), layout keeps the 1-pair slot
                 cblk = np.zeros(clen)
-            ctx_next = SolverState(lam=np.concatenate([cblk, lcp_info['lam_fric_full'], lcp_info['lam_limit_full']]),
+            ctx_next = SolverState(lam=np.concatenate([cblk, lcp_info['lam_fric_full'], lcp_info['lam_limit_full'], lcp_info['lam_act_full']]),
                                    nq=len(self.floss))   #carry for next step's warm-start
             qd_next = qd_free + dqd
             q_base, _, _, _, _, _ = _build_qidx(self.jtype)

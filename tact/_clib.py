@@ -27,9 +27,9 @@ _FLT = ctypes.POINTER(ctypes.c_float)
 #nb, parent, jtype, X, I6, Ti, ff, sk, g, dt, integrator, n_shape, n_pair, ctype, cbody, cshape, ctran, cparam, craycast, cpair,
 #  erp, slop, cfm_scale, v_rest_thresh, iters, tol   (last 6 = global LCP solver knobs from YAML sim:)
 #(mu is now per-material in cparam, no longer a global; ff/sk are per-joint damping/spring -- C side subtracts ff*qd + sk*q from tau before the integrator;
-# floss = per-DoF joint Coulomb friction (constraint row); armature = per-DoF rotor/reflected inertia; jnt_lo/jnt_hi = per-DoF joint limit range (constraint row, limited iff lo<hi); craycast is per-shape int flag: 1=visible to ray, 0=skipped)
-# 10 _DBL before dt: X, I6, Ti, ff, sk, floss, armature, jnt_lo, jnt_hi, g
-clib.tact_create_from_arrays.argtypes = [ctypes.c_int, _INT, _INT, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_int, _INT, _INT, _DBL, _DBL, _DBL, _INT, _INT,
+# floss = per-DoF joint Coulomb friction (constraint row); armature = per-DoF rotor/reflected inertia; taulim = per-DoF actuator torque bound (box-bounded LCP actuator row, 0=unlimited); jnt_lo/jnt_hi = per-DoF joint limit range (constraint row, limited iff lo<hi); craycast is per-shape int flag: 1=visible to ray, 0=skipped)
+# 11 _DBL before dt: X, I6, Ti, ff, sk, floss, armature, taulim, jnt_lo, jnt_hi, g
+clib.tact_create_from_arrays.argtypes = [ctypes.c_int, _INT, _INT, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_int, _INT, _INT, _DBL, _DBL, _DBL, _INT, _INT,
                                          ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_double, ctypes.POINTER(ctypes.c_void_p)]
 clib.tact_create_from_arrays.restype  = ctypes.c_int
 

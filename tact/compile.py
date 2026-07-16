@@ -88,7 +88,7 @@ def compile(src: str | os.PathLike[str], out: str | os.PathLike[str]) -> None:
     n_frame = len(model.fbody)
     n_feed = len(model.feeds)
     y_size = int(getattr(model, "_y_size", 0))
-    lam_size = int(6 * 4 * max(n_pair, 1) + 2 * nq)
+    lam_size = int(6 * 4 * max(n_pair, 1) + 3 * nq)   # [contact | fric | limit | act]
 
     chunks: list[tuple[bytes, bytes]] = []
 
@@ -111,6 +111,7 @@ def compile(src: str | os.PathLike[str], out: str | os.PathLike[str]) -> None:
     add_f64("sk", model._build_sk)
     add_f64("floss", model._build_floss)
     add_f64("armature", model._build_armature)
+    add_f64("taulim", model._build_taulim)
     add_f64("jnt_lo", model._build_jnt_lo)
     add_f64("jnt_hi", model._build_jnt_hi)
     add_f64("g", model._build_g)
