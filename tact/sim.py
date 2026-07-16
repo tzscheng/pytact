@@ -974,12 +974,58 @@ class Model:
                 if   body['joint']['type'] == 'fixed': self.fixed.append(len(self.jtype)); self.jtype.append(0)
                 elif body['joint']['type'] == 'rev': self.jtype.append(1); self.active.append(1)
                 elif body['joint']['type'] == 'lin': self.jtype.append(2); self.active.append(1)
+                elif body['joint']['type'] == 'ball': self.jtype.append(4); self.active += [1, 1, 1]
+                else: raise ValueError(f"body {body['name']!r}: unknown joint type {body['joint']['type']!r}")
 
                 self.Ti.append(xyzeuler_to_homogeneous(body['joint']['pos'] + body['joint']['euler'], eulerseq=body['joint']['eulerseq'], deg=True))
                 #print(len(self.Ti), body['joint']['pos'] + body['joint']['euler'])
 
+                # Ball joint (jtype=4, 3 DoF): q = child-frame rotation vector,
+                # qd = child-frame ω. YAML q0 = [ex, ey, ez] Euler angles in
+                # degrees (joint's eulerseq), stored internally as the rotation
+                # vector via Euler → R → log. qd0 = ω in rad/s (3-vec).
+                # v1 scope: no damping/spring/frictionloss/limit on ball DoFs —
+                # the implicit ABA fold and the friction/limit rows are 1-DoF
+                # only; PD on ball DoFs is solved as the LCP actuator row group
+                # (exp-map PD, taulim-bounded). armature/taulim are scalars
+                # replicated across the 3 DoFs.
+                if body['joint']['type'] == 'ball':
+                    for key in ('damping', 'spring', 'frictionloss', 'limit'):
+                        if key in body['joint']:
+                            raise ValueError(f"body {body['name']!r}: `{key}` is not "
+                                             f"supported on ball joints (v1)")
+                    if 'q0' in body['joint']:
+                        R0 = euler_to_rotation(body['joint']['q0'],
+                                               eulerseq=body['joint']['eulerseq'], deg=True)
+                        self.q0 = np.append(self.q0, logmap_so3(R0))
+                    else:
+                        self.q0 = np.append(self.q0, [0, 0, 0])
+                    if 'qd0' in body['joint']:
+                        self.qd0 = np.append(self.qd0, body['joint']['qd0'])
+                    else:
+                        self.qd0 = np.append(self.qd0, [0, 0, 0])
+                    arm = body['joint'].get('armature', 0)
+                    tl  = body['joint'].get('taulim', 0)
+                    if not np.isscalar(tl):
+                        raise ValueError(f"joint taulim must be a scalar (symmetric ±bound), got {tl!r}")
+                    if tl < 0:
+                        raise ValueError(f"joint taulim must be >= 0, got {tl!r}")
+                    for k in range(3):
+                        self.ff       = np.append(self.ff, 0)
+                        self.sk       = np.append(self.sk, 0)
+                        self.floss    = np.append(self.floss, 0)
+                        self.armature = np.append(self.armature, arm)
+                        self.taulim   = np.append(self.taulim, tl)
+                        self.jnt_lo   = np.append(self.jnt_lo, 0)
+                        self.jnt_hi   = np.append(self.jnt_hi, 0)
+                    if 'k' in body['joint']:
+                        raise ValueError(
+                            f"joint `k:` was removed from the YAML schema (2026-06-07) — "
+                            f"gains are per-step control inputs now: delete `k:` from "
+                            f"body '{body['name']}' and pass kp/kd to step()")
+
                 # Fixed joints carry no per-DoF state (q0/qd0/ff/sk/Kp_j/Kd_j slots).
-                if body['joint']['type'] != 'fixed':
+                elif body['joint']['type'] != 'fixed':
                     if 'q0' in body['joint']:
                         if   body['joint']['type'] == 'rev': self.q0 = np.append(self.q0, np.deg2rad(body['joint']['q0']))
                         elif body['joint']['type'] == 'lin': self.q0 = np.append(self.q0, body['joint']['q0'])
@@ -1774,10 +1820,13 @@ class Model:
             # mask those gains out of the ABA predictor (PD applied exactly once)
             # and hand the originals to contact_lcp. Mirrors tact_step_lcp (C).
             Kp_aba, Kd_aba = Kp, Kd
+            # ball (jtype=4) DoFs solve PD exclusively as LCP actuator rows (the
+            # ABA fold is 1-DoF-only), so act staging fires whenever a ball joint
+            # is present — bounded or not. Mirrors tact_step_lcp (C).
             act_on = ((q_ref is not None or qd_ref is not None)
                       and (Kp is not None or Kd is not None)
-                      and np.any(self.taulim > 0))
-            if act_on:
+                      and (np.any(self.taulim > 0) or any(jt == 4 for jt in self.jtype)))
+            if act_on and np.any(self.taulim > 0):
                 bounded = self.taulim > 0
                 if Kp is not None: Kp_aba = np.where(bounded, 0.0, Kp)
                 if Kd is not None: Kd_aba = np.where(bounded, 0.0, Kd)

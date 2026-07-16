@@ -74,6 +74,14 @@ void crm  (double *M, double *v);
 void crf  (double *M, double *v);
 void jcalc(double *XJ, double *S, int jtype, double q);
 void jcalc6(double *XJ, double *S, const double *q6);
+void jcalc_ball(double *XJ, double *S, const double *q3);
+
+/* Per-body velocity-DoF count by joint type. Single source of truth for the
+ * jtype → nv mapping: 0=fixed(0), 1=rev(1), 2=lin(1), 3=free(6), 4=ball(3).
+ * Under the axis-angle convention nq_per_body == nv_per_body for every type. */
+static inline int jt_nv(int jt){
+    return (jt == 3) ? 6 : (jt == 4 ? 3 : (jt == 0 ? 0 : 1));
+}
 void _fk  (double *T, int nb, double *Ti, int *parent, int *jtype, double *q);
 void jacob_whitney(double *J, int nb, double *T, double *_T, int *parent, int *jtype, int idx);
 

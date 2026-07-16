@@ -743,6 +743,31 @@ void jcalc6(double *XJ, double *S, const double *q6){
     S[3*6 + 0] = 1.0;  S[4*6 + 1] = 1.0;  S[5*6 + 2] = 1.0;
 }
 
+/* jcalc for the 3-DoF ball (spherical) joint (jtype=4) — the rotation half of
+ * the free joint. q3 = rotation vector w (child-frame axis-angle, R = expmap(w)).
+ * qd = ω (child-frame angular velocity) — the dof velocity IS the body ω, no
+ * euler-rate map. Mirrors rbd.py:jcalc_ball.
+ *   XJ : 6×6 spatial transform, rotation-only: [[E, 0], [0, E]], E = Rᵀ
+ *   S  : 6×3 motion subspace col-major — column c maps ω_c to spatial row c
+ *        (spatial convention [ω; v], so the top 3 rows are I, bottom 3 zero). */
+void jcalc_ball(double *XJ, double *S, const double *q3){
+    double R[9];
+    expmap_so3(q3, R);
+    double E[9]; transpose(E, R, 3, 3);
+
+    memset(XJ, 0, sizeof(double)*36);
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            XJ[i*6     + j    ] = E[i*3 + j];      /* top-left = E */
+            XJ[(i+3)*6 + (j+3)] = E[i*3 + j];      /* bot-right = E */
+        }
+    }
+
+    /* S col-major (6 doubles per column): S[:,c] = e_c on the angular rows. */
+    memset(S, 0, sizeof(double)*18);
+    S[0*6 + 0] = 1.0;  S[1*6 + 1] = 1.0;  S[2*6 + 2] = 1.0;
+}
+
 //forward kinematics. mirrors rbd.py:_fk. T is (nb,4,4) row-major flat = 16*nb.
 //---- memcpy size bug fix: originals copied 16 bytes (= 2 doubles) instead of
 //      16*sizeof(double); active elements were corrupted on the root-pass.
@@ -752,7 +777,7 @@ void _fk(double *T, int nb, double *Ti, int *parent, int *jtype, double *q){
     double Tb[16*TACT_MAX_NB];
 
     /* q-index walks per-body. Each body consumes nv[i] slots: 0 for jtype 0 (fixed),
-     * 1 for jtype 1/2, 6 for jtype 3 (free). */
+     * 1 for jtype 1/2, 6 for jtype 3 (free), 3 for jtype 4 (ball). */
     int q_idx = 0;
     for (int i = 0; i < nb; i++) {
         if (jtype[i] == 0) {
@@ -765,6 +790,16 @@ void _fk(double *T, int nb, double *Ti, int *parent, int *jtype, double *q){
             T_trans(T_tmp, 0, 0, q[q_idx]);
             matmul(Tb+16*i, Ti+16*i, T_tmp, 4, 4, 4);
             q_idx += 1;
+        } else if (jtype[i] == 4) {
+            /* ball: q[q_idx:q_idx+3] = rotation vector. T_local = [R(w), 0; 0, 1]. */
+            double R[9];
+            expmap_so3(q + q_idx, R);
+            T_tmp[ 0]=R[0]; T_tmp[ 1]=R[1]; T_tmp[ 2]=R[2]; T_tmp[ 3]=0.0;
+            T_tmp[ 4]=R[3]; T_tmp[ 5]=R[4]; T_tmp[ 6]=R[5]; T_tmp[ 7]=0.0;
+            T_tmp[ 8]=R[6]; T_tmp[ 9]=R[7]; T_tmp[10]=R[8]; T_tmp[11]=0.0;
+            T_tmp[12]=0.0;  T_tmp[13]=0.0;  T_tmp[14]=0.0;  T_tmp[15]=1.0;
+            matmul(Tb+16*i, Ti+16*i, T_tmp, 4, 4, 4);
+            q_idx += 3;
         } else if (jtype[i] == 3) {
             /* free: q[q_idx:q_idx+6] = (p, w). Compose T_local = [R(w), p; 0, 1]. */
             double R[9];
@@ -817,7 +852,7 @@ void jacob_whitney(double *J, int nb, double *T, double *_T, int *parent, int *j
     int nq = 0;
     for (int j = 0; j < nb; j++) {
         q_base[j] = nq;
-        nq += (jtype[j] == 3) ? 6 : (jtype[j] == 0 ? 0 : 1);
+        nq += jt_nv(jtype[j]);
     }
     memset(J, 0, 6*nq*sizeof(double));
     int i = idx;
@@ -832,6 +867,25 @@ void jacob_whitney(double *J, int nb, double *T, double *_T, int *parent, int *j
             J[3*nq+qb] = zx;     J[4*nq+qb] = zy;     J[5*nq+qb] = zz;
         } else if (jtype[i] == 2) {             //prismatic along body z-axis
             J[0*nq+qb] = T[16*i+2]; J[1*nq+qb] = T[16*i+6]; J[2*nq+qb] = T[16*i+10];
+        } else if (jtype[i] == 4) {             //ball — 3 ω_body columns at qb..qb+2
+            /* Same as the free joint's ω_body columns: linear = -skew(r)·R[:,c],
+             * angular = R[:,c] (R = body axes in world, r = point offset). */
+            double R[9];
+            R[0]=T[16*i+0]; R[1]=T[16*i+1]; R[2]=T[16*i+2];
+            R[3]=T[16*i+4]; R[4]=T[16*i+5]; R[5]=T[16*i+6];
+            R[6]=T[16*i+8]; R[7]=T[16*i+9]; R[8]=T[16*i+10];
+            double rx = _T[3]  - T[16*i+3];
+            double ry = _T[7]  - T[16*i+7];
+            double rz = _T[11] - T[16*i+11];
+            for (int c = 0; c < 3; c++) {
+                double rc = R[c], rc3 = R[3+c], rc6 = R[6+c];
+                J[0*nq + qb + c] =  rz*rc3 - ry*rc6;
+                J[1*nq + qb + c] = -rz*rc  + rx*rc6;
+                J[2*nq + qb + c] =  ry*rc  - rx*rc3;
+                J[3*nq + qb + c] = rc;
+                J[4*nq + qb + c] = rc3;
+                J[5*nq + qb + c] = rc6;
+            }
         } else if (jtype[i] == 3) {             //free — fill 6 columns at qb..qb+5
             /* R = T[i, :3, :3] (body axes in world), p = T[i, :3, 3]
              * r = _T - p. J cols 0..2 (v_body): linear = R, angular = 0.
@@ -908,12 +962,12 @@ void jacob_whitney(double *J, int nb, double *T, double *_T, int *parent, int *j
 //Pass NULL/0 for everything to get legacy explicit behavior.
 void aba_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, double *q, double *qd, double *tau, double *f_ext, double *g, double *qdd, double *f_out, double *a_out, double *v_out, double *workspace, double *ff, double *sk, double *armature, double dt_imp, double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref, int full)
 {
-    /* Per-body DoF count and q-base. nv[i]: 0 for fixed, 6 for free, else 1. */
+    /* Per-body DoF count and q-base. nv[i]: 0 fixed, 6 free, 3 ball, else 1. */
     int q_base[TACT_MAX_NB], nv[TACT_MAX_NB], d_offset[TACT_MAX_NB];
     int nq = 0, d_total = 0;
     for (int i = 0; i < nb; i++) {
         q_base[i] = nq;
-        nv[i]     = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        nv[i]     = jt_nv(jtype[i]);
         d_offset[i] = d_total;
         nq      += nv[i];
         d_total += nv[i] * nv[i];
@@ -950,6 +1004,15 @@ void aba_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
             for (int r = 0; r < 6; r++) {
                 double s = 0.0;
                 for (int c = 0; c < 6; c++) s += S6[6*c + r] * qd[qbi + c];
+                vJ[r] = s;
+            }
+        } else if (jtype[i] == 4) {
+            jcalc_ball(Xj, S6, q + qbi);
+            for (int k = 0; k < 18; k++) Sb[k] = S6[k];          /* copy 6×3 S */
+            /* vJ = S @ qd[qbi:qbi+3] = [ω; 0] (S columns are e_c on angular rows) */
+            for (int r = 0; r < 6; r++) {
+                double s = 0.0;
+                for (int c = 0; c < 3; c++) s += S6[6*c + r] * qd[qbi + c];
                 vJ[r] = s;
             }
         } else if (jtype[i] == 0) {
@@ -1035,6 +1098,44 @@ void aba_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
             memcpy(Ia, IA + 36*i, 36*sizeof(double));
             mv66(pa, Ia, cc + 6*i);
             for (int k = 0; k < 6; k++) pa[k] += pA[6*i+k];
+        } else if (nvi == 3) {
+            /* ball: Ia = IA - U · d⁻¹ · Uᵀ via LDLᵀ on the 3×3 d block. Same
+             * shape as the free branch below with nvi=3 (kept separate so the
+             * free path's literal-6 loops stay bit-identical). */
+            memcpy(d6, db, 9*sizeof(double));
+            int ld_ok = ldlt_factor(d6, 3);
+            if (ld_ok != 0) {
+                memcpy(Ia, IA + 36*i, 36*sizeof(double));
+                mv66(pa, Ia, cc + 6*i);
+                for (int k = 0; k < 6; k++) pa[k] += pA[6*i+k];
+            } else {
+                /* Y = d⁻¹ · Uᵀ (3×6), solved row-of-U by row-of-U. */
+                double Y[18];                       /* Y[3*c + k] = (d⁻¹ Uᵀ)[k, c] */
+                for (int c = 0; c < 6; c++) {
+                    double rhs[3];
+                    for (int k = 0; k < 3; k++) rhs[k] = Ub[6*k + c];   /* Uᵀ[:, c] = U[c, :] */
+                    ldlt_solve(d6, 3, rhs);
+                    for (int k = 0; k < 3; k++) Y[3*c + k] = rhs[k];
+                }
+                /* Ia = IA - U · Y  →  Ia[r,c] = IA[r,c] - Σ_k U[r,k]·Y[k,c]
+                 * U col-major 6×3: U[r,k] = Ub[6*k + r]. Y[k,c] = Y[3*c + k]. */
+                for (int r = 0; r < 6; r++)
+                    for (int c = 0; c < 6; c++) {
+                        double s = 0.0;
+                        for (int k = 0; k < 3; k++) s += Ub[6*k + r] * Y[3*c + k];
+                        Ia[6*r + c] = IA[36*i + 6*r + c] - s;
+                    }
+                /* pa = pA + Ia·cc + U · (d⁻¹ · u) */
+                mv66(pa, Ia, cc + 6*i);
+                double dinv_u[3];
+                for (int k = 0; k < 3; k++) dinv_u[k] = ub[k];
+                ldlt_solve(d6, 3, dinv_u);
+                for (int r = 0; r < 6; r++) {
+                    double s = 0.0;
+                    for (int c = 0; c < 3; c++) s += Ub[6*c + r] * dinv_u[c];
+                    pa[r] += pA[6*i + r] + s;
+                }
+            }
         } else if (nvi == 1) {
             /* 1-DoF: rank-1 update (bit-identical to original code when q_base[i]==i) */
             double inv_d = 1.0 / db[0];
@@ -1054,22 +1155,24 @@ void aba_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
                 mv66(pa, Ia, cc + 6*i);
                 for (int k = 0; k < 6; k++) pa[k] += pA[6*i+k];
             } else {
-                /* Y[c, :] = d⁻¹ · U[c, :]   (Y is 6×6, treat each row independently) */
-                double Y[36];
+                /* Y[:, c] = d⁻¹ · Uᵀ[:, c] = d⁻¹ · (row c of U). Mirrors Python
+                 * `Y = solve(d, Uᵀ); Ia = IA − U·Y`. (The original code here
+                 * solved against U's COLUMNS, i.e. computed U·Uᵀ·d⁻¹ instead of
+                 * U·d⁻¹·Uᵀ — latent, since free joints are always tree roots in
+                 * the Python model builder and roots skip this propagation.) */
+                double Y[36];                       /* Y[6*c + k] = (d⁻¹Uᵀ)[k, c] */
                 for (int c = 0; c < 6; c++) {
                     double rhs[6];
-                    for (int k = 0; k < 6; k++) rhs[k] = Ub[6*c + k];
-                    /* d6 is symmetric; solve d6·x = rhs. ldlt_solve takes row-major SPD. */
-                    /* but we need d⁻¹ · U columns; rhs = column c of U.            */
+                    for (int k = 0; k < 6; k++) rhs[k] = Ub[6*k + c];   /* U[c, :] */
                     ldlt_solve(d6, 6, rhs);     /* rhs ← d6⁻¹ · rhs  (6-vec)        */
                     for (int k = 0; k < 6; k++) Y[6*c + k] = rhs[k];
                 }
-                /* Ia = IA - U · Yᵀ  →  Ia[r,c] = IA[r,c] - Σ_k U[k,r]·Y[k,c]     */
-                /* U col-major (6×6): U[6*k+r]. Y col-major (6×6): Y[6*k+c].       */
+                /* Ia = IA - U · Y  →  Ia[r,c] = IA[r,c] - Σ_k U[r,k]·(d⁻¹Uᵀ)[k,c]
+                 * U col-major (6×6): U[r,k] = Ub[6*k+r]. */
                 for (int r = 0; r < 6; r++)
                     for (int c = 0; c < 6; c++) {
                         double s = 0.0;
-                        for (int k = 0; k < 6; k++) s += Ub[6*k + r] * Y[6*k + c];
+                        for (int k = 0; k < 6; k++) s += Ub[6*k + r] * Y[6*c + k];
                         Ia[6*r + c] = IA[36*i + 6*r + c] - s;
                     }
                 /* pa = pA + Ia·cc + U · (d⁻¹ · u) */
@@ -1118,6 +1221,18 @@ void aba_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
             double Ua = 0.0;
             for (int k = 0; k < 6; k++) Ua += Ub[k] * a_out[6*i + k];
             qddb[0] = (ub[0] - Ua) / db[0];
+        } else if (nvi == 3) {
+            /* ball: qdd_slice = d⁻¹ · (u - Uᵀ·a), 3×3 LDLᵀ */
+            double rhs[3];
+            for (int c = 0; c < 3; c++) {
+                double Ua = 0.0;
+                for (int k = 0; k < 6; k++) Ua += Ub[6*c + k] * a_out[6*i + k];
+                rhs[c] = ub[c] - Ua;
+            }
+            memcpy(d6, db, 9*sizeof(double));
+            ldlt_factor(d6, 3);
+            ldlt_solve(d6, 3, rhs);
+            for (int k = 0; k < 3; k++) qddb[k] = rhs[k];
         } else {
             /* free: qdd_slice = d⁻¹ · (u - Uᵀ·a) */
             double rhs[6];
@@ -1162,12 +1277,12 @@ void aba_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
 //caller-allocated outputs (also used internally for ancestor lookups).
 void rne_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, double *q, double *qd, double *qdd, double *f_ext, double *g, double *tau, double *f_out, double *a_out, double *v_out, double *workspace)
 {
-    /* Per-body q-base and nv (free=6, fixed=0, else 1). */
+    /* Per-body q-base and nv (free=6, ball=3, fixed=0, else 1). */
     int q_base[TACT_MAX_NB];
     int nq = 0;
     for (int i = 0; i < nb; i++) {
         q_base[i] = nq;
-        nq += (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        nq += jt_nv(jtype[i]);
     }
 
     double *Xup = workspace;            //36*nb
@@ -1190,6 +1305,18 @@ void rne_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
             for (int r = 0; r < 6; r++) {
                 double sv = 0.0, sa = 0.0;
                 for (int c = 0; c < 6; c++) {
+                    sv += S6[6*c + r] * qd[qbi + c];
+                    sa += S6[6*c + r] * qdd[qbi + c];
+                }
+                vJ[r] = sv; aS[r] = sa;
+            }
+        } else if (jtype[i] == 4) {
+            jcalc_ball(Xj, S6, q + qbi);
+            for (int k = 0; k < 18; k++) Sb[k] = S6[k];
+            /* vJ = S · qd[qbi:qbi+3], aS = S · qdd[qbi:qbi+3] */
+            for (int r = 0; r < 6; r++) {
+                double sv = 0.0, sa = 0.0;
+                for (int c = 0; c < 3; c++) {
                     sv += S6[6*c + r] * qd[qbi + c];
                     sa += S6[6*c + r] * qdd[qbi + c];
                 }
@@ -1233,7 +1360,7 @@ void rne_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
     for (int i = nb - 1; i >= 0; i--) {
         int qbi = q_base[i];
         double *Sb = S + 6 * qbi;
-        int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        int nvi = jt_nv(jtype[i]);
         for (int r = 0; r < nvi; r++) {
             double sf = 0.0;
             for (int k = 0; k < 6; k++) sf += Sb[6*r + k] * f_out[6*i + k];
@@ -1268,12 +1395,12 @@ void rne_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
 //don't appear in H (no zero padding).
 void crb_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, double *q, double *H, double *workspace)
 {
-    /* H is (nq, nq) row-major. Fixed contributes 0 slots; free=6; else 1. */
+    /* H is (nq, nq) row-major. Fixed contributes 0 slots; free=6; ball=3; else 1. */
     int q_base[TACT_MAX_NB];
     int nq = 0;
     for (int i = 0; i < nb; i++) {
         q_base[i] = nq;
-        nq += (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        nq += jt_nv(jtype[i]);
     }
 
     double *Xup = workspace;            //36*nb
@@ -1290,6 +1417,9 @@ void crb_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
         if (jtype[i] == 3) {
             jcalc6(Xj, S6, q + qbi);
             for (int k = 0; k < 36; k++) Sb[k] = S6[k];
+        } else if (jtype[i] == 4) {
+            jcalc_ball(Xj, S6, q + qbi);
+            for (int k = 0; k < 18; k++) Sb[k] = S6[k];
         } else if (jtype[i] == 0) {
             /* fixed: Xj=I, no S columns (nv=0; qbi shared with next body, so
              * don't write Sb). */
@@ -1316,7 +1446,7 @@ void crb_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
     double tmp6[6];
     for (int i = 0; i < nb; i++) {
         int qbi = q_base[i];
-        int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        int nvi = jt_nv(jtype[i]);
         double *Sb = S + 6 * qbi;
 
         /* fh = Ic[i] · S[i]   (6 × nvi) col-major */
@@ -1342,7 +1472,7 @@ void crb_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
             }
             j = parent[j];
             int qbj = q_base[j];
-            int nvj = (jtype[j] == 3) ? 6 : (jtype[j] == 0 ? 0 : 1);
+            int nvj = jt_nv(jtype[j]);
             double *Sjb = S + 6 * qbj;
             /* H[qb_j..qb_j+nvj, qb_i..qb_i+nvi] = Sjᵀ · fh   (nvj × nvi) */
             for (int r = 0; r < nvj; r++) {
@@ -1433,6 +1563,14 @@ void q_step(int nb, int *jtype, const double *q, const double *qd, double dt, do
             q_next[q_idx+4] = wnew[1];
             q_next[q_idx+5] = wnew[2];
             q_idx += 6;
+        } else if (jtype[i] == 4) {
+            /* ball: rotation vector via SO(3) exp-map composition */
+            double wnew[3];
+            integrate_so3(q + q_idx, qd + q_idx, dt, wnew);
+            q_next[q_idx+0] = wnew[0];
+            q_next[q_idx+1] = wnew[1];
+            q_next[q_idx+2] = wnew[2];
+            q_idx += 3;
         } else if (jtype[i] == 0) {
             /* fixed: no q slot to advance */
         } else {
@@ -1448,7 +1586,7 @@ void euler_step(int nb, double *X, double *I6, int *parent, int *jtype, double *
     aba_featherstone(nb, X, I6, parent, jtype, q, qd, tau, f_ext, g, qdd, f_out, a_out, v_out, workspace, /*ff=*/NULL, /*sk=*/NULL, /*armature=*/NULL, /*dt_imp=*/0.0, /*Kp_j=*/NULL, /*Kd_j=*/NULL, /*q_ref=*/NULL, /*qd_ref=*/NULL, /*full=*/1);
     /* per-DoF: nq elements */
     int nq = 0;
-    for (int i = 0; i < nb; i++) nq += (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+    for (int i = 0; i < nb; i++) nq += jt_nv(jtype[i]);
     for (int i = 0; i < nq; i++) qd_next[i] = qd[i] + qdd[i] * dt;
     q_step(nb, jtype, q, qd_next, dt, q_next);
 }
@@ -1461,7 +1599,7 @@ void rk4_step(int nb, double *X, double *I6, int *parent, int *jtype, double *q,
      * slice cleanly off the tail. d_total ≤ 36*nb (worst case all free). */
     int nq = 0, d_total = 0;
     for (int i = 0; i < nb; i++) {
-        int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        int nvi = jt_nv(jtype[i]);
         nq      += nvi;
         d_total += nvi * nvi;
     }
@@ -1512,6 +1650,7 @@ void rk4_step(int nb, double *X, double *I6, int *parent, int *jtype, double *q,
         int q_idx = 0;
         for (int i = 0; i < nb; i++) {
             if (jtype[i] == 3) { q_idx += 6; continue; }
+            if (jtype[i] == 4) { q_idx += 3; continue; }
             if (jtype[i] == 0) continue;             /* fixed: no q slot */
             /* qk4_i = q + qdk4_i*dt where qdk4_i = qd + qdd4*dt */
             double qdk4_i = qd[q_idx] + qdd4[q_idx] * dt;
@@ -1537,6 +1676,10 @@ void rk4_step(int nb, double *X, double *I6, int *parent, int *jtype, double *q,
                 q_next[q_idx+2] = q[q_idx+2] + vw2*dt;
                 integrate_so3(q + q_idx + 3, qd_next + q_idx + 3, dt, q_next + q_idx + 3);
                 q_idx += 6;
+            } else if (jtype[i] == 4) {
+                /* ball: SO(3)-aware update from q (start) + averaged qd_next over dt */
+                integrate_so3(q + q_idx, qd_next + q_idx, dt, q_next + q_idx);
+                q_idx += 3;
             } else {
                 q_idx += 1;
             }

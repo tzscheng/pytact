@@ -29,7 +29,7 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
      * else 1. d_total = sum(nv²) sizes the d-block array in aba/crb/rne workspace. */
     int nq = 0, d_total = 0;
     for (int i = 0; i < nb; ++i) {
-        int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        int nvi = jt_nv(jtype[i]);
         int nqi = nvi;     /* axis-angle: nq_per_body == nv_per_body */
         nq       += nqi;
         d_total  += nvi * nvi;
@@ -164,7 +164,7 @@ int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X, double *
     /* fill q_base / v_base / nq_per_body / nv_per_body from jtype */
     int q_offset = 0, v_offset = 0;
     for (int i = 0; i < nb; ++i) {
-        int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        int nvi = jt_nv(jtype[i]);
         int nqi = nvi;     /* axis-angle convention */
         c->q_base[i]      = q_offset;
         c->v_base[i]      = v_offset;
@@ -505,6 +505,12 @@ int tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, d
     if ((q_ref || qd_ref) && (Kp_j || Kd_j)) {
         int n_bounded = 0;
         for (int i = 0; i < h->nq; i++) if (c->taulim[i] > 0.0) n_bounded++;
+        /* ball (jtype=4) DoFs solve their PD exclusively as LCP actuator rows
+           (exp-map group PD; the ABA fold is 1-DoF-only and skips them), so
+           act staging must fire whenever a ball joint is present — bounded or
+           not. Gain masking still only concerns taulim-bounded DoFs. */
+        int has_ball = 0;
+        for (int i = 0; i < h->nb; i++) if (c->jtype[i] == 4) { has_ball = 1; break; }
         if (n_bounded > 0) {
             for (int i = 0; i < h->nq; i++) {
                 int bounded = (c->taulim[i] > 0.0);
@@ -513,6 +519,8 @@ int tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, d
             }
             Kp_aba = Kp_j ? c->pd_kp_masked : NULL;
             Kd_aba = Kd_j ? c->pd_kd_masked : NULL;
+        }
+        if (n_bounded > 0 || has_ball) {
             c->act_kp = Kp_j; c->act_kd = Kd_j;
             c->act_qref = q_ref; c->act_qdref = qd_ref;
         }

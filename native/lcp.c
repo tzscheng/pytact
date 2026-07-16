@@ -118,7 +118,7 @@ static void lcp_build_partition(lcp_partition_t *pt, int nb, const int *parent, 
     int q_base[TACT_MAX_NB], nq = 0;
     for (int i = 0; i < nb; i++) {
         q_base[i] = nq;
-        nq += (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        nq += jt_nv(jtype[i]);
     }
     /* dense block ids assigned in body order; accumulate sizes */
     int root2blk[TACT_MAX_NB];
@@ -126,7 +126,7 @@ static void lcp_build_partition(lcp_partition_t *pt, int nb, const int *parent, 
     int nblk = 0;
     for (int b = 0; b < nb; b++) pt->blk_size[b] = 0;
     for (int i = 0; i < nb; i++) {
-        int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        int nvi = jt_nv(jtype[i]);
         if (nvi == 0) { pt->blk_of_body[i] = -1; continue; }
         int r = uf_find(uf, i);
         if (root2blk[r] < 0) root2blk[r] = nblk++;
@@ -146,7 +146,7 @@ static void lcp_build_partition(lcp_partition_t *pt, int nb, const int *parent, 
     int cur[TACT_MAX_NB];
     for (int b = 0; b < nblk; b++) cur[b] = pt->blk_off[b];
     for (int i = 0; i < nb; i++) {
-        int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        int nvi = jt_nv(jtype[i]);
         if (nvi == 0) continue;
         int b = pt->blk_of_body[i];
         for (int k = 0; k < nvi; k++) pt->blk_dof[cur[b]++] = q_base[i] + k;
@@ -235,7 +235,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
     int nq = 0;
     for (int i = 0; i < nb; i++) {
         q_base_local[i] = nq;
-        nq += (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        nq += jt_nv(jtype[i]);
     }
 
     /* Max constraint rows = 6 per contact-point + 1 joint-friction row per DoF +
@@ -291,7 +291,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
      * Fixed=0 slots → no entries. All other slots are free. */
     for (int i = 0; i < nb; i++) {
         int qb = q_base_local[i];
-        int nvi = (jtype[i] == 3) ? 6 : (jtype[i] == 0 ? 0 : 1);
+        int nvi = jt_nv(jtype[i]);
         for (int k = 0; k < nvi; k++) {
             free_map[qb + k] = F++;
         }
@@ -436,22 +436,58 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
      * only with q_ref (same rule as ABA); qdref defaults to 0. rev/lin only (v1),
      * matching the ABA fold's 1-DoF-only implicit PD. */
     int n_act = 0;
-    if (taulim && (act_qref || act_qdref) && (act_kp || act_kd)) {
+    if ((act_qref || act_qdref) && (act_kp || act_kd)) {
         for (int i = 0; i < nb; i++) {
-            if (jtype[i] != 1 && jtype[i] != 2) continue;
-            int dof = q_base_local[i];
-            if (taulim[dof] <= 0.0) continue;
-            double Kp_i = (act_kp && act_qref) ? act_kp[dof] : 0.0;
-            double Kd_i = act_kd ? act_kd[dof] : 0.0;
-            double b_i  = Kp_i * dt + Kd_i;
-            if (b_i <= 0.0) continue;
-            double qr_i  = act_qref  ? act_qref[dof]  : 0.0;
-            double qdr_i = act_qdref ? act_qdref[dof] : 0.0;
-            act_dof[n_act]   = dof;
-            act_body[n_act]  = i;
-            act_b[n_act]     = b_i;
-            act_vstar[n_act] = (Kp_i * (qr_i - q[dof]) + Kd_i * qdr_i) / b_i;
-            n_act++;
+            if (jtype[i] == 1 || jtype[i] == 2) {
+                if (!taulim) continue;
+                int dof = q_base_local[i];
+                if (taulim[dof] <= 0.0) continue;
+                double Kp_i = (act_kp && act_qref) ? act_kp[dof] : 0.0;
+                double Kd_i = act_kd ? act_kd[dof] : 0.0;
+                double b_i  = Kp_i * dt + Kd_i;
+                if (b_i <= 0.0) continue;
+                double qr_i  = act_qref  ? act_qref[dof]  : 0.0;
+                double qdr_i = act_qdref ? act_qdref[dof] : 0.0;
+                act_dof[n_act]   = dof;
+                act_body[n_act]  = i;
+                act_b[n_act]     = b_i;
+                act_vstar[n_act] = (Kp_i * (qr_i - q[dof]) + Kd_i * qdr_i) / b_i;
+                n_act++;
+            } else if (jtype[i] == 4 && q) {
+                /* ball (jtype=4): exp-map PD group — τ = Kp·log(R_curᵀ·R_tar)
+                   − Kd·ω per axis (newton/SolverMuJoCo ball-PD semantics; the
+                   rotvec ball's dof velocity IS the child-frame ω, so J = e_dof
+                   per row, no euler-rate map). The position error e replaces
+                   (qref − q) in v*; each axis gets its own compliant row with
+                   box ±taulim·dt (taulim = 0 → unbounded: pure implicit PD).
+                   Ball PD lives ONLY here — the ABA fold is 1-DoF-only, so
+                   these rows exist whenever ball PD is active, not just when
+                   torque-bounded. */
+                int dof = q_base_local[i];
+                double e[3] = {0.0, 0.0, 0.0};
+                if (act_kp && act_qref) {
+                    double Rc[9], Rt[9], M[9];
+                    expmap_so3(q + dof, Rc);
+                    expmap_so3(act_qref + dof, Rt);
+                    /* M = Rcᵀ · Rt */
+                    for (int r = 0; r < 3; r++)
+                        for (int c2 = 0; c2 < 3; c2++)
+                            M[3*r + c2] = Rc[r]*Rt[c2] + Rc[3+r]*Rt[3+c2] + Rc[6+r]*Rt[6+c2];
+                    logmap_so3(M, e);
+                }
+                for (int c2 = 0; c2 < 3; c2++) {
+                    double Kp_i = (act_kp && act_qref) ? act_kp[dof + c2] : 0.0;
+                    double Kd_i = act_kd ? act_kd[dof + c2] : 0.0;
+                    double b_i  = Kp_i * dt + Kd_i;
+                    if (b_i <= 0.0) continue;
+                    double qdr_i = act_qdref ? act_qdref[dof + c2] : 0.0;
+                    act_dof[n_act]   = dof + c2;
+                    act_body[n_act]  = i;
+                    act_b[n_act]     = b_i;
+                    act_vstar[n_act] = (Kp_i * e[c2] + Kd_i * qdr_i) / b_i;
+                    n_act++;
+                }
+            }
         }
     }
 
@@ -901,7 +937,10 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
         for (int r = 0; r < n_act; r++) {
             int row = 6*nc + n_fric + n_limit + r;
             double A_rr  = A[(size_t)row * Mrow + row];
-            double bound = taulim[act_dof[r]] * dt;       /* impulse units */
+            double tl    = taulim ? taulim[act_dof[r]] : 0.0;
+            /* impulse units; taulim=0 (ball rows only — 1-DoF rows require
+               taulim>0 to exist) means unbounded: pure implicit PD via PGS. */
+            double bound = tl > 0.0 ? tl * dt : HUGE_VAL;
             double row_excl = w[row] - A_rr * lam[row];
             double v = -row_excl / A_rr;
             if      (v >  bound) v =  bound;

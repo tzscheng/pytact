@@ -447,6 +447,23 @@ def jcalc6(q6):
     XJ = homogeneous_to_pluker(T)
     return XJ, _S_FREE6.copy()
 
+#----- ball (jtype=4) primitives -----
+# 3-DoF spherical joint — the rotation half of the free joint.
+#   q[0:3]  = w      (rotation vector; R = expmap_so3(w), child-relative)
+#   qd[0:3] = ω_body (child-frame angular velocity — the dof velocity IS the
+#                     body ω; no euler-rate map, matching newton's exp-map PD)
+# Spatial convention [ω; v] → S = [[I3], [0]].
+_S_BALL = np.zeros((6, 3))
+_S_BALL[:3, :] = np.eye(3)
+
+def jcalc_ball(q3):
+    """jcalc for the 3-DoF ball joint (jtype=4). q3 = rotation vector.
+    Returns (XJ 6×6, S 6×3). XJ is rotation-only: [[E, 0], [0, E]], E = Rᵀ."""
+    T = np.eye(4)
+    T[:3, :3] = expmap_so3(q3)
+    XJ = homogeneous_to_pluker(T)
+    return XJ, _S_BALL.copy()
+
 def _build_qidx(jtype):
     """Compute state-vector indexing for both the q (position) and v (velocity)
     sides. Returns (q_base, v_base, nq_per_body, nv_per_body, nq, nv).
@@ -467,9 +484,10 @@ def _build_qidx(jtype):
       jtype 0 (fixed)     : nq_per_body=0, nv_per_body=0 (no state)
       jtype 1 (revolute Z): nq_per_body=1, nv_per_body=1
       jtype 2 (prismatic Z): nq_per_body=1, nv_per_body=1
-      jtype 3 (free axis-angle): nq_per_body=6, nv_per_body=6"""
+      jtype 3 (free axis-angle): nq_per_body=6, nv_per_body=6
+      jtype 4 (ball axis-angle): nq_per_body=3, nv_per_body=3"""
     nb = len(jtype)
-    nv_per_body = np.array([6 if jt == 3 else (0 if jt == 0 else 1) for jt in jtype], dtype=np.int32)
+    nv_per_body = np.array([6 if jt == 3 else (3 if jt == 4 else (0 if jt == 0 else 1)) for jt in jtype], dtype=np.int32)
     nq_per_body = nv_per_body                       # equal under axis-angle
     q_base = np.zeros(nb, dtype=np.int32)
     v_base = np.zeros(nb, dtype=np.int32)
@@ -531,6 +549,11 @@ def _fk(Ti, parent, jtype, q):
             T_local[:3, :3] = expmap_so3(q[qb+3:qb+6])
             T_local[:3, 3]  = q[qb:qb+3]
             Tb[i] = Ti[i] @ T_local
+        elif jtype[i] == 4:
+            qb = q_base[i]
+            T_local = np.eye(4)
+            T_local[:3, :3] = expmap_so3(q[qb:qb+3])
+            Tb[i] = Ti[i] @ T_local
         else:
             raise ValueError(f"unknown jtype {jtype[i]}")
 
@@ -566,6 +589,15 @@ def jacob_whitney(T, _T, parent, jtype, idx):
             # ω_body cols → world linear = -skew(r)·R (= r × (R·êk) per col), angular = R
             J[0:3, vb+3:vb+6] = -skew_r @ R
             J[3:6, vb+3:vb+6] = R
+        elif jtype[i] == 4:
+            # ball: same as the free joint's ω_body columns (3 cols at vb)
+            R = T[i, 0:3, 0:3]
+            r = _T[0:3, 3] - T[i, 0:3, 3]
+            skew_r = np.array([[0, -r[2], r[1]],
+                               [r[2], 0, -r[0]],
+                               [-r[1], r[0], 0]])
+            J[0:3, vb:vb+3] = -skew_r @ R
+            J[3:6, vb:vb+3] = R
         i = parent[i]
         if i is None: break
     return J
@@ -600,7 +632,11 @@ def inertia_lagrange(T, m, c, I, parent, jtype):
 
     M = np.zeros((nv, nv))
     for i in range(nb):
-        M += m[i] * Jc[i, 0:3, :].T @ Jc[i, 0:3, :] + Jc[i, 3:6, :].T @ B[i, 0:3, 0:3].T @ I[i] @ B[i, 0:3, 0:3] @ Jc[i, 3:6, :]
+        # world-frame inertia about the com is R·I_body·Rᵀ (was Rᵀ·I·R — wrong
+        # direction; masked for 1-DoF arms near identity, exposed by the ball-joint
+        # CRB cross-check which matches R·I·Rᵀ to machine ε).
+        R = B[i, 0:3, 0:3]
+        M += m[i] * Jc[i, 0:3, :].T @ Jc[i, 0:3, :] + Jc[i, 3:6, :].T @ R @ I[i] @ R.T @ Jc[i, 3:6, :]
     return M
 
 def com_lagrange(T, m, c):
@@ -647,8 +683,8 @@ def com_inertia(T, m, c, I):
 # the q+ε·eᵢ perturbation is invalid on SO(3) — would need SO(3)-aware
 # finite-diff (~20 lines) to revive.
 def cc_finitediff(Ti, m, c, I, parent, jtype, q, q_dot):
-    if any(jt == 3 for jt in jtype):
-        raise NotImplementedError("cc_finitediff: jtype=3 (free) not supported")
+    if any(jt in (3, 4) for jt in jtype):
+        raise NotImplementedError("cc_finitediff: jtype=3/4 (free/ball) not supported")
     nb = len(Ti)
     T = _fk(Ti, parent, jtype, q)
     M0 = inertia_lagrange(T, m, c, I, parent, jtype)
@@ -684,6 +720,9 @@ def crb_featherstone(X, I, parent, jtype, q):
         if jtype[i] == 3:
             qi = q[q_base[i]:q_base[i]+nq_pb[i]]
             Xj, Si = jcalc6(qi)
+        elif jtype[i] == 4:
+            qi = q[q_base[i]:q_base[i]+nq_pb[i]]
+            Xj, Si = jcalc_ball(qi)
         elif jtype[i] == 0:
             Xj = np.eye(6)
             Si = np.zeros((6, 0))                  # no DoF columns
@@ -733,6 +772,13 @@ def rne_featherstone(X, I, parent, jtype, q, qd, qdd, f_ext, g, full=False):
             qdi  = qd[v_base[i] : v_base[i] + nv_pb[i]]
             qddi = qdd[v_base[i] : v_base[i] + nv_pb[i]]
             Xj, Si = jcalc6(qi)
+            vJ = Si @ qdi
+            aS = Si @ qddi
+        elif jtype[i] == 4:
+            qi   = q [q_base[i] : q_base[i] + nq_pb[i]]
+            qdi  = qd[v_base[i] : v_base[i] + nv_pb[i]]
+            qddi = qdd[v_base[i] : v_base[i] + nv_pb[i]]
+            Xj, Si = jcalc_ball(qi)
             vJ = Si @ qdi
             aS = Si @ qddi
         elif jtype[i] == 0:
@@ -803,6 +849,11 @@ def aba_featherstone(X, I, parent, jtype, q, qd, tau, f_ext, g, ff=None, sk=None
             qi  = q [q_base[i] : q_base[i] + nq_pb[i]]
             qdi = qd[v_base[i] : v_base[i] + nv_pb[i]]
             Xj, Si = jcalc6(qi)              # Si 6×6
+            vJ = Si @ qdi
+        elif jtype[i] == 4:
+            qi  = q [q_base[i] : q_base[i] + nq_pb[i]]
+            qdi = qd[v_base[i] : v_base[i] + nv_pb[i]]
+            Xj, Si = jcalc_ball(qi)          # Si 6×3
             vJ = Si @ qdi
         elif jtype[i] == 0:
             Xj = np.eye(6)
@@ -896,6 +947,8 @@ def aba_featherstone(X, I, parent, jtype, q, qd, tau, f_ext, g, ff=None, sk=None
 #Supports 1-DoF joints (jtype 0/1/2) and free axis-angle joint (jtype 3).
 #For jtype=3: q[qb:qb+6] = [p_world, rotation_vec], qd/qdd[vb:vb+6] = [v_body, ω_body].
 def rne_lwp(Ti, m, c, I, parent, jtype, q, q_dot, q_ddot, f_ext, g, full=False):
+    if any(jt == 4 for jt in jtype):
+        raise NotImplementedError("rne_lwp: jtype=4 (ball) not supported — use rne_featherstone")
     nb = len(Ti)
     q_base, v_base, _, _, _, nv = _build_qidx(jtype)
     Tb = np.zeros((nb, 4, 4))
@@ -1074,13 +1127,17 @@ def _q_step(q, qd, dt, jtype, q_base):
             R = expmap_so3(w_old)
             q_next[qb:qb+3]   = q[qb:qb+3] + R @ qd[qb:qb+3] * dt
             q_next[qb+3:qb+6] = integrate_so3(w_old, qd[qb+3:qb+6], dt)
+        elif jtype[i] == 4:
+            qb = q_base[i]
+            q_next[qb:qb+3] = integrate_so3(q[qb:qb+3], qd[qb:qb+3], dt)
     return q_next
 
 def _q_blend_free(q, q_next_linavg, qd_next, dt, jtype, q_base):
     """For RK4: linear weighted average is undefined on SO(3). Overwrite the
-    free slots of an already-computed linear-average q_next with a single-shot
-    SO(3) integration using the averaged qd_next. Non-free slots stay as-is."""
-    if not any(jt == 3 for jt in jtype):
+    free/ball slots of an already-computed linear-average q_next with a
+    single-shot SO(3) integration using the averaged qd_next. Other slots
+    stay as-is."""
+    if not any(jt in (3, 4) for jt in jtype):
         return q_next_linavg
     q_next = q_next_linavg.copy()
     for i in range(len(jtype)):
@@ -1090,6 +1147,9 @@ def _q_blend_free(q, q_next_linavg, qd_next, dt, jtype, q_base):
             R = expmap_so3(w_old)
             q_next[qb:qb+3]   = q[qb:qb+3] + R @ qd_next[qb:qb+3] * dt
             q_next[qb+3:qb+6] = integrate_so3(w_old, qd_next[qb+3:qb+6], dt)
+        elif jtype[i] == 4:
+            qb = q_base[i]
+            q_next[qb:qb+3] = integrate_so3(q[qb:qb+3], qd_next[qb:qb+3], dt)
     return q_next
 
 def euler_step(X, I6, parent, jtype, q, qd, tau, f_ext, g, dt):
@@ -1354,20 +1414,42 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
     if (taulim is not None and (act_qref is not None or act_qdref is not None)
             and (act_kp is not None or act_kd is not None) and q is not None):
         for i in range(len(jtype)):
-            if jtype[i] not in (1, 2):
-                continue
-            vidx = int(_vb[i])
-            if taulim[vidx] <= 0.0:
-                continue
-            Kp_i = float(act_kp[vidx]) if (act_kp is not None and act_qref is not None) else 0.0
-            Kd_i = float(act_kd[vidx]) if act_kd is not None else 0.0
-            b_eff = Kp_i * dt + Kd_i
-            if b_eff <= 0.0:
-                continue
-            qr_i  = float(act_qref[vidx])  if act_qref  is not None else 0.0
-            qdr_i = float(act_qdref[vidx]) if act_qdref is not None else 0.0
-            vstar = (Kp_i * (qr_i - q[vidx]) + Kd_i * qdr_i) / b_eff
-            act.append((fpos_of[vidx], vidx, float(taulim[vidx]) * dt, b_eff, vstar))
+            if jtype[i] in (1, 2):
+                vidx = int(_vb[i])
+                if taulim[vidx] <= 0.0:
+                    continue
+                Kp_i = float(act_kp[vidx]) if (act_kp is not None and act_qref is not None) else 0.0
+                Kd_i = float(act_kd[vidx]) if act_kd is not None else 0.0
+                b_eff = Kp_i * dt + Kd_i
+                if b_eff <= 0.0:
+                    continue
+                qr_i  = float(act_qref[vidx])  if act_qref  is not None else 0.0
+                qdr_i = float(act_qdref[vidx]) if act_qdref is not None else 0.0
+                vstar = (Kp_i * (qr_i - q[vidx]) + Kd_i * qdr_i) / b_eff
+                act.append((fpos_of[vidx], vidx, float(taulim[vidx]) * dt, b_eff, vstar))
+            elif jtype[i] == 4:
+                # ball (jtype=4): exp-map PD group — τ = Kp·log(R_curᵀ·R_tar) − Kd·ω
+                # per axis (mirrors lcp.c). The rotvec ball's dof velocity IS the
+                # child-frame ω, so each axis is a plain e_dof row; only v* is a
+                # group computation. taulim = 0 → unbounded row (pure implicit PD):
+                # ball PD lives ONLY here, the ABA fold is 1-DoF-only.
+                vb0 = int(_vb[i])
+                e = np.zeros(3)
+                if act_kp is not None and act_qref is not None:
+                    R_cur = expmap_so3(q[vb0:vb0+3])
+                    R_tar = expmap_so3(act_qref[vb0:vb0+3])
+                    e = logmap_so3(R_cur.T @ R_tar)
+                for c_ax in range(3):
+                    vidx = vb0 + c_ax
+                    Kp_i = float(act_kp[vidx]) if (act_kp is not None and act_qref is not None) else 0.0
+                    Kd_i = float(act_kd[vidx]) if act_kd is not None else 0.0
+                    b_eff = Kp_i * dt + Kd_i
+                    if b_eff <= 0.0:
+                        continue
+                    qdr_i = float(act_qdref[vidx]) if act_qdref is not None else 0.0
+                    vstar = (Kp_i * float(e[c_ax]) + Kd_i * qdr_i) / b_eff
+                    bound = float(taulim[vidx]) * dt if taulim[vidx] > 0.0 else np.inf
+                    act.append((fpos_of[vidx], vidx, bound, b_eff, vstar))
     n_act = len(act)
 
     if nc == 0 and n_fric == 0 and n_limit == 0 and n_act == 0:
