@@ -100,6 +100,21 @@ static inline double dotN(const double *a, const double *b, int n)
 
 static int uf_find(int *uf, int x) { while (uf[x] != x) { uf[x] = uf[uf[x]]; x = uf[x]; } return x; }
 
+/* EXPERIMENTAL (env TACT_PD_MJ=1): MuJoCo-implicitfast actuator-PD semantics.
+ * Default (unset): the act row solves the FULLY implicit servo
+ *     τ = Kp(e − dt·qd⁺) + Kd(qdref − qd⁺)      b = Kp·dt + Kd
+ * With TACT_PD_MJ=1 the position term goes explicit like MuJoCo implicitfast
+ * (only the velocity derivative is integrated implicitly):
+ *     τ = Kp·e + Kd·qdref − Kd·qd⁺              b = Kd
+ * i.e. the −Kp·dt·qd⁺ extra damping disappears. Kd=0 + MJ mode drops the row
+ * (Kp-only servo unsupported there — fine for the sim2sim A/B this exists for).
+ * Default path is bit-identical to pre-knob builds. */
+static inline int pd_mj_mode(void){
+    static int g_pd_mj = -1;
+    if (g_pd_mj < 0) g_pd_mj = getenv("TACT_PD_MJ") ? 1 : 0;
+    return g_pd_mj;
+}
+
 static void lcp_build_partition(lcp_partition_t *pt, int nb, const int *parent, const int *jtype)
 {
     /* union-find: merge each moving body with its nearest moving ancestor */
@@ -444,7 +459,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
                 if (taulim[dof] <= 0.0) continue;
                 double Kp_i = (act_kp && act_qref) ? act_kp[dof] : 0.0;
                 double Kd_i = act_kd ? act_kd[dof] : 0.0;
-                double b_i  = Kp_i * dt + Kd_i;
+                double b_i  = pd_mj_mode() ? Kd_i : Kp_i * dt + Kd_i;
                 if (b_i <= 0.0) continue;
                 double qr_i  = act_qref  ? act_qref[dof]  : 0.0;
                 double qdr_i = act_qdref ? act_qdref[dof] : 0.0;
@@ -478,7 +493,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
                 for (int c2 = 0; c2 < 3; c2++) {
                     double Kp_i = (act_kp && act_qref) ? act_kp[dof + c2] : 0.0;
                     double Kd_i = act_kd ? act_kd[dof + c2] : 0.0;
-                    double b_i  = Kp_i * dt + Kd_i;
+                    double b_i  = pd_mj_mode() ? Kd_i : Kp_i * dt + Kd_i;
                     if (b_i <= 0.0) continue;
                     double qdr_i = act_qdref ? act_qdref[dof + c2] : 0.0;
                     act_dof[n_act]   = dof + c2;

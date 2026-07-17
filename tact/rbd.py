@@ -15,7 +15,7 @@ Contents:
 Model / Env / CEnv (the stateful simulator classes) live in sim.py and
 re-export this module via `from .rbd import *` so callers can stay flat:
 `tact.crm(...)`, `tact.aba_featherstone(...)`."""
-import ctypes, math, copy
+import ctypes, math, copy, os
 import numpy as np
 from ._clib import clib
 #------------------------basic frame calculation functions---------------------
@@ -1252,6 +1252,12 @@ def contact_ground_sphere(T, parent, jtype, ctype, cbody, ctran, cshape, cparam,
 
     return f_ext
 
+# EXPERIMENTAL (env TACT_PD_MJ=1): MuJoCo-implicitfast actuator-PD semantics —
+# b = Kd instead of Kp*dt + Kd (the -Kp*dt*qd+ extra damping goes away).
+# Mirrors lcp.c:pd_mj_mode. Default (unset) is bit-identical to the pre-knob path.
+_PD_MJ = bool(os.environ.get("TACT_PD_MJ"))
+
+
 def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
                 qd_free, M, dt,
                 erp=0.2, slop=1e-4, cfm_scale=1e-6, v_rest_thresh=3e-2, iters=20, tol=1e-6, cff=False,
@@ -1420,7 +1426,7 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
                     continue
                 Kp_i = float(act_kp[vidx]) if (act_kp is not None and act_qref is not None) else 0.0
                 Kd_i = float(act_kd[vidx]) if act_kd is not None else 0.0
-                b_eff = Kp_i * dt + Kd_i
+                b_eff = Kd_i if _PD_MJ else Kp_i * dt + Kd_i
                 if b_eff <= 0.0:
                     continue
                 qr_i  = float(act_qref[vidx])  if act_qref  is not None else 0.0
@@ -1443,7 +1449,7 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
                     vidx = vb0 + c_ax
                     Kp_i = float(act_kp[vidx]) if (act_kp is not None and act_qref is not None) else 0.0
                     Kd_i = float(act_kd[vidx]) if act_kd is not None else 0.0
-                    b_eff = Kp_i * dt + Kd_i
+                    b_eff = Kd_i if _PD_MJ else Kp_i * dt + Kd_i
                     if b_eff <= 0.0:
                         continue
                     qdr_i = float(act_qdref[vidx]) if act_qdref is not None else 0.0
