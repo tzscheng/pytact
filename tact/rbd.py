@@ -438,7 +438,7 @@ _S_FREE6 = np.zeros((6, 6))
 _S_FREE6[:3, 3:] = np.eye(3)
 _S_FREE6[3:, :3] = np.eye(3)
 
-def jcalc6(q6):
+def jcalc_free(q6):
     """jcalc for the 6-DoF axis-angle free joint (jtype=3).
     q6 layout: [px, py, pz, wx, wy, wz]. Returns (XJ 6×6, S 6×6)."""
     T = np.eye(4)
@@ -719,7 +719,7 @@ def crb_featherstone(X, I, parent, jtype, q):
     for i in range(nb):
         if jtype[i] == 3:
             qi = q[q_base[i]:q_base[i]+nq_pb[i]]
-            Xj, Si = jcalc6(qi)
+            Xj, Si = jcalc_free(qi)
         elif jtype[i] == 4:
             qi = q[q_base[i]:q_base[i]+nq_pb[i]]
             Xj, Si = jcalc_ball(qi)
@@ -771,7 +771,7 @@ def rne_featherstone(X, I, parent, jtype, q, qd, qdd, f_ext, g, full=False):
             qi   = q [q_base[i] : q_base[i] + nq_pb[i]]
             qdi  = qd[v_base[i] : v_base[i] + nv_pb[i]]
             qddi = qdd[v_base[i] : v_base[i] + nv_pb[i]]
-            Xj, Si = jcalc6(qi)
+            Xj, Si = jcalc_free(qi)
             vJ = Si @ qdi
             aS = Si @ qddi
         elif jtype[i] == 4:
@@ -848,7 +848,7 @@ def aba_featherstone(X, I, parent, jtype, q, qd, tau, f_ext, g, ff=None, sk=None
         if jtype[i] == 3:
             qi  = q [q_base[i] : q_base[i] + nq_pb[i]]
             qdi = qd[v_base[i] : v_base[i] + nv_pb[i]]
-            Xj, Si = jcalc6(qi)              # Si 6×6
+            Xj, Si = jcalc_free(qi)              # Si 6×6
             vJ = Si @ qdi
         elif jtype[i] == 4:
             qi  = q [q_base[i] : q_base[i] + nq_pb[i]]

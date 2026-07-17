@@ -73,7 +73,7 @@ void X_trans(double *X, double x, double y, double z);
 void crm  (double *M, double *v);
 void crf  (double *M, double *v);
 void jcalc(double *XJ, double *S, int jtype, double q);
-void jcalc6(double *XJ, double *S, const double *q6);
+void jcalc_free(double *XJ, double *S, const double *q6);
 void jcalc_ball(double *XJ, double *S, const double *q3);
 
 /* Per-body velocity-DoF count by joint type. Single source of truth for the

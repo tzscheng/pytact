@@ -712,8 +712,8 @@ void jcalc(double *XJ, double* S, int jtype, double q){
  * q6 layout: [px, py, pz, wx, wy, wz].
  *   XJ : 6×6 spatial transform (row-major) — homogeneous_to_pluker(T(p,R))
  *   S  : 6×6 motion subspace (row-major) — block-anti-diag([0,I;I,0])
- * Mirrors rbd.py:jcalc6. qd convention [v_body; ω_body] → spatial [ω; v]. */
-void jcalc6(double *XJ, double *S, const double *q6){
+ * Mirrors rbd.py:jcalc_free. qd convention [v_body; ω_body] → spatial [ω; v]. */
+void jcalc_free(double *XJ, double *S, const double *q6){
     /* R = expmap(w) */
     double R[9];
     expmap_so3(q6 + 3, R);
@@ -998,7 +998,7 @@ void aba_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
         double *Sb = S + 6 * qbi;       /* body i's S block: 6 × nv columns col-major */
 
         if (jtype[i] == 3) {
-            jcalc6(Xj, S6, q + qbi);
+            jcalc_free(Xj, S6, q + qbi);
             for (int k = 0; k < 36; k++) Sb[k] = S6[k];          /* copy 6×6 S */
             /* vJ = S6 @ qd[qbi:qbi+6] */
             for (int r = 0; r < 6; r++) {
@@ -1299,7 +1299,7 @@ void rne_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
         double aS[6] = {0,0,0,0,0,0};   /* S · qdd_slice (6-vec) */
 
         if (jtype[i] == 3) {
-            jcalc6(Xj, S6, q + qbi);
+            jcalc_free(Xj, S6, q + qbi);
             for (int k = 0; k < 36; k++) Sb[k] = S6[k];
             /* vJ = S6 · qd[qbi:], aS = S6 · qdd[qbi:] */
             for (int r = 0; r < 6; r++) {
@@ -1415,7 +1415,7 @@ void crb_featherstone(int nb, double *X, double *I6, int *parent, int *jtype, do
         int qbi = q_base[i];
         double *Sb = S + 6 * qbi;
         if (jtype[i] == 3) {
-            jcalc6(Xj, S6, q + qbi);
+            jcalc_free(Xj, S6, q + qbi);
             for (int k = 0; k < 36; k++) Sb[k] = S6[k];
         } else if (jtype[i] == 4) {
             jcalc_ball(Xj, S6, q + qbi);

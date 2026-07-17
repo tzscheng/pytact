@@ -944,7 +944,7 @@ class Model:
                 self.c.append(np.asarray(body['inertial']['pos'], dtype=np.float64))
                 self.I.append(self.get_inertia_matrix(body))
 
-                # jcalc6 computes the joint transform directly from q[0:3] (position)
+                # jcalc_free computes the joint transform directly from q[0:3] (position)
                 # and q[3:6] (rotation vector) — no Euler-aware Ti chain needed.
                 self.Ti.append(np.eye(4))
 
