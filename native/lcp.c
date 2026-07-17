@@ -11,6 +11,8 @@
 static double g_prof[7];          /* narrow, jac, factorY, Amat, pgs, post, TOTAL */
 static long   g_prof_calls;
 static long   g_prof_nc_sum, g_prof_nc_max, g_prof_F_last;
+static long   g_prof_it_sum, g_prof_it_max, g_prof_it_uncvg;   /* PGS sweep stats */
+static long   g_prof_it_hist[65];                              /* sweeps clamped to 64 */
 static inline double prof_now(void){
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec * 1e-9;
@@ -24,6 +26,14 @@ __attribute__((destructor)) static void lcp_prof_dump(void){
         fprintf(stderr, "  %-8s %9.4f s  %8.3f us/call  %5.1f%%\n",
                 nm[i], g_prof[i], g_prof[i]/g_prof_calls*1e6,
                 g_prof[6] > 0 ? 100.0*g_prof[i]/g_prof[6] : 0.0);
+    fprintf(stderr, "  pgs sweeps: mean=%.2f max=%ld uncvg(res>=tol)=%ld (%.1f%%)\n",
+            (double)g_prof_it_sum/g_prof_calls, g_prof_it_max,
+            g_prof_it_uncvg, 100.0*g_prof_it_uncvg/g_prof_calls);
+    fprintf(stderr, "  sweep hist:");
+    for (int i = 0; i <= 64; i++)
+        if (g_prof_it_hist[i])
+            fprintf(stderr, " %s%d:%ld", i == 64 ? ">=" : "", i, g_prof_it_hist[i]);
+    fprintf(stderr, "\n");
 }
 #define PROF_TS(v) double v = prof_now()
 #define PROF_ADD(i, dt) g_prof[i] += (dt)
@@ -1092,6 +1102,11 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
         g_prof_nc_sum += nc;
         if (nc > g_prof_nc_max) g_prof_nc_max = nc;
         g_prof_F_last = F;
+        long sweeps = it + (it < iters ? 1 : 0);   /* == *iters_out */
+        g_prof_it_sum += sweeps;
+        if (sweeps > g_prof_it_max) g_prof_it_max = sweeps;
+        if (residual >= tol) g_prof_it_uncvg++;
+        g_prof_it_hist[sweeps > 64 ? 64 : sweeps]++;
     }
 #endif
 }
