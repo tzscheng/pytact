@@ -1393,22 +1393,25 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
 
     # Joint limit rows (mirrors lcp.c): one-sided position constraint, posed at the
     # velocity level like a contact normal. Active when q is at/past a bound (lo<hi).
+    # rev/lin (v1) + ball per-axis rotvec box (v2, J = ±e_dof like a hinge).
     # (fpos, vidx, sign, baumgarte_b). sign +1 lower / −1 upper.
     lim = []
     if q is not None and jnt_lo is not None and jnt_hi is not None:
         for i in range(len(jtype)):
-            if jtype[i] not in (1, 2):
+            if jtype[i] not in (1, 2, 4):
                 continue
-            vidx = int(_vb[i])
-            lo, hi = jnt_lo[vidx], jnt_hi[vidx]
-            if not (lo < hi):
-                continue
-            if q[vidx] <= lo:
-                depth = lo - q[vidx]
-                lim.append((fpos_of[vidx], vidx, +1.0, (erp/dt) * max(0.0, depth - slop)))
-            elif q[vidx] >= hi:
-                depth = q[vidx] - hi
-                lim.append((fpos_of[vidx], vidx, -1.0, (erp/dt) * max(0.0, depth - slop)))
+            base = int(_vb[i])
+            for c in range(3 if jtype[i] == 4 else 1):
+                vidx = base + c
+                lo, hi = jnt_lo[vidx], jnt_hi[vidx]
+                if not (lo < hi):
+                    continue
+                if q[vidx] <= lo:
+                    depth = lo - q[vidx]
+                    lim.append((fpos_of[vidx], vidx, +1.0, (erp/dt) * max(0.0, depth - slop)))
+                elif q[vidx] >= hi:
+                    depth = q[vidx] - hi
+                    lim.append((fpos_of[vidx], vidx, -1.0, (erp/dt) * max(0.0, depth - slop)))
     n_limit = len(lim)
 
     # Actuator rows (mirrors lcp.c): the implicit PD torque rewrites as

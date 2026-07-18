@@ -415,7 +415,7 @@ class Model:
         self.floss = np.array([], dtype=float)  # joint Coulomb friction bound (frictionloss); solved as an LCP constraint row
         self.armature = np.array([], dtype=float)  # joint rotor/reflected inertia (MuJoCo armature); added to M diagonal + ABA d
         self.taulim = np.array([], dtype=float)  # actuator torque bound (taulim); PD force solved as a box-bounded LCP actuator row. 0 = unlimited
-        self.jnt_lo = np.array([], dtype=float)  # joint lower limit (rev: rad, lin: m); limited iff lo < hi
+        self.jnt_lo = np.array([], dtype=float)  # joint lower limit (rev/ball-axis: rad, lin: m); limited iff lo < hi
         self.jnt_hi = np.array([], dtype=float)  # joint upper limit; both solved as one-sided LCP constraint rows
 
         # NOTE: implicit joint-PD gains are NOT model state — `k:` was removed from
@@ -984,16 +984,27 @@ class Model:
                 # qd = child-frame ω. YAML q0 = [ex, ey, ez] Euler angles in
                 # degrees (joint's eulerseq), stored internally as the rotation
                 # vector via Euler → R → log. qd0 = ω in rad/s (3-vec).
-                # v1 scope: no damping/spring/frictionloss/limit on ball DoFs —
-                # the implicit ABA fold and the friction/limit rows are 1-DoF
-                # only; PD on ball DoFs is solved as the LCP actuator row group
-                # (exp-map PD, taulim-bounded). armature/taulim are scalars
-                # replicated across the 3 DoFs.
+                # v1 scope: no damping/spring/frictionloss on ball DoFs — the
+                # implicit ABA fold and the friction rows are 1-DoF only; PD on
+                # ball DoFs is solved as the LCP actuator row group (exp-map PD,
+                # taulim-bounded). armature/taulim are scalars replicated across
+                # the 3 DoFs. v2 adds `limit`: per-axis box on the rotvec
+                # components, `limit: [[lox, hix], [loy, hiy], [loz, hiz]]` in
+                # DEGREES (rev convention); an axis is limited iff lo < hi, so
+                # [0, 0] leaves that axis unlimited.
                 if body['joint']['type'] == 'ball':
-                    for key in ('damping', 'spring', 'frictionloss', 'limit'):
+                    for key in ('damping', 'spring', 'frictionloss'):
                         if key in body['joint']:
                             raise ValueError(f"body {body['name']!r}: `{key}` is not "
                                              f"supported on ball joints (v1)")
+                    ball_lim = None
+                    if 'limit' in body['joint']:
+                        ball_lim = np.asarray(body['joint']['limit'], dtype=float)
+                        if ball_lim.shape != (3, 2):
+                            raise ValueError(
+                                f"body {body['name']!r}: ball `limit` must be three "
+                                f"[lo, hi] pairs (one per rotvec axis, degrees), "
+                                f"got {body['joint']['limit']!r}")
                     if 'q0' in body['joint']:
                         R0 = euler_to_rotation(body['joint']['q0'],
                                                eulerseq=body['joint']['eulerseq'], deg=True)
@@ -1016,8 +1027,8 @@ class Model:
                         self.floss    = np.append(self.floss, 0)
                         self.armature = np.append(self.armature, arm)
                         self.taulim   = np.append(self.taulim, tl)
-                        self.jnt_lo   = np.append(self.jnt_lo, 0)
-                        self.jnt_hi   = np.append(self.jnt_hi, 0)
+                        self.jnt_lo   = np.append(self.jnt_lo, np.deg2rad(ball_lim[k][0]) if ball_lim is not None else 0)
+                        self.jnt_hi   = np.append(self.jnt_hi, np.deg2rad(ball_lim[k][1]) if ball_lim is not None else 0)
                     if 'k' in body['joint']:
                         raise ValueError(
                             f"joint `k:` was removed from the YAML schema (2026-06-07) — "

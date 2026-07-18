@@ -426,25 +426,33 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
 #endif
 
     /* ---- joint limit rows (MuJoCo-style range) ---------------------------- *
-     * One-sided position constraint on a 1-DoF rev/lin joint, posed at the velocity
+     * One-sided position constraint on a joint coordinate, posed at the velocity
      * level exactly like a contact normal: lower limit (q≥lo) activates when q≤lo
      * with Jacobian +e_j (push +q, "separating"); upper limit (q≤hi) when q≥hi with
      * −e_j. λ≥0, Baumgarte b=(erp/dt)·max(0, depth−slop). A DoF is limited iff
-     * lo<hi; only the violated bound is active (≤1 row/DoF). rev/lin only (v1). */
+     * lo<hi; only the violated bound is active (≤1 row/DoF). rev/lin (v1) + ball
+     * per-axis (v2): each rotvec component is boxed independently — its DoF
+     * velocity is the child-frame ω component, so J = ±e_dof holds exactly like
+     * a hinge (same small-angle rate approximation the ball PD rows use). */
     int n_limit = 0;
     if (q && jnt_lo && jnt_hi) {
         for (int i = 0; i < nb; i++) {
-            if (jtype[i] != 1 && jtype[i] != 2) continue;
-            int dof = q_base_local[i];
-            if (!(jnt_lo[dof] < jnt_hi[dof])) continue;     /* lo<hi → limited */
-            int sign = 0;
-            if      (q[dof] <= jnt_lo[dof]) sign = +1;       /* lower bound active */
-            else if (q[dof] >= jnt_hi[dof]) sign = -1;       /* upper bound active */
-            if (sign != 0) {
-                lim_dof[n_limit]  = dof;
-                lim_sign[n_limit] = sign;
-                lim_body[n_limit] = i;
-                n_limit++;
+            int jt = jtype[i];
+            if (jt != 1 && jt != 2 && jt != 4) continue;
+            int base = q_base_local[i];
+            int nvi  = (jt == 4) ? 3 : 1;
+            for (int c = 0; c < nvi; c++) {
+                int dof = base + c;
+                if (!(jnt_lo[dof] < jnt_hi[dof])) continue;  /* lo<hi → limited */
+                int sign = 0;
+                if      (q[dof] <= jnt_lo[dof]) sign = +1;   /* lower bound active */
+                else if (q[dof] >= jnt_hi[dof]) sign = -1;   /* upper bound active */
+                if (sign != 0) {
+                    lim_dof[n_limit]  = dof;
+                    lim_sign[n_limit] = sign;
+                    lim_body[n_limit] = i;
+                    n_limit++;
+                }
             }
         }
     }
