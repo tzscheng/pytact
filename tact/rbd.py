@@ -1437,17 +1437,18 @@ def contact_lcp(T, parent, jtype, cpair, ctype, cbody, ctran, cshape, cparam,
                 vstar = (Kp_i * (qr_i - q[vidx]) + Kd_i * qdr_i) / b_eff
                 act.append((fpos_of[vidx], vidx, float(taulim[vidx]) * dt, b_eff, vstar))
             elif jtype[i] == 4:
-                # ball (jtype=4): exp-map PD group — τ = Kp·log(R_curᵀ·R_tar) − Kd·ω
-                # per axis (mirrors lcp.c). The rotvec ball's dof velocity IS the
-                # child-frame ω, so each axis is a plain e_dof row; only v* is a
-                # group computation. taulim = 0 → unbounded row (pure implicit PD):
-                # ball PD lives ONLY here, the ABA fold is 1-DoF-only.
+                # ball (jtype=4): per-axis rotvec PD — τ = Kp·(qref − q) − Kd·ω per
+                # axis (v2, mirrors lcp.c). Matches the MuJoCo/mjwarp ball-joint
+                # actuator transmission (length = rotvec component along the gear
+                # axis, moment = the constant gear axis); the a8 group log-map
+                # error diverged from this at large rotations. The rotvec ball's
+                # dof velocity IS the child-frame ω, so each axis is a plain e_dof
+                # row. taulim = 0 → unbounded row (pure implicit PD): ball PD
+                # lives ONLY here, the ABA fold is 1-DoF-only.
                 vb0 = int(_vb[i])
                 e = np.zeros(3)
                 if act_kp is not None and act_qref is not None:
-                    R_cur = expmap_so3(q[vb0:vb0+3])
-                    R_tar = expmap_so3(act_qref[vb0:vb0+3])
-                    e = logmap_so3(R_cur.T @ R_tar)
+                    e = act_qref[vb0:vb0+3] - q[vb0:vb0+3]
                 for c_ax in range(3):
                     vidx = vb0 + c_ax
                     Kp_i = float(act_kp[vidx]) if (act_kp is not None and act_qref is not None) else 0.0

@@ -487,27 +487,25 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
                 act_vstar[n_act] = (Kp_i * (qr_i - q[dof]) + Kd_i * qdr_i) / b_i;
                 n_act++;
             } else if (jtype[i] == 4 && q) {
-                /* ball (jtype=4): exp-map PD group — τ = Kp·log(R_curᵀ·R_tar)
-                   − Kd·ω per axis (newton/SolverMuJoCo ball-PD semantics; the
-                   rotvec ball's dof velocity IS the child-frame ω, so J = e_dof
-                   per row, no euler-rate map). The position error e replaces
-                   (qref − q) in v*; each axis gets its own compliant row with
-                   box ±taulim·dt (taulim = 0 → unbounded: pure implicit PD).
-                   Ball PD lives ONLY here — the ABA fold is 1-DoF-only, so
-                   these rows exist whenever ball PD is active, not just when
-                   torque-bounded. */
+                /* ball (jtype=4): per-axis rotvec PD — τ = Kp·(qref − q) − Kd·ω
+                   per axis (v2). This IS the MuJoCo/mjwarp ball-joint actuator
+                   transmission: actuator length = gear·quat2Vel(q) = the rotvec
+                   COMPONENT along the gear axis, moment = the constant gear axis
+                   — so a position servo's error is the component difference, not
+                   the group log. (The a8 group log-map error log(R_curᵀ·R_tar)
+                   diverges from this at large rotations — 2.5× magnitude and
+                   even sign flips at |q|≈1.3 rad — and broke newton sim2sim
+                   parity on fast arm swings.) The rotvec ball's dof velocity IS
+                   the child-frame ω, so J = e_dof per row; each axis gets its
+                   own compliant row with box ±taulim·dt (taulim = 0 →
+                   unbounded: pure implicit PD). Ball PD lives ONLY here — the
+                   ABA fold is 1-DoF-only, so these rows exist whenever ball PD
+                   is active, not just when torque-bounded. */
                 int dof = q_base_local[i];
                 double e[3] = {0.0, 0.0, 0.0};
-                if (act_kp && act_qref) {
-                    double Rc[9], Rt[9], M[9];
-                    expmap_so3(q + dof, Rc);
-                    expmap_so3(act_qref + dof, Rt);
-                    /* M = Rcᵀ · Rt */
-                    for (int r = 0; r < 3; r++)
-                        for (int c2 = 0; c2 < 3; c2++)
-                            M[3*r + c2] = Rc[r]*Rt[c2] + Rc[3+r]*Rt[3+c2] + Rc[6+r]*Rt[6+c2];
-                    logmap_so3(M, e);
-                }
+                if (act_kp && act_qref)
+                    for (int c2 = 0; c2 < 3; c2++)
+                        e[c2] = act_qref[dof + c2] - q[dof + c2];
                 for (int c2 = 0; c2 < 3; c2++) {
                     double Kp_i = (act_kp && act_qref) ? act_kp[dof + c2] : 0.0;
                     double Kd_i = act_kd ? act_kd[dof + c2] : 0.0;
