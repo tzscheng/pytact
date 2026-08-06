@@ -2,13 +2,37 @@
 EGL image buffer + add()), CEnv (ctypes-CDLL adapter for mujoco/chrono/real
 backends). Pure math/dynamics primitives live in rbd.py and are re-exported
 here via `from .rbd import *` so internal references stay flat."""
-import sys, os, ctypes, math, copy
+import sys, os, ctypes, math, copy, warnings
 from typing import NamedTuple
 import numpy as np
 import yaml
 from ._clib import clib, model_view, _DBL, _INT
 from .rbd import *
 from .rbd import _fk, _q_step, _build_qidx   # underscored names are not pulled in by `import *`
+
+
+def _resolve_sim_dt(sim, default):
+    """Resolve the YAML sim timestep, accepting either seconds or step frequency."""
+    if 'dt' in sim:
+        if 'sps' in sim:
+            warnings.warn("sim specifies both 'dt' and 'sps'; "
+                          "using 'dt' and ignoring 'sps'",
+                          UserWarning, stacklevel=2)
+        return sim['dt']
+
+    if 'sps' not in sim:
+        return default
+
+    sps_raw = sim['sps']
+    try:
+        sps = float(sps_raw)
+    except (TypeError, ValueError):
+        raise ValueError("sim.sps must be a finite number greater "
+                         f"than zero, got {sps_raw!r}") from None
+    if isinstance(sps_raw, bool) or not math.isfinite(sps) or sps <= 0.0:
+        raise ValueError("sim.sps must be a finite number greater "
+                         f"than zero, got {sps_raw!r}")
+    return 1.0 / sps
 
 
 class SolverState(NamedTuple):
@@ -857,6 +881,7 @@ class Model:
 
         # YAML format:
         #   sim:    {solver: lcp, dt: 0.001, g: [...]}
+        #   sim:    {solver: lcp, sps: 1000, g: [...]}  # steps per second; dt = 1 / sps
         #   view:   {target: [x,y,z], distance: d, yaw: deg, pitch: deg}
         #   lights: [{pos, target, ortho, shadow}, ...]   # only [0] used today
         SIM_KEYS    = ('sim',)
@@ -876,7 +901,7 @@ class Model:
                                          "(supported: 'lcp', or 'minimal' = test-only "
                                          "spring-damper ground contact for spheres)")
                     self.solver = s['solver']
-                if 'dt' in s: self.dt = s['dt']
+                self.dt = _resolve_sim_dt(s, self.dt)
                 if 'g'  in s: self.g  = np.array(s['g'])
                 # global LCP solver knobs, flat under sim: (lcp path only). Each falls
                 # back to the default set in __init__ when absent.

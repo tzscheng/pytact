@@ -92,6 +92,16 @@ feeds:
   - jointvel: [link1, link2]
 ```
 
+The simulation step can also be expressed as steps per second. For example,
+`sps: 240` is equivalent to `dt: 1/240`:
+
+```yaml
+sim: {solver: lcp, sps: 240, g: [0, 0, -9.81]}
+```
+
+`sps` must be finite and greater than zero. If both `dt` and `sps` are
+present, `dt` takes precedence and the loader emits a warning.
+
 Create `minimal.py` in the same directory:
 
 ```python
