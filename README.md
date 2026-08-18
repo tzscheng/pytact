@@ -1,6 +1,8 @@
 # tact
 
-`tact` is a high contact/tactile fidelity dynamics simulator.
+`tact` is a high contact/tactile fidelity dynamics simulator. It provides
+rigid-body dynamics, contact and tactile simulation, YAML scene loading,
+rendering, sensors, controllers, and runtime model composition.
 
 <p align="center">
   <img src="media/tact-demo-0.gif" alt="Articulated pendulum simulation" width="49%">
@@ -9,33 +11,25 @@
   <img src="media/tact-demo-3.gif" alt="Robot locomotion over terrain" width="49%">
 </p>
 
-## Python API
+## Install
 
-Install the Python package:
+Prerequisites:
+
+- Linux
+- Python 3.12 or newer
+
+Install the published Python package:
 
 ```bash
 pip install pytact
 ```
 
-Load a YAML scene and run it in an interactive window:
-
-```python
-import tact
-
-env = tact.Env("scene", render=True)
-
-while True:
-    y = env.step()
-```
-
-`tact` provides rigid-body dynamics, contact and tactile simulation, YAML scene
-loading, rendering, sensors, controllers, and runtime model composition.
-
-### Minimal 2-link manipulator
+## Minimal Example
 
 ![Minimal 2-link manipulator](media/minimal.png)
 
-Create `minimal.yaml`:
+This example defines a 2-link manipulator in YAML and runs it in an interactive
+window. Create `minimal.yaml`:
 
 ```yaml
 sim: {solver: lcp, dt: 0.002, g: [0, 0, -9.81]}
