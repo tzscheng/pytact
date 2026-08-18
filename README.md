@@ -72,7 +72,7 @@ package-local native library at `tact/bin/libtact.so`.
 
 ### Minimal 2-link manipulator
 
-![Minimal 2-link manipulator](demos/minimal/minimal.png)
+![Minimal 2-link manipulator](media/minimal.png)
 
 Create `minimal.yaml`:
 
