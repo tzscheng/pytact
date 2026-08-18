@@ -23,7 +23,7 @@ _DBL = ctypes.POINTER(ctypes.c_double)
 _INT = ctypes.POINTER(ctypes.c_int)
 _FLT = ctypes.POINTER(ctypes.c_float)
 
-#--- Phase 1: handle-based step gateway (docs/design-c-state.md §3) ---
+#--- Phase 1: handle-based step gateway (local/docs/design-c-state.md §3) ---
 #nb, parent, jtype, X, I6, Ti, ff, sk, g, dt, integrator, n_shape, n_pair, ctype, cbody, cshape, ctran, cparam, craycast, cpair,
 #  erp, slop, cfm_scale, v_rest_thresh, iters, tol   (last 6 = global LCP solver knobs from YAML sim:)
 #(mu is now per-material in cparam, no longer a global; ff/sk are per-joint damping/spring -- C side subtracts ff*qd + sk*q from tau before the integrator;

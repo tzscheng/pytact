@@ -1,5 +1,6 @@
 include README.md
 include LICENSE
+include docs/THIRD_PARTY_NOTICES
 include Makefile
 include setup.py
 include tact/bin/.gitkeep

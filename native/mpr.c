@@ -3,6 +3,10 @@
  * dedicated detector. Holds the libccd-derived ccd_* core, the per-shape support
  * function (reads mesh vertices from shape.c), size_of_param, and tact_collision_check_mpr.
  * (Formerly the bulk of ccd.c.) */
+/* Portions of this file are derived from libccd.
+ * Copyright (c) 2010-2012 Daniel Fiser and the libccd contributors.
+ * Licensed under the BSD 3-Clause License. See docs/THIRD_PARTY_NOTICES for
+ * the complete upstream copyright and license notice. */
 #include <float.h>
 #include "core.h"
 #include "shape.h"

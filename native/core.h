@@ -248,7 +248,7 @@ void choose_rotation(double *z_in, double *R);
 void contact_lcp(tact_t *h, double *q, double *lam_in);
 
 /* lcp.c — kinematic-tree partition for the block-diagonal M⁻¹ solve (see
- * docs/design-lcp-perf.md). Depends only on (nb, parent, jtype), which are
+ * local/docs/design-lcp-perf.md). Depends only on (nb, parent, jtype), which are
  * fixed for a handle's lifetime, so it is built lazily on the first
  * contact_lcp call (valid=0 from calloc) and never invalidated. */
 typedef struct {

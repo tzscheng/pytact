@@ -4,7 +4,7 @@
  * (narrow.c / mpr.c / ray.c / shape.c) and rbd.c (dynamics) + lcp.c (contact)
  * into a single ctypes-friendly entry surface for the
  * Python package (sim.py drives it). Build / runtime split + lifecycle
- * invariants documented in docs/design-c-state.md §3.
+ * invariants documented in local/docs/design-c-state.md §3.
  *
  * Public surface declared in tact.h: the tact_t head exposes read-only
  * dimensions and step-output views; everything else lives behind the private

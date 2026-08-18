@@ -35,7 +35,7 @@ TACT_SRC := \
 TACT_HEADERS := native/tact.h native/shape.h native/core.h
 TACT_LIB := $(LIB_DIR)/libtact.so
 BIN_TEST := native/demos/basic/bin-test
-BIN_PARITY := tests/bin-parity
+BIN_PARITY := local/tests/bin-parity
 
 .PHONY: all clean clean-dist install uninstall package-lib demos test-tools debug sdist wheel-local wheel-manylinux dist-pypi
 
@@ -55,8 +55,8 @@ $(BIN_TEST): native/demos/basic/bin_test.c $(TACT_LIB) native/tact.h
 
 test-tools: $(BIN_PARITY)
 
-$(BIN_PARITY): tests/bin_parity.c $(TACT_LIB) native/tact.h
-	$(CC) -W -Wall -O2 -Inative -o $@ tests/bin_parity.c -L$(LIB_DIR) -ltact -Wl,-rpath,'$$ORIGIN/../native/lib'
+$(BIN_PARITY): local/tests/bin_parity.c $(TACT_LIB) native/tact.h
+	$(CC) -W -Wall -O2 -Inative -o $@ local/tests/bin_parity.c -L$(LIB_DIR) -ltact -Wl,-rpath,'$$ORIGIN/../../native/lib'
 
 debug:
 	$(MAKE) -B CFLAGS="-W -Wall -O0 -g -fPIC" $(TACT_LIB) demos

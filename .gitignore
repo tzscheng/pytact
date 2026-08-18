@@ -38,11 +38,8 @@ native/demos/basic/bin-test
 AGENTS.md
 CLAUDE.md
 
-# ── 로컬 Markdown 문서 ──
-docs/**/*.md
-
-# ── 로컬 테스트 디렉터리 ──
-tests/
+# ── 로컬 개발 자료 ──
+local/
 
 # ── 임시 작업 디렉터리 ──
 _/

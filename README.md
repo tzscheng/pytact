@@ -102,7 +102,7 @@ native/lib/          native C shared library output from make
 native/demos/basic/  minimal standalone C demo using compiled .bin models
 demos/               checkout-only examples for GitHub users
 tact/                Python package source
-tests/               regression and packaging smoke tests
+local/               local development docs and tests (not distributed)
 ```
 
 From a checkout, `make` builds the native C library at `native/lib/libtact.so`
@@ -122,3 +122,9 @@ That target creates the sdist with `uv build --sdist`, then builds the wheel wit
 `cibuildwheel` inside the configured manylinux image. Do not upload the local
 `linux_x86_64` wheel from `uv build --wheel`; PyPI accepts the repaired
 `manylinux_*_x86_64` wheel produced by `make dist-pypi`.
+
+### Third-party software
+
+Parts of the convex collision implementation are derived from
+[libccd](https://github.com/danfis/libccd), licensed under the BSD 3-Clause
+License. See [`docs/THIRD_PARTY_NOTICES`](docs/THIRD_PARTY_NOTICES).

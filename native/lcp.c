@@ -102,7 +102,7 @@ static inline double dotN(const double *a, const double *b, int n)
  *
  * Rationale, measured speedups, the fixed-foot gotcha, and the planned S2
  * (sparse-J Delassus build) with its forward-compat invariants for future
- * general constraints (joint limits / loop closure): see docs/design-lcp-perf.md. */
+ * general constraints (joint limits / loop closure): see local/docs/design-lcp-perf.md. */
 #define LCP_MAXF (6 * TACT_MAX_NB)              /* max free DoF (every body free) */
 
 /* Partition lives per-handle in core->lcp_part (lcp_partition_t, core.h) —
@@ -402,14 +402,14 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
      * Enumerate 1-DoF (rev/lin) joints with floss>0: each adds ONE constraint
      * row whose Jacobian is e_{fj} (selects that DoF's velocity), target 0, and a
      * CONSTANT box bound ±floss·dt in impulse units. Free joints (jtype=3) are
-     * intentionally excluded in v1 (see docs/design-joint-friction.md §8). floss
+     * intentionally excluded in v1 (see local/docs/design-joint-friction.md §8). floss
      * is static, so the friction-row set is identical every step → its warm-start
      * λ (lam_fric, per-DoF) carries cleanly.
      *
      * TACT_NO_JFRIC compiles out every joint-FRICTION addition (limits stay) — used
      * to prove the zero-floss path is logically a no-op (any release-build delta is
      * then pure -ffast-math reassociation, not a logic change; see
-     * docs/design-joint-friction.md Phase 3 notes). */
+     * local/docs/design-joint-friction.md Phase 3 notes). */
     int n_fric = 0;
 #ifndef TACT_NO_JFRIC
     if (floss) {
@@ -704,7 +704,7 @@ void contact_lcp(tact_t *h, double *q, double *lam_in)
        Sparsity is driven by per-ROW block-support SETS (row_blocks), NOT a single
        component-id and NOT a per-contact 6×6 tiling, so robot-robot contacts AND
        non-contact constraint rows (joint friction, limits) are handled uniformly.
-       See docs/design-lcp-perf.md (I1/I2). For contacts-only input this is
+       See local/docs/design-lcp-perf.md (I1/I2). For contacts-only input this is
        bit-identical to the former per-contact 6×6-block build: all 6 rows of a
        contact carry the same support, so share(ri,rj) == share(ri/6,rj/6) and the
        same cells are computed vs. skipped, each via the identical dotN.

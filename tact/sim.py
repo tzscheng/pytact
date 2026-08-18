@@ -379,7 +379,7 @@ def load_hfield(path):
     file but MuJoCo normalizes to [0,1] — its size[2]/geom-z must carry the
     range/min constants (printed by the terrain generator). Used by the Model
     loader and by external consumers needing the ground-truth grid
-    (tests/test_height_scan.py, dog/mapper.py)."""
+    (local/tests/test_height_scan.py, dog/mapper.py)."""
     with open(path, 'rb') as f:
         nrow, ncol = np.fromfile(f, dtype=np.int32, count=2)
         if nrow < 2 or ncol < 2:
@@ -490,7 +490,7 @@ class Model:
         # Slots are global (one C-side table per process), deduplicated by
         # resolved absolute path. add()/delete() do not free slots (~64 slot
         # budget; rare to exhaust in practice — see the dynamic add/delete notes
-        # in tact/AGENTS.md and docs/backend-interface.md.
+        # in tact/AGENTS.md and local/docs/backend-interface.md.
         self.mesh_path_to_idx = {}    # abs_path → idx
         self._mesh_max_slots = 64     # matches MAX_MESH in shape.h
         self.hfield_data = []         # retained hfield slot metadata for bin export
@@ -1421,7 +1421,7 @@ class Model:
 
     #Phase 1+2+3: build a C-side tact_t handle. step()/gravity()/fk() all route through it.
     #On rebuild (add()/edit()) the previous handle is destroyed first — any view
-    #obtained before is invalidated (see docs/design-c-state.md §3.5).
+    #obtained before is invalidated (see local/docs/design-c-state.md §3.5).
     def _create_c_handle(self):
         nb     = len(self.jtype)
         nshape = len(self.ctype)
@@ -2747,7 +2747,7 @@ class Env:
 class CEnv:
     """Thin adapter that gives a ctypes.CDLL (extras/mjenv.so / chenv.so / eio.so)
     the core backend contract (step/reset/finish/backend/has_pd/dt — see
-    docs/backend-interface.md) of tact.Env, so callers (the start script, RL
+    local/docs/backend-interface.md) of tact.Env, so callers (the start script, RL
     envs) can stay backend-agnostic. Capabilities beyond the core are optional
     per backend (capability ledger in the same doc); C-symbol capabilities are
     probed + argtypes-declared in __init__ (the get_dt probe is the model).
@@ -2903,7 +2903,7 @@ class CEnv:
     # callers since the archived kida.ws/replay.py streaming era). mjenv.cpp still
     # exports the C symbol; if mujoco camera parity is ever wanted, re-add a
     # declared wrapper matching Env's signature (frame, res, vfov) — see the
-    # capability ledger (docs/backend-interface.md).
+    # capability ledger (local/docs/backend-interface.md).
 
     def _height_scan(self, base_xy, yaw, offsets, z_top=None, default=0.0):
         """Base-relative terrain scan — thin shim over the backend's
@@ -2982,7 +2982,7 @@ class CEnv:
 
     # Optional capabilities are deliberately ABSENT (no stubs) when a backend
     # lacks them: hasattr() probes False per the capability ledger
-    # (docs/backend-interface.md). Instance binding takes precedence — e.g.
+    # (local/docs/backend-interface.md). Instance binding takes precedence — e.g.
     # lidar_frames exists on a mujoco CEnv whose specs resolved (2026-06-08),
     # while this blocklist catches the unbound case. The __getattr__ forwarding
     # below stays — it is the canonical channel for per-robot eio commands
@@ -2999,7 +2999,7 @@ class CEnv:
             raise AttributeError(
                 f"{name!r} is not available on this backend instance "
                 f"(backend={self.backend!r} — capability ledger, "
-                f"docs/backend-interface.md).")
+                f"local/docs/backend-interface.md).")
         if name == 'get_z':
             # Removed 2026-06-06 (sim-trick reduction): absolute world-z terrain
             # queries have no real-robot counterpart. mjenv.so still exports the
@@ -3007,5 +3007,5 @@ class CEnv:
             # argtypes-less _FuncPtr and silently garbage-marshal doubles.
             raise AttributeError(
                 "get_z was removed — use the base-relative height_scan / "
-                "scan-provider contract instead (docs/backend-interface.md).")
+                "scan-provider contract instead (local/docs/backend-interface.md).")
         return getattr(self.cdll, name)
