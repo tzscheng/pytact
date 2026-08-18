@@ -82,6 +82,9 @@ python minimal.py
 The simulation step can also be expressed as steps per second: `sps: 240` is
 equivalent to `dt: 1/240`. If both are present, `dt` takes precedence.
 
+The complete files for this example are available in
+[`demos/minimal/`](demos/minimal/).
+
 ## Development
 
 The project uses three related names:
