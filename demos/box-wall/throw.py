@@ -1,10 +1,10 @@
 #!/usr/bin/env -S uv run python
-"""box_wall + interactive ball launcher.
+"""Brick wall + interactive ball launcher.
 
 Loads the brick-wall scene, runs the sim in a window, and launches a ball at the
 wall every time you press SPACE.
 
-    uv run python demos/box-wall/ball_throw.py
+    uv run python demos/box-wall/throw.py
 
 Controls (focus the render window):
   SPACE  — launch a ball at the wall
@@ -33,7 +33,7 @@ SPEED     = 5.5      # launch speed (m/s) toward the wall
 
 # render=False: we call _win_render() ourselves so we can read its return code
 # (1 = SPACE pressed, -1 = ESC) — Env.step()'s built-in render swallows it.
-env = tact.Env(os.path.join(HERE, 'box_wall'), render=False)  # dt=0.001 from box_wall.yaml
+env = tact.Env(os.path.join(HERE, 'wall'), render=False)  # dt=0.001 from wall.yaml
 
 balls = []           # live ball group names, oldest first
 n_thrown = 0

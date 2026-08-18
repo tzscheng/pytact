@@ -5,10 +5,10 @@ rigid-body dynamics, contact and tactile simulation, YAML scene loading,
 rendering, sensors, controllers, and runtime model composition.
 
 <p align="center">
-  <img src="media/tact-demo-0.gif" alt="Articulated pendulum simulation" width="49%">
-  <img src="media/tact-demo-1.gif" alt="Rigid-body contact simulation" width="49%"><br>
-  <img src="media/tact-demo-2.gif" alt="Box-wall impact simulation" width="49%">
-  <img src="media/tact-demo-3.gif" alt="Robot locomotion over terrain" width="49%">
+  <img src="docs/gif/tact-demo-0.gif" alt="Articulated pendulum simulation" width="49%">
+  <img src="docs/gif/tact-demo-1.gif" alt="Rigid-body contact simulation" width="49%"><br>
+  <img src="docs/gif/tact-demo-2.gif" alt="Box-wall impact simulation" width="49%">
+  <img src="docs/gif/tact-demo-3.gif" alt="Robot locomotion over terrain" width="49%">
 </p>
 
 ## Install

@@ -1,5 +1,4 @@
 #!/usr/bin/env -S uv run python
-# -*- mode: python -*-
 import sys, os
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -7,19 +6,16 @@ sys.path.insert(0, PROJECT_ROOT)
 import socket, numpy as np, tact
 
 def scene_path(name):
-    if os.path.isabs(name) or os.path.exists(name) or os.path.exists(name + '.yaml'):
-        return name
-    if os.path.sep in name or (os.path.altsep and os.path.altsep in name):
-        return name
+    if os.path.isabs(name) or os.path.exists(name) or os.path.exists(name + '.yaml'): return name
+    if os.path.sep in name or (os.path.altsep and os.path.altsep in name): return name
     return os.path.join(HERE, name)
 
 def usage():
     print("Usage: ./runner.py <scene>")
     print("Examples:")
-    print("  ./runner.py obj1")
-    print("  ./runner.py min_test")
-    print("  ./runner.py arm2")
-    print("  ./runner.py ../box-wall/box_wall")
+    print("  ./runner.py test-convex")
+    print("  ./runner.py test-concave")
+    print("  ./runner.py box-sphere")
 
 if len(sys.argv) != 2:
     usage()
