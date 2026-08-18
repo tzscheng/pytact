@@ -3,10 +3,10 @@
 `tact` is a high contact/tactile fidelity dynamics simulator.
 
 <p align="center">
-  <img src="media/tact-demo-1.gif" alt="Rigid-body contact simulation" width="49%">
-  <img src="media/tact-demo-2.gif" alt="Box-wall impact simulation" width="49%"><br>
+  <img src="media/tact-demo-0.gif" alt="Articulated pendulum simulation" width="49%">
+  <img src="media/tact-demo-1.gif" alt="Rigid-body contact simulation" width="49%"><br>
+  <img src="media/tact-demo-2.gif" alt="Box-wall impact simulation" width="49%">
   <img src="media/tact-demo-3.gif" alt="Robot locomotion over terrain" width="49%">
-  <img src="media/tact-demo-4.gif" alt="Articulated contact simulation" width="49%">
 </p>
 
 This directory contains two faces of the same simulator:
