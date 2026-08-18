@@ -9,66 +9,27 @@
   <img src="media/tact-demo-3.gif" alt="Robot locomotion over terrain" width="49%">
 </p>
 
-This directory contains two faces of the same simulator:
-
-| Name | Role |
-| --- | --- |
-| `tact` | Core simulator identity, C library name, and Python import namespace |
-| `pytact` | Python distribution package installed with `pip install pytact` |
-| `libtact.so` | Native shared library used by both Python and standalone C programs |
-
 ## Python API
 
-Install the published package:
+Install the Python package:
 
 ```bash
 pip install pytact
 ```
 
-For editable development from this checkout, use the repository `uv`
-environment instead of the system `pip`. The package requires Python 3.12 or
-newer, and the root workspace at `~/fg` owns that environment:
-
-```bash
-cd ~/fg
-uv pip install -e ./tact
-```
-
-The editable install calls `make package-lib` inside `tact/`. That builds the
-canonical native library at `native/lib/libtact.so` and copies the same file to
-the package-local `tact/bin/libtact.so`, which is what `import tact` loads.
-
-After the editable install, Python source edits under `tact/tact/` are used on
-the next run without reinstalling. After C source edits under `native/`, rebuild
-the shared library:
-
-```bash
-cd ~/fg/tact
-make
-```
-
-The default `make` target also refreshes `tact/bin/libtact.so`, so the Python
-package and native C output stay in sync.
-
-Verify the install:
-
-```bash
-cd ~/fg
-uv run python -c "import tact; print(tact.__file__)"
-```
-
-Use:
+Load a YAML scene and run it in an interactive window:
 
 ```python
 import tact
 
-model = tact.Model("scene")
-q, qd, y, ctx = model.step(model.q0, model.qd0, None)
+env = tact.Env("scene", render=True)
+
+while True:
+    y = env.step()
 ```
 
-The Python package owns YAML scene loading, asset resolution, high-level
-simulation helpers, controllers, rendering wrappers, and packaging. It wraps the
-package-local native library at `tact/bin/libtact.so`.
+`tact` provides rigid-body dynamics, contact and tactile simulation, YAML scene
+loading, rendering, sensors, controllers, and runtime model composition.
 
 ### Minimal 2-link manipulator
 
@@ -99,16 +60,6 @@ feeds:
   - jointvel: [link1, link2]
 ```
 
-The simulation step can also be expressed as steps per second. For example,
-`sps: 240` is equivalent to `dt: 1/240`:
-
-```yaml
-sim: {solver: lcp, sps: 240, g: [0, 0, -9.81]}
-```
-
-`sps` must be finite and greater than zero. If both `dt` and `sps` are
-present, `dt` takes precedence and the loader emits a warning.
-
 Create `minimal.py` in the same directory:
 
 ```python
@@ -134,7 +85,44 @@ Run it from the directory containing both files:
 python minimal.py
 ```
 
-## Source Layout
+The simulation step can also be expressed as steps per second: `sps: 240` is
+equivalent to `dt: 1/240`. If both are present, `dt` takes precedence.
+
+## Development
+
+The project uses three related names:
+
+| Name | Role |
+| --- | --- |
+| `tact` | Simulator identity, C library name, and Python import namespace |
+| `pytact` | Python distribution installed with `pip install pytact` |
+| `libtact.so` | Native shared library used by Python and standalone C programs |
+
+For editable development from the `~/fg` workspace, use its `uv` environment:
+
+```bash
+cd ~/fg
+uv pip install -e ./tact
+```
+
+The editable install builds `native/lib/libtact.so` and copies it to the
+package-local `tact/bin/libtact.so`, which is what `import tact` loads. Python
+source edits are visible on the next run; after changing native C sources,
+rebuild the library:
+
+```bash
+cd ~/fg/tact
+make
+```
+
+Verify the active package path with:
+
+```bash
+cd ~/fg
+uv run python -c "import tact; print(tact.__file__)"
+```
+
+### Source layout
 
 ```text
 native/              C engine sources and public header tact.h
