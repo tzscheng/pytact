@@ -5,9 +5,13 @@ sim: {solver: lcp, dt: 0.001, g: [0, 0, -9.81]}
 view: {target: [0, 0, 0.15], distance: 2.0, yaw: 25, pitch: 15}
 lights: [{pos: [3, 3, 5], target: [0, 0, 0], ortho: 2.0, shadow: true}]
 
+# Keep mu_roll at 0 for these sharp-edged bricks: a positive value can create
+# artificial rolling-resistance torque and leave a fallen brick edge-locked.
 materials:
-    floor: {normal: [50000, 200], tangent: [20000, 100, 0.9], spin: [200, 2, 0.05], roll: [200, 2, 0.02], restitution: 0.0}
-    brick: {normal: [30000, 100], tangent: [20000, 100, 0.9], spin: [200, 2, 0.05], roll: [200, 2, 0.02], restitution: 0.0}
+    floor: {normal: [50000, 200], tangent: [20000, 100, 0.9], spin: [100, 1, 0.02], roll: [100, 1, 0.0], restitution: 0.2}
+    brick: {normal: [30000, 100], tangent: [20000, 100, 0.9], spin: [100, 1, 0.02], roll: [100, 1, 0.0], restitution: 0.2}
+
+
 
 bodies:
   - name: root
