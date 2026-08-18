@@ -26,7 +26,9 @@ pip install pytact
 
 ## Minimal Example
 
-![Minimal 2-link manipulator](media/minimal.png)
+<p align="center">
+  <img src="media/minimal.png" alt="Minimal 2-link manipulator" width="75%">
+</p>
 
 This example defines a 2-link manipulator in YAML and runs it in an interactive
 window. Create `minimal.yaml`:
@@ -94,30 +96,6 @@ The project uses three related names:
 | `tact` | Simulator identity, C library name, and Python import namespace |
 | `pytact` | Python distribution installed with `pip install pytact` |
 | `libtact.so` | Native shared library used by Python and standalone C programs |
-
-For editable development from the `~/fg` workspace, use its `uv` environment:
-
-```bash
-cd ~/fg
-uv pip install -e ./tact
-```
-
-The editable install builds `native/lib/libtact.so` and copies it to the
-package-local `tact/bin/libtact.so`, which is what `import tact` loads. Python
-source edits are visible on the next run; after changing native C sources,
-rebuild the library:
-
-```bash
-cd ~/fg/tact
-make
-```
-
-Verify the active package path with:
-
-```bash
-cd ~/fg
-uv run python -c "import tact; print(tact.__file__)"
-```
 
 ### Source layout
 
