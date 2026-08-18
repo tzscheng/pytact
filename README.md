@@ -26,12 +26,9 @@ pip install pytact
 
 ## Minimal Example
 
-<p align="center">
-  <img src="media/minimal.png" alt="Minimal 2-link manipulator" width="75%">
-</p>
-
-This example defines a 2-link manipulator in YAML and runs it in an interactive
-window. Create `minimal.yaml`:
+This example is the 2-link manipulator shown in the first animation above. It
+defines the model in YAML and runs it in an interactive window. Create
+`minimal.yaml`:
 
 ```yaml
 sim: {solver: lcp, dt: 0.002, g: [0, 0, -9.81]}
