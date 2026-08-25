@@ -18,11 +18,12 @@ Prerequisites:
 - Linux
 - Python 3.12 or newer
 
-On Ubuntu, install the runtime libraries required for windowed and headless
-rendering:
+On Ubuntu, install the build tools and libraries required for windowed and
+headless rendering. The development packages also install their corresponding
+runtime libraries:
 
 ```bash
-sudo apt install libegl1 libglfw3 libturbojpeg0 libzstd1
+sudo apt install build-essential libegl-dev libglfw3-dev libturbojpeg0-dev libzstd-dev
 ```
 
 These rendering libraries are loaded at runtime. They are optional when tact is
@@ -32,14 +33,6 @@ Install the published Python package:
 
 ```bash
 pip install pytact
-```
-
-When building tact from source on Ubuntu, install the corresponding development
-packages and build tools. The `-dev` packages provide the headers needed during
-compilation and also install their runtime-library dependencies:
-
-```bash
-sudo apt install build-essential libegl-dev libglfw3-dev libturbojpeg0-dev libzstd-dev
 ```
 
 ## Minimal Example
