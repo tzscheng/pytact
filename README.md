@@ -29,10 +29,16 @@ sudo apt install build-essential libegl-dev libglfw3-dev libturbojpeg0-dev libzs
 These rendering libraries are loaded at runtime. They are optional when tact is
 used only for dynamics without window, camera, or depth rendering.
 
-Install the published Python package:
+Then install `pytact` from PyPI with pip:
 
 ```bash
 pip install pytact
+```
+
+Or add it to a uv-managed project:
+
+```bash
+uv add pytact
 ```
 
 ## Minimal Example
