@@ -37,7 +37,7 @@ TACT_LIB := $(LIB_DIR)/libtact.so
 BIN_TEST := native/demos/basic/bin-test
 BIN_PARITY := local/tests/bin-parity
 
-.PHONY: all clean clean-dist install uninstall package-lib demos test-tools debug sdist wheel-local wheel-manylinux dist-pypi
+.PHONY: all clean clean-dist install uninstall package-lib demos test-tools debug sdist wheel-local wheel-manylinux dist-pypi release-preflight
 
 all: package-lib demos
 
@@ -73,7 +73,21 @@ wheel-local:
 wheel-manylinux:
 	uvx cibuildwheel --platform linux --output-dir $(DIST_DIR)
 
-dist-pypi: clean-dist sdist wheel-manylinux
+# A PyPI version number is burned permanently on upload, so the artifact must
+# be traceable back to the source that produced it: refuse to build a release
+# unless the tree is clean and HEAD is the commit tagged for this version.
+release-preflight:
+	@git diff-index --quiet HEAD -- || \
+		(echo "working tree is dirty; commit before building a release" >&2; exit 1)
+	@test -z "$$(git ls-files --others --exclude-standard)" || \
+		(echo "untracked files would ship in the sdist; commit or ignore them" >&2; exit 1)
+	@git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null || \
+		(echo "missing tag v$(VERSION); run: git tag -a v$(VERSION) -m 'pytact $(VERSION)'" >&2; exit 1)
+	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse "v$(VERSION)^{commit}")" || \
+		(echo "HEAD is not the commit tagged v$(VERSION)" >&2; exit 1)
+	@echo "release preflight ok: pytact $(VERSION) at $$(git rev-parse --short HEAD), tagged v$(VERSION)"
+
+dist-pypi: release-preflight clean-dist sdist wheel-manylinux
 	@test -f $(DIST_DIR)/pytact-$(VERSION).tar.gz
 	@test -n "$$(ls $(DIST_DIR)/pytact-$(VERSION)-py3-none-manylinux_*_x86_64.whl 2>/dev/null)" || \
 		(echo "missing manylinux wheel for pytact $(VERSION)" >&2; exit 1)
