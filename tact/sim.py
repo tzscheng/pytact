@@ -1919,6 +1919,47 @@ class Model:
 
         return q_next, qd_next, y, ctx_next
 
+    def step_n(self, q, qd, num_steps, tau=None, q_ref=None, qd_ref=None,
+               kp=None, kd=None, ctx=None):
+        """Run constant controls for multiple LCP steps in one native call."""
+        if num_steps < 1:
+            raise ValueError("num_steps must be at least 1")
+        if not self.use_c or self.solver != 'lcp':
+            y = None
+            for _ in range(num_steps):
+                q, qd, y, ctx = self.step(
+                    q, qd, tau=tau, q_ref=q_ref, qd_ref=qd_ref,
+                    kp=kp, kd=kd, ctx=ctx)
+            return q, qd, y, ctx
+
+        if tau is None: tau = np.zeros(len(q))
+        if q_ref is not None and kp is None:
+            raise ValueError("q_ref requires kp — gains are per-step inputs")
+        if qd_ref is not None and kd is None:
+            raise ValueError("qd_ref requires kd — gains are per-step inputs")
+        q_in = np.ascontiguousarray(q, dtype=np.float64)
+        qd_in = np.ascontiguousarray(qd, dtype=np.float64)
+        tau_in = np.ascontiguousarray(tau, dtype=np.float64)
+        Kp = None if kp is None else np.ascontiguousarray(kp, dtype=np.float64)
+        Kd = None if kd is None else np.ascontiguousarray(kd, dtype=np.float64)
+        ctx_in = None if ctx is None else np.ascontiguousarray(ctx.lam, dtype=np.float64)
+        Kp_ptr = Kp.ctypes.data_as(_DBL) if (Kp is not None and q_ref is not None) else None
+        Kd_ptr = Kd.ctypes.data_as(_DBL) if (Kd is not None and (q_ref is not None or qd_ref is not None)) else None
+        qr_ptr = q_ref.ctypes.data_as(_DBL) if q_ref is not None else None
+        qdr_ptr = qd_ref.ctypes.data_as(_DBL) if qd_ref is not None else None
+        rc = clib.tact_step_lcp_n(
+            self._h, q_in.ctypes.data_as(_DBL), qd_in.ctypes.data_as(_DBL),
+            tau_in.ctypes.data_as(_DBL), Kp_ptr, Kd_ptr, qr_ptr, qdr_ptr,
+            ctx_in.ctypes.data_as(_DBL) if ctx_in is not None else None,
+            num_steps)
+        if rc != 0:
+            raise RuntimeError(f"tact_step_lcp_n failed: {rc}")
+        q_next = self._h_q_next.copy()
+        qd_next = self._h_qd_next.copy()
+        y = self._h_y[:self._y_size].copy()
+        ctx_next = SolverState(lam=self._h_ctx_next.copy(), nq=len(self.floss))
+        return q_next, qd_next, y, ctx_next
+
     def fk(self, frames, q, eulerseq='xyz'):
         if self.use_c:
             #Phase 4: single C call — frame loop, Te composition, format dispatch all in C

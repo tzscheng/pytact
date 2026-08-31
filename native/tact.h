@@ -75,6 +75,7 @@ TACT_API int tact_create_from_arrays(int nb, int *parent, int *jtype, double *X,
 TACT_API int  tact_create_from_bin(const char *path, tact_t **out);
 TACT_API void tact_destroy(tact_t *h);
 TACT_API int  tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref, double *ctx);
+TACT_API int  tact_step_lcp_n(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, double *Kd_j, double *q_ref, double *qd_ref, double *ctx, int num_steps);
 TACT_API void tact_set_feedback(tact_t *h, int n_feeds, int *kinds, int *offsets, int *idx, int n_frames, int *fbody, double *ftran, double *ftran_inv, int y_size);
 TACT_API void tact_edit_model(tact_t *h, double *X, double *I6, double *Ti);
 

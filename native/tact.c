@@ -556,18 +556,52 @@ int tact_step_lcp(tact_t *h, double *q, double *qd, double *tau, double *Kp_j, d
     q_step(h->nb, c->jtype, q, h->qd_next, h->dt, h->q_next);
     for (int i = 0; i < h->nq; i++) c->qdd[i] = (h->qd_next[i] - qd[i]) / h->dt;
 
-    /* Kinematic forward pass (RNE) at (q, qd, qdd_actual) to populate h->{f,a,v}
-       with post-contact spatial dynamics. Unlike re-running ABA, this is purely
-       kinematic — given the realized joint accel it computes the body's spatial
-       accel directly, so the accelerometer-like feeds (cases 8/12) report what
-       the body physically experiences rather than the no-contact ABA prediction.
-       tau output is discarded (we reuse tau_p as a scratch sink). */
-    rne_featherstone(h->nb, c->X, c->I6, c->parent, c->jtype, q, qd, c->qdd,
-                     c->f_ext, c->g, c->tau_p, h->f, h->a, h->v, c->workspace);
-
-    /* Stage 4: feedback. raw tau (pre ff/sk/PID) is what case 3 reads. */
-    if (c->fb_set) feedback_eval(h, q, qd, tau);
+    /* Post-contact RNE only produces feedback buffers.  With no registered
+       feeds those buffers are unobservable, so skip this otherwise-dead pass. */
+    if (c->n_feeds > 0) {
+        rne_featherstone(h->nb, c->X, c->I6, c->parent, c->jtype, q, qd, c->qdd,
+                         c->f_ext, c->g, c->tau_p, h->f, h->a, h->v, c->workspace);
+        feedback_eval(h, q, qd, tau);
+    }
     return 0;
+}
+
+/* Repeat a constant-control LCP step behind one foreign-function call.  This
+   compatibility-first implementation deliberately copies each intermediate
+   q/qd/context into caller-independent scratch, matching repeated
+   tact_step_lcp calls.  Final outputs remain in h->{q_next,qd_next,ctx_next}. */
+int tact_step_lcp_n(tact_t *h, double *q, double *qd, double *tau,
+                    double *Kp_j, double *Kd_j, double *q_ref,
+                    double *qd_ref, double *ctx, int num_steps)
+{
+    if (!h || !q || !qd || !tau || num_steps < 1) return -1;
+    if (num_steps == 1)
+        return tact_step_lcp(h, q, qd, tau, Kp_j, Kd_j, q_ref, qd_ref, ctx);
+
+    size_t state_bytes = (size_t)h->nq * sizeof(double);
+    size_t ctx_bytes = (size_t)h->ctx_size * sizeof(double);
+    double *scratch = malloc(2 * state_bytes + ctx_bytes);
+    if (!scratch) return -2;
+    double *q_cur = scratch;
+    double *qd_cur = q_cur + h->nq;
+    double *ctx_cur = qd_cur + h->nq;
+    memcpy(q_cur, q, state_bytes);
+    memcpy(qd_cur, qd, state_bytes);
+    if (ctx) memcpy(ctx_cur, ctx, ctx_bytes);
+
+    int rc = 0;
+    for (int step = 0; step < num_steps; step++) {
+        rc = tact_step_lcp(h, q_cur, qd_cur, tau, Kp_j, Kd_j, q_ref,
+                           qd_ref, (step == 0 && !ctx) ? NULL : ctx_cur);
+        if (rc != 0) break;
+        if (step + 1 < num_steps) {
+            memcpy(q_cur, h->q_next, state_bytes);
+            memcpy(qd_cur, h->qd_next, state_bytes);
+            memcpy(ctx_cur, h->ctx_next, ctx_bytes);
+        }
+    }
+    free(scratch);
+    return rc;
 }
 
 /* ============================================================================

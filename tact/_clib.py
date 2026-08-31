@@ -44,6 +44,8 @@ clib.tact_destroy.restype = None
 #ctx_next itself to let the engine keep warm-start state internally.
 clib.tact_step_lcp.argtypes     = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL]
 clib.tact_step_lcp.restype      = ctypes.c_int
+clib.tact_step_lcp_n.argtypes   = [ctypes.c_void_p, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, _DBL, ctypes.c_int]
+clib.tact_step_lcp_n.restype    = ctypes.c_int
 
 #h, n_feeds, kinds, offsets, idx, n_frames, fbody, ftran, ftran_inv, y_size
 clib.tact_set_feedback.argtypes = [ctypes.c_void_p, ctypes.c_int, _INT, _INT, _INT, ctypes.c_int, _INT, _DBL, _DBL, ctypes.c_int]
