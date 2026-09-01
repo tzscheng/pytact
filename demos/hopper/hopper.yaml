@@ -1,0 +1,53 @@
+#abstract: point-foot monoped-1
+#date: 2025-10-08
+
+sim: {solver: lcp, dt: 0.001, g: [0, 0, -9.81]}
+view: {target: [0, 0, 0.5], distance: 3.0, yaw: 70, pitch: 20}
+lights: [{pos: [7, 7, 7], target: [0, 0, 0], ortho: 5.0, shadow: true}]
+
+materials:
+    mat1: {normal: [50000, 100], tangent: [20000, 50, 0.8], spin: [100, 1, 0.02], roll: [100, 1, 0.005]}
+    mat2: {normal: [20000, 200], tangent: [20000, 200, 1.0], spin: [200, 2, 0.05], roll: [200, 2, 0.02], restitution: 0.0}
+
+bodies:
+  #basic ground, same as common/envs/3x3.yaml (embedded so no -e scene is needed);
+  #a jointless static body must be named 'root' (tact treats it as the world body)
+  - name: root
+    shapes: [{type: box, pos: [0, 0, -0.05], param: [1.5, 1.5, 0.05], contact: [1, mat2], rgba: [1.0, 1.0, 1.0, 1.0]}]
+
+  - name: base
+    joint: {type: free, q0: [0, 0, 0.55, 0, 0, 0]}
+    inertial: {mass: 1.0, pos: [0, 0, 0.2], tensor: [sphere, 0.2]}
+    frames: [{name: ahrs, pos: [0, 0, 0.10]}]
+    shapes: [{type: cylinder, pos: [0, 0, 0.2], param: [0.2, 0.15], contact: [1, mat1], rgba: [0.4, 0.4, 0.9, 0.5]}]
+
+  - name: link1
+    joint: {type: rev, parent: base, euler: [0, 90, 0], damping: 0.8}
+    inertial: {mass: 0.1, tensor: [sphere, 0.1]}
+    shapes: [{type: cylinder, param: [0.03, 0.05], contact: [0, mat1], rgba: [1.0, 1.0, 1.0, 1.0]}]
+
+  - name: link2
+    joint: {type: rev, parent: link1, euler: [-90, 0, 0], damping: 0.8}
+    inertial: {mass: 0.2, tensor: [sphere, 0.1], pos: [0.075, 0, 0]}
+    shapes:
+      - {type: cylinder, param: [0.03, 0.05], contact: [0, mat1], rgba: [1.0, 1.0, 1.0, 1.0]}
+      - {type: cylinder, pos: [0.15, 0, 0], euler: [0, 90, 0], param: [0.03, 0.11], contact: [0, mat1], rgba: [1.0, 1.0, 1.0, 1.0]}
+
+  - name: link3
+    #joint: {type: lin, parent: link2, pos: [0.25, 0, 0], euler: [0, 90, 0], spring: 2000, damping: 1.0}
+    joint: {type: lin, parent: link2, pos: [0.25, 0, 0], euler: [0, 90, 0], spring: 2000, damping: 5.0}
+    inertial: {mass: 0.1, tensor: [sphere, 0.1], pos: [0, 0, 0.13]}
+    frames: [{name: foot, pos: [0, 0, 0.25]}]
+    shapes:
+      - {type: cylinder, pos: [0, 0, 0.05], param: [0.01, 0.16], contact: [0, mat1], rgba: [1.0, 1.0, 1.0, 1.0]}
+      - {type: sphere, pos: [0, 0, 0.25], param: [0.025], contact: [0, mat1], rgba: [0.9, 0.4, 0.4, 1.0]}
+
+feeds:
+  - jointpos: [link1, link2, link3]
+  - jointvel: [link1, link2, link3]
+  - fcontact: [foot]
+  - framequat: [base]
+  - accelerometer: [base]
+  - gyro: [base]
+  - framelinvel: [base]
+  - framepos: [base]

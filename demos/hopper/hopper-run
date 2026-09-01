@@ -1,0 +1,91 @@
+#!/usr/bin/env -S uv run --extra demos python
+# -*- mode: python -*-
+# hopper demo: point-foot monoped hopper hopping in place / steered around,
+# driven by an apex-MPC + whole-body controller (hopper.py / wmpc.py; needs
+# scipy — the `demos` extra). Keyboard-interactive (cbreak): each keypress is
+# a one-letter command ('q' quits, '-' resets; see Controller.msgproc).
+# From a pytact checkout just run ./hopper-run; with an installed
+# pytact[demos] run `python hopper-run` from this directory.
+import sys, os, argparse, atexit, select, tty, termios
+from collections import deque
+import faulthandler; faulthandler.enable() #dump C/Python backtrace on SIGSEGV
+
+# script dir == project dir, so the launcher works from anywhere
+HERE = os.path.dirname(os.path.realpath(__file__))
+os.chdir(HERE)
+if HERE not in sys.path: sys.path.insert(0, HERE)
+
+import tact, hopper
+
+def parse_args():
+    par = argparse.ArgumentParser()
+    par.add_argument('-f', default=1, type=int, help='physics ticks per control update (default 1); last command held between control ticks')
+    par.add_argument('-t', default=16, type=int, help='redraw step (16 => x1.0 speed)')
+    par.add_argument('-d', default=None, help='dispatch file: each line "<step_count> <command>"; fires command when cnt matches')
+    par.add_argument('-v', action='store_true', default=False, help='verbose')
+    par.add_argument('-l', action='store_true', default=False, help='headless sim (no render window)')
+    return par.parse_args()
+
+def msgproc(msg):
+    global cnt
+    w = msg.split()
+    if w[0] == 'quit': env.finish(); sys.exit(0)
+    elif w[0] == 'reset': cnt = 0   # main loop's `if cnt == 0:` block re-creates controller + calls env.reset
+    else: controller.msgproc(w)
+
+def keyproc(k):
+    if k == 'q': print('quit'); msgproc('quit')
+    elif k == '-': print('reset'); msgproc('reset')
+    else: print(k); msgproc(k)
+
+try: os.sched_setaffinity(0, {0})
+except Exception as e: print('set affinity failed'); sys.exit()
+
+arg = parse_args()
+cnt = 0
+
+env = tact.Env('hopper', render=not arg.l, redraw=arg.t)  # hopper.yaml embeds its own floor
+
+# rate = control loop ticks/sec, derived from the sim physics rate (dt=0.001 → 1kHz)
+rate = int(round(1.0/env.dt)) // arg.f
+
+# Direct keyboard input: cbreak delivers each keypress without Enter while keeping
+# output processing and Ctrl-C intact; restored on exit. Skipped when stdin is not
+# a terminal (piped/background run) — then -d dispatch is the only command source.
+kbd = sys.stdin.isatty()
+if kbd:
+    _tty_attr = termios.tcgetattr(sys.stdin.fileno())
+    tty.setcbreak(sys.stdin.fileno())
+    atexit.register(lambda: termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, _tty_attr))
+
+# Optional dispatch: file lines are "<step_count> <command>"; each command fires
+# when cnt reaches its tick, replacing live keyboard input for scripted runs.
+dispatch = deque()
+if arg.d is not None:
+    with open(arg.d) as fin:
+        for line in fin:
+            parts = line.strip().split(maxsplit=1)
+            if len(parts) == 2: dispatch.append([int(parts[0]), parts[1]])
+
+tau = q_ref = qd_ref = kp = kd = None   # held between control ticks (frameskip ZOH)
+
+while True:
+    if kbd and select.select([sys.stdin], [], [], 0)[0]:
+        keyproc(sys.stdin.read(1)); continue
+
+    if dispatch and cnt == dispatch[0][0]:
+        msgproc(dispatch[0][1]); print(dispatch[0]); dispatch.popleft()
+
+    # cnt == 0 marks a fresh session — either initial startup or after a 'reset'
+    # command. Recreate the controller (wipes its internal state) and reset env.
+    if cnt == 0:
+        controller = hopper.Controller(env, 'hopper', rate=rate, verbose=arg.v)
+        y = env.reset()
+
+    # unified interface: update(y) returns the 5-tuple command
+    # (tau, q_ref, qd_ref, kp, kd); hopper is torque-only so refs/gains stay None.
+    if cnt % arg.f == 0:
+        tau, q_ref, qd_ref, kp, kd = controller.update(y)
+    y = env.step(tau=tau, q_ref=q_ref, qd_ref=qd_ref, kp=kp, kd=kd)
+
+    cnt += 1

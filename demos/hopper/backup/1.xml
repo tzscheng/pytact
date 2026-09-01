@@ -1,0 +1,128 @@
+<mujoco>
+  <compiler coordinate="local" angle="degree"/>
+  <option timestep="0.001" iterations="100" tolerance="1e-10" solver="Newton" gravity="0 0 -9.81"/>
+
+  <visual>
+    <map stiffness="2" stiffnessrot="100"/>
+    <rgba haze="0.5 0.5 0.5 1"/>
+    <quality shadowsize="2048"/>
+    <headlight ambient="0.5 0.5 0.5"  diffuse="0.4 0.4 0.4" specular="0.5 0.5 0.5"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.5 0.5 0.5" rgb2="0.5 0.5 0.5" width="512" height="512"/>
+    <texture name="texplane" type="2d" builtin="checker" rgb1="1 1 1" rgb2="1 1 1" width="512" height="512" mark="cross" markrgb="0 0 0"/>
+    <material name="matplane" reflectance="0.0" texture="texplane" texrepeat="1 1" texuniform="true"/>
+  </asset>
+
+  <worldbody>
+    <light mode="targetbodycom" target="model" directional="false" diffuse="0.3 0.3 0.3" specular="0.5 0.5 0.5" pos="4 0 4.0" dir="-1 0 -1" castshadow="true"/>
+    <!-- ground top at z=0 to match tact's implicit ground plane -->
+    <geom name="floor" type="box" pos="0 0 -0.10" size="1 1 0.1" condim="3" rgba="0.7 0.7 0.7 1"/>
+
+    <!-- base: mk1.yaml q0 = [0,0,0.55,...]; sphere(r=0.2) inertia -> diag 0.016.
+         (mk1.yaml renamed body from 'head' to 'base'; MuJoCo body name 'model' kept;
+          geom name='head' kept so the <contact> pair name is stable.) -->
+    <body name="model" pos="0 0 0.55">
+      <freejoint/>
+      <inertial pos="0 0 0.2" mass="1" diaginertia="0.016 0.016 0.016"/>
+      <geom name="head" type="cylinder" fromto="0 0 0.35  0 0 0.05" size="0.2" mass="0" rgba="0.3 0.3 0.5 0.5"/>
+      <site name="base" pos="0 0 0" euler="0 0 0" type="sphere" size="0.005"/>
+
+      <!-- link1: joint axis = base +X; sphere(r=0.1) inertia -> diag 0.0004 -->
+      <body>
+        <joint name="joint1" type="hinge" pos="0 0 0" axis="1 0 0" damping="0.8"/>
+        <inertial pos="0 0 0" mass="0.1" diaginertia="0.0004 0.0004 0.0004"/>
+        <geom type="cylinder" pos="0 0 0" euler="0 90 0" size="0.03 0.05" mass="0" rgba="0.3 0.3 0.5 0.5"/>
+
+        <!-- link2: joint axis = base +Y; mk1 COM [0.075,0,0] in link2 frame (link2 +X = world -Z) -> [0,0,-0.075] here -->
+        <body>
+          <joint name="joint2" type="hinge" pos="0 0 0" axis="0 1 0" damping="0.8"/>
+          <inertial pos="0 0 -0.075" mass="0.2" diaginertia="0.0008 0.0008 0.0008"/>
+          <!-- shape #1: cylinder along link2 +Z (= world +Y) at origin -->
+          <geom type="cylinder" pos="0 0 0" euler="90 0 0" size="0.03 0.05" mass="0" rgba="0.3 0.3 0.5 0.5"/>
+          <!-- shape #2: cylinder along world -Z, center 0.15 m below joint2, half-length 0.11, radius 0.03 -->
+          <geom type="cylinder" fromto="0 0 -0.04  0 0 -0.26" size="0.03" mass="0" rgba="0.3 0.3 0.5 0.5"/>
+
+          <!-- link3: prismatic along world -Z; spring 2000 N/m, damping 5; no hard limit.
+               mk1 link3 body origin sits at link2 +X by 0.25 (= world -Z, 0.25 m below link2 origin),
+               but in MuJoCo the slide child body frame coincides with parent frame at q3=0,
+               so mk1 link3-frame z-offsets are shifted by 0.25 m here:
+                 COM    mk1 (0,0,0.13)  -> here (0,0,-0.38)   [0.25+0.13]
+                 foot   mk1 (0,0,0.25)  -> here (0,0,-0.50)   [0.25+0.25]
+                 shape1 mk1 (0,0,0.05) hl 0.16  -> fromto -0.14..-0.46 (length 0.32, r 0.01) -->
+          <body>
+            <!-- Functionally restores the original 1.xml's effective behavior:
+                   - explicit stiffness=1000, damping=3 (independent of body inertia,
+                     unlike the original springdamper="0.1 0.1" which depended on it)
+                   - springref=0.01 + hard upper limit at q3=0: leg sits pinned against
+                     the extension limit at rest, so HopRaibert's fire-phase u[2]=20N
+                     reacts against the limit and propels the body upward.
+                 This is intentionally *not* identical to mk1.yaml's spring:2000 damping:5
+                 (no limit, springref=0) — those parameters are correct for tact's solver
+                 but produce a leg that HopRaibert can't actually hop on under MuJoCo. -->
+            <joint name="joint3" type="slide" axis="0 0 -1"
+                   stiffness="1000" damping="3"
+                   springref="0.01" range="-0.15 0" limited="true"/>
+            <inertial pos="0 0 -0.38" mass="0.1" diaginertia="0.0004 0.0004 0.0004"/>
+            <geom type="cylinder" fromto="0 0 -0.14  0 0 -0.46" size="0.01" mass="0" rgba="0.3 0.3 0.5 0.5"/>
+            <geom name="foot" type="sphere" pos="0 0 -0.50" size="0.025" mass="0" rgba="0.8 0.3 0.3 0.5"/>
+            <site name="endtip" pos="0 0 -0.50" euler="180 0 0" type="sphere" size="0.005"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- 0.5*(mk1.yaml foot mat1 + env 1.yaml floor mat1), matching tact's contact_lcp averaging:
+         k_n=(50000+20000)/2=35000,  d_n=(100+200)/2=150
+         mu=(0.8+1.0)/2=0.9,  mu_spin=(0.02+0.05)/2=0.035,  mu_roll=(0.005+0.02)/2=0.0125
+       solref negative => direct (stiffness, damping); solimp near 1 => spring-damper-like.
+       tact's tangential stiffness k_t/d_t (brush stick-slip) has no MuJoCo equivalent. -->
+  <contact>
+    <pair geom1="floor" geom2="foot"
+          condim="6"
+          solref="-35000 -150"
+          solimp="0.99 0.99 0.001 0.5 2"
+          friction="0.9 0.9 0.035 0.0125 0.0125"/>
+    <!-- base also has contact:[1,mat1] in mk1.yaml; base-floor uses the same averaged params (geom name='head' kept) -->
+    <pair geom1="floor" geom2="head"
+          condim="6"
+          solref="-35000 -150"
+          solimp="0.99 0.99 0.001 0.5 2"
+          friction="0.9 0.9 0.035 0.0125 0.0125"/>
+  </contact>
+
+  <actuator>
+    <!-- motor: feedforward torque channel (ctrl = tau, paired 1:1 with position below) -->
+    <motor name="motor1" joint="joint1" />
+    <motor name="motor2" joint="joint2" />
+    <motor name="motor3" joint="joint3" />
+    <position joint="joint1" kp="10" kv="0"/>
+    <position joint="joint2" kp="10" kv="0"/>
+    <position joint="joint3" kp="10" kv="0"/>
+  </actuator>
+
+  <sensor>
+    <jointpos joint="joint1"/>
+    <jointpos joint="joint2"/>
+    <jointpos joint="joint3"/>
+
+    <jointvel joint="joint1"/>
+    <jointvel joint="joint2"/>
+    <jointvel joint="joint3"/>
+
+    <force site="endtip"/>
+    <torque site="endtip"/>
+
+    <framequat objtype="site" objname="base"/>
+
+    <accelerometer site="base"/>
+    <!--<framelinacc objtype="site" objname="base"/>-->
+    <gyro site="base"/>
+
+    <framelinvel objtype="site" objname="base"/>
+    <framepos objtype="site" objname="base"/>
+
+  </sensor>
+</mujoco>

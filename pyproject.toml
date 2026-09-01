@@ -29,7 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ipc = ["pyzmq>=25"]
-demos = ["pyzmq>=25"]
+demos = ["pyzmq>=25", "scipy>=1.14"]
 
 [project.urls]
 Repository = "https://github.com/tzscheng/pytact"
